@@ -1,12 +1,19 @@
 # sidereon
 
-GNSS and astrodynamics for Python: propagate satellites, predict passes, solve
-precise positions (SPP / RTK / PPP), and convert between coordinate frames and
-time scales — checked against the references the field trusts (Vallado, Skyfield,
-IGS, IERS).
+GNSS and astrodynamics for Python, with answers you can trust.
 
-Under the hood it's a Rust engine compiled into the wheel, so it's fast and the
-only runtime dependency is numpy. You just `pip install sidereon`.
+`sidereon` is the Python interface to the sidereon engine: a single GNSS and
+astrodynamics core, written in Rust, exposed here as an idiomatic Python
+package. You get orbit propagation, precise positioning, frames and time,
+ephemeris handling, and format parsing through plain Python objects and numpy
+arrays. The engine is reference-validated (SGP4 is bit-exact to Vallado's
+implementation; frames and time check against Skyfield and IERS; the
+positioning stack checks against IGS products), so the numbers match the
+sources the field already trusts.
+
+The Rust core is compiled into the wheel and linked statically, so the package
+is fast and the only runtime dependency is numpy. There is no separate native
+install.
 
 ## Install
 
@@ -19,44 +26,32 @@ import sidereon
 print(sidereon.__version__)
 ```
 
-## Quickstart: when does the ISS fly over you?
+## Example: where is the ISS in the sky right now?
 
-No data files, no setup — give it a two-line element set and a ground station,
-and ask when the satellite is above the horizon.
+No data files and no setup: give it a two-line element set and a ground
+station, and ask for the look angles. Everything that takes time takes unix
+microseconds (int64) and arrays propagate in one call.
 
 ```python
+import numpy as np
 import sidereon
-from datetime import datetime, timedelta, timezone
 
-# Real orbital elements (grab fresh ones from CelesTrak any time).
-iss = sidereon.Tle(
-    "1 25544U 98067A   26178.50947090  .00006280  00000+0  12016-3 0  9996",
-    "2 25544  51.6322 248.9966 0004278 238.4942 121.5629 15.49454046573359",
+tle = sidereon.Tle(
+    "1 25544U 98067A   24001.50000000  .00016717  00000-0  10270-3 0  9009",
+    "2 25544  51.6400 208.8657 0002644 250.3037 109.7782 15.49560812999990",
 )
+station = sidereon.GroundStation(latitude_deg=51.5, longitude_deg=-0.1, altitude_m=10.0)
 
-# A ground station: latitude, longitude in degrees (altitude in metres, optional).
-berkeley = sidereon.GroundStation(37.87, -122.27)
-
-# Every pass above 10° over the next 24 hours.
-now = datetime.now(timezone.utc)
-us = lambda t: int(t.timestamp() * 1_000_000)  # epochs are UTC unix microseconds
-passes = iss.find_passes(
-    berkeley, us(now), us(now + timedelta(days=1)), elevation_mask_deg=10.0
-)
-
-for p in passes:
-    rise = datetime.fromtimestamp(p.aos_unix_us / 1e6, timezone.utc)
-    print(f"{rise:%H:%M} UTC · {p.duration_s / 60:4.1f} min · peak {p.max_elevation_deg:2.0f}°")
+# Epochs are unix microseconds (int64); arrays propagate in one call.
+epochs_us = np.array([1_704_110_400_000_000], dtype=np.int64)
+look = tle.look_angles(station, epochs_us)
+print(look.azimuth_deg, look.elevation_deg, look.range_km)
 ```
 
 `Tle` also gives you `propagate()` (TEME state arcs as numpy arrays) and
-`look_angles()` (azimuth/elevation/range over a time grid). Everything that
-takes time takes UTC unix microseconds and returns numpy arrays.
-
-## Precise positioning
-
-The positioning engine is the other half of the library: feed it pseudoranges
-and a precise-ephemeris product and it returns a least-squares fix.
+`find_passes()` (rise/set/peak over a window). The positioning side has the same
+shape: a typed config in, a result object with numpy positions and scalar
+attributes out.
 
 ```python
 import sidereon
@@ -65,56 +60,65 @@ sp3 = sidereon.load_sp3(open("igs_product.sp3", "rb").read())
 
 config = sidereon.SppConfig(
     observations=[
-        sidereon.SppObservation("G01", 21_000_123.4),  # PRN, pseudorange (m)
-        sidereon.SppObservation("G08", 22_517_889.1),
+        sidereon.SppObservation("G08", 23_825_519.8),  # PRN, pseudorange (m)
+        sidereon.SppObservation("G10", 22_717_690.1),
         # ...more satellites
     ],
-    t_rx_j2000_s=...,          # receiver time
-    t_rx_second_of_day_s=...,
-    day_of_year=...,
-    initial_guess=[0.0, 0.0, 0.0, 0.0],
+    t_rx_j2000_s=646_272_000.0,
+    t_rx_second_of_day_s=43_200.0,
+    day_of_year=176.5,
+    initial_guess=[4_500_000, 500_000, 4_500_000, 0.0],
     corrections=sidereon.SppCorrections(ionosphere=True, troposphere=True),
     with_geodetic=True,
 )
 
-fix = sidereon.solve_spp(sp3, config)
-print(fix.position)   # numpy [x, y, z] ECEF metres
-print(fix.geodetic)   # (lat_rad, lon_rad, height_m)
-print(fix.used_sats)  # satellites that contributed
+solution = sidereon.solve_spp(sp3, config)
+print(solution.position)     # numpy [x, y, z] ECEF metres
+print(solution.rx_clock_s)   # receiver clock bias, seconds
 ```
 
-`solve_rtk_float`, `solve_rtk_fixed`, `solve_ppp_float`, and `solve_ppp_fixed`
-follow the same shape — typed config in, a result object with numpy positions,
-scalar attributes, and enum statuses out. Need the products? `sidereon.data`
-fetches and caches SP3, RINEX, and IONEX from the public archives.
+## Capabilities
 
-## What's in the box
+The Python package mirrors the full breadth of the engine.
 
-- **Orbits** — SGP4/TLE and OMM, numerical propagation, passes, look angles, visibility
-- **Frames & time** — TEME ↔ GCRS ↔ ITRS, GMST/GAST, geodetic ↔ ECEF, UTC/TT/TDB/UT1
-- **Bodies** — Sun/Moon positions, eclipse, plus JPL SPK (DAF/.bsp) kernels
-- **Positioning** — SPP, RTK (float/fixed), PPP (float/fixed), DOP, velocity
-- **GNSS data** — SP3, RINEX (obs/nav/clock), CRINEX, ANTEX, IONEX, broadcast ephemeris
-- **Space situational awareness** — conjunction/TCA screening, collision probability, CDM, covariance
-- **RF** — link budget (FSPL, EIRP, C/N0, antenna gain)
+- **Orbit propagation:** SGP4/SDP4 from TLE/OMM, numerical propagation, batch
+  and constellation arcs, pass prediction, look angles, and coverage analysis.
+- **GNSS positioning:** single-point positioning (SPP), RTK (float and fixed),
+  PPP (float and fixed), DGNSS, RAIM fault detection, and DOP.
+- **Ephemeris and time:** broadcast ephemeris and precise SP3 products, JPL SPK
+  (DAF/.bsp) kernels, scale-aware time (UTC/TT/TDB/UT1/GPS), and Earth
+  orientation parameters (EOP).
+- **Geometry and events:** reference frames, geodetic and ECEF conversions, look
+  angles, eclipse, conjunction screening with collision probability, initial
+  orbit determination (IOD), and orbital elements.
+- **Atmosphere:** Klobuchar and NeQuick-G ionosphere, IONEX maps, and
+  troposphere models.
+- **RF:** link budget (FSPL, EIRP, C/N0, antenna gain).
+- **Formats:** parse and serialize TLE/OMM, CCSDS OEM/OPM/CDM, RINEX, CRINEX,
+  SP3, IONEX, ANTEX, and RTCM.
 
 The binding adds no modeling of its own: every result is exactly what the engine
 computes, returned as numpy arrays, typed objects, and real Python exceptions
 (`sidereon.SidereonError` and friends). Full signatures live in the bundled type
 stubs (`sidereon/__init__.pyi`).
 
-## Other languages
+## One engine, every language
 
-sidereon is one validated engine with first-class interfaces in **Rust**,
-**Python**, **C**, **Elixir**, and **WebAssembly** — same numbers everywhere.
+sidereon is one validated core with first-class interfaces, so the numbers are
+the same everywhere:
+
+- [sidereon](https://github.com/neilberkman/sidereon): the Rust core and engine
+- [sidereon-c](https://github.com/neilberkman/sidereon-c): C interface
+- [sidereon-ex](https://github.com/neilberkman/sidereon-ex): Elixir interface
+- [sidereon-wasm](https://github.com/neilberkman/sidereon-wasm): WebAssembly interface
+
 See the live demo and docs at [sidereon.dev](https://sidereon.dev).
 
-## How it's validated
+## Building from source
 
-The SGP4 propagator is a Rust port of David Vallado's reference implementation,
-bit-exact to it. Frames and time are checked against Skyfield and IERS; the
-positioning stack is checked against IGS products. The wheel links the Rust
-`sidereon-core` engine statically, so there's no separate native install.
+For contributors: `pip install maturin`, then `maturin develop` from the repo.
+Run the tests with `pytest`.
 
-*Building from source (for contributors): `pip install maturin`, then
-`maturin develop` from the repo. Tests: `pytest`.*
+## License
+
+MIT.
