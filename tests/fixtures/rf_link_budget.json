@@ -1,0 +1,40 @@
+{
+  "source": "rf_reference_self_validates",
+  "fspl": {
+    "distance_km": 1200.0,
+    "frequency_mhz": 1616.0,
+    "value_hex": "0x4063c67a7cb8924e"
+  },
+  "eirp": {
+    "tx_power_dbm": 27.0,
+    "tx_antenna_gain_dbi": 3.0,
+    "value_hex": "0x0000000000000000"
+  },
+  "cn0": {
+    "eirp_dbw": 0.0,
+    "fspl_db": 165.0,
+    "receiver_gt_dbk": -12.0,
+    "other_losses_db": 3.0,
+    "value_hex": "0x40484ccccccccccc"
+  },
+  "wavelength": {
+    "frequency_hz": 1616000000.0,
+    "value_hex": "0x3fc7bef5bea80932"
+  },
+  "dish_gain": {
+    "diameter_m": 1.0,
+    "frequency_hz": 1616000000.0,
+    "efficiency": 0.55,
+    "value_hex": "0x4035faa2324053fc"
+  },
+  "link_margin": {
+    "budget": {
+      "eirp_dbw": 0.0,
+      "fspl_db": 165.0,
+      "receiver_gt_dbk": -12.0,
+      "other_losses_db": 3.0,
+      "required_cn0_dbhz": 35.0
+    },
+    "value_hex": "0x402b333333333330"
+  }
+}

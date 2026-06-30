@@ -1,0 +1,166 @@
+{
+  "source": "reference_arc_is_deterministic_and_frozen",
+  "force_model": "two_body_j2",
+  "integrator": "dp54",
+  "options": {
+    "abs_tol": 1e-12,
+    "rel_tol": 1e-12,
+    "initial_step_s": 60.0,
+    "min_step_s": 1e-6,
+    "max_step_s": 3600.0,
+    "max_steps": 1000000
+  },
+  "epoch_s_hex": "0x0000000000000000",
+  "position_km_hex": [
+    "0x40bb580000000000",
+    "0x0000000000000000",
+    "0x0000000000000000"
+  ],
+  "velocity_km_s_hex": [
+    "0x3fe0000000000000",
+    "0x4020666666666666",
+    "0x3ff199999999999a"
+  ],
+  "samples": [
+    {
+      "time_s": 0.0,
+      "time_s_hex": "0x0000000000000000",
+      "position_km_hex": [
+        "0x40bb580000000000",
+        "0x0000000000000000",
+        "0x0000000000000000"
+      ],
+      "velocity_km_s_hex": [
+        "0x3fe0000000000000",
+        "0x4020666666666666",
+        "0x3ff199999999999a"
+      ]
+    },
+    {
+      "time_s": 600.0,
+      "time_s_hex": "0x4082c00000000000",
+      "position_km_hex": [
+        "0x40b737b57989d79e",
+        "0x40b205911eff2452",
+        "0x408356540ffad0a4"
+      ],
+      "velocity_km_s_hex": [
+        "0xc00dfdf4a20de44c",
+        "0x401afd30dcf5fae4",
+        "0x3fecf2ef04f77fa6"
+      ]
+    },
+    {
+      "time_s": 1200.0,
+      "time_s_hex": "0x4092c00000000000",
+      "position_km_hex": [
+        "0x40a6d91eda305102",
+        "0x40be6fee1dfbe688",
+        "0x409052a3ef079927"
+      ],
+      "velocity_km_s_hex": [
+        "0xc017d54e38887575",
+        "0x400e04564844f9bd",
+        "0x3fe011d2d83eaad3"
+      ]
+    },
+    {
+      "time_s": 1800.0,
+      "time_s_hex": "0x409c200000000000",
+      "position_km_hex": [
+        "0xc08a5b3e24882b4c",
+        "0x40c1d0ecb79d66b4",
+        "0x409318fb1059a72f"
+      ],
+      "velocity_km_s_hex": [
+        "0xc019727fadd2e9c0",
+        "0x3fe7f5f42bac9140",
+        "0x3fb9544704a5915c"
+      ]
+    },
+    {
+      "time_s": 2400.0,
+      "time_s_hex": "0x40a2c00000000000",
+      "position_km_hex": [
+        "0xc0b1887b4e7242bd",
+        "0x40c1315d916e098f",
+        "0x40926a1bf9ad729b"
+      ],
+      "velocity_km_s_hex": [
+        "0xc01699c12298bb64",
+        "0xbffb51273de9fcc7",
+        "0xbfcd81224b2937c4"
+      ]
+    },
+    {
+      "time_s": 3000.0,
+      "time_s_hex": "0x40a7700000000000",
+      "position_km_hex": [
+        "0xc0bd4899156db3f4",
+        "0x40bc203bf94e4a65",
+        "0x408e160864c8a6b8"
+      ],
+      "velocity_km_s_hex": [
+        "0xc0112f4c5c7bb0fe",
+        "0xc00c3e60fb74af74",
+        "0xbfde62944a91c26d"
+      ]
+    },
+    {
+      "time_s": 3600.0,
+      "time_s_hex": "0x40ac200000000000",
+      "position_km_hex": [
+        "0xc0c2afa4a136cd17",
+        "0x40b24f363b2aba49",
+        "0x408388a8550d9b8f"
+      ],
+      "velocity_km_s_hex": [
+        "0xc00471200e8a6923",
+        "0xc012fdb1a300aed8",
+        "0xbfe466e3b52847e8"
+      ]
+    },
+    {
+      "time_s": 4200.0,
+      "time_s_hex": "0x40b0680000000000",
+      "position_km_hex": [
+        "0xc0c4885fbc0edb17",
+        "0x40995396a63babbb",
+        "0x406ab12f58def30e"
+      ],
+      "velocity_km_s_hex": [
+        "0xbfe1fcbdcda9cb11",
+        "0xc0157e54d991307e",
+        "0xbfe711070f7f8861"
+      ]
+    },
+    {
+      "time_s": 4800.0,
+      "time_s_hex": "0x40b2c00000000000",
+      "position_km_hex": [
+        "0xc0c3f07448b76192",
+        "0xc0998bdac11c90e2",
+        "0xc06be0024dea5ea6"
+      ],
+      "velocity_km_s_hex": [
+        "0x3ff985495ac2873c",
+        "0xc01577e75d6ac4a1",
+        "0xbfe703a64c1f308c"
+      ]
+    },
+    {
+      "time_s": 5400.0,
+      "time_s_hex": "0x40b5180000000000",
+      "position_km_hex": [
+        "0xc0c0c53c4169956d",
+        "0xc0b23e93900c70b7",
+        "0xc083abd6a83788d8"
+      ],
+      "velocity_km_s_hex": [
+        "0x400e7a9b324fc2f4",
+        "0xc01273467da91578",
+        "0xbfe3beff57505a62"
+      ]
+    }
+  ]
+}

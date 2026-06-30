@@ -1,0 +1,30 @@
+[package]
+name = "sidereon-py"
+version = "0.9.0"
+authors = []
+edition = "2021"
+description = "Python (PyO3) bindings over the sidereon ergonomic API: SP3 loading and SPP/RTK/PPP positioning solves"
+license = "MIT"
+publish = false
+
+[lib]
+# Imported from Python as `sidereon._sidereon`; the ergonomic Python surface in
+# `python/sidereon/__init__.py` wraps it.
+name = "_sidereon"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The thin ergonomic engine surface this binding marshals to. No modeling logic
+# lives here: every solve delegates to a `sidereon` entry point, which in turn
+# delegates to `sidereon-core`.
+sidereon = "0.9.0"
+sidereon-core = "0.9.0"
+pyo3 = { version = "0.25", features = ["extension-module", "abi3-py39"] }
+# Zero-copy ndarray marshalling so a batched propagate/look-angle call crosses
+# the FFI boundary once (1-D epochs in, 2-D states / 1-D angles out) instead of a
+# Python loop. Pinned to the pyo3 0.25 ABI.
+numpy = "0.25"
+# Generic Python-object <-> Rust marshalling for the structured RTK/PPP inputs,
+# so the binding stays a pure interface (no field-by-field hand parsing).
+pythonize = "0.25"
+serde = { version = "1", features = ["derive"] }

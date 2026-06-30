@@ -1,0 +1,157 @@
+{
+  "source": "events_bodies_dop_reference_self_validates",
+  "eclipse": [
+    {
+      "satellite_position_km_hex": [
+        "0x40bb580000000000",
+        "0x0000000000000000",
+        "0x0000000000000000"
+      ],
+      "sun_position_km_hex": [
+        "0x41a1d55d5d666666",
+        "0x0000000000000000",
+        "0x0000000000000000"
+      ],
+      "shadow_fraction_hex": "0x0000000000000000",
+      "status": "SUNLIT"
+    },
+    {
+      "satellite_position_km_hex": [
+        "0xc0bb580000000000",
+        "0x0000000000000000",
+        "0x0000000000000000"
+      ],
+      "sun_position_km_hex": [
+        "0x41a1d55d5d666666",
+        "0x0000000000000000",
+        "0x0000000000000000"
+      ],
+      "shadow_fraction_hex": "0x3ff0000000000000",
+      "status": "UMBRA"
+    },
+    {
+      "satellite_position_km_hex": [
+        "0xc0bb580000000000",
+        "0x40b8e20000000000",
+        "0x0000000000000000"
+      ],
+      "sun_position_km_hex": [
+        "0x41a1d55d5d666666",
+        "0x0000000000000000",
+        "0x0000000000000000"
+      ],
+      "shadow_fraction_hex": "0x3fe0a32f08e7fb1f",
+      "status": "PENUMBRA"
+    },
+    {
+      "satellite_position_km_hex": [
+        "0xc0bb580000000000",
+        "0x40b90a0000000000",
+        "0x0000000000000000"
+      ],
+      "sun_position_km_hex": [
+        "0x41a1d55d5d666666",
+        "0x0000000000000000",
+        "0x0000000000000000"
+      ],
+      "shadow_fraction_hex": "0x0000000000000000",
+      "status": "SUNLIT"
+    }
+  ],
+  "angles": [
+    {
+      "satellite_position_km_hex": [
+        "0x40ba7a0000000000",
+        "0x0000000000000000",
+        "0x0000000000000000"
+      ],
+      "sun_position_km_hex": [
+        "0x41a1d55d5c000000",
+        "0x0000000000000000",
+        "0x0000000000000000"
+      ],
+      "moon_position_km_hex": [
+        "0x41086a0000000000",
+        "0x41124f8000000000",
+        "0x40e86a0000000000"
+      ],
+      "observer_position_km_hex": [
+        "0x0000000000000000",
+        "0x40b8ea0000000000",
+        "0x0000000000000000"
+      ],
+      "sun_angle_deg_hex": "0x4066800000000000",
+      "moon_angle_deg_hex": "0x405e9b67b2becf9b",
+      "sun_elevation_deg_hex": "0x4056800000000000",
+      "phase_angle_deg_hex": "0x406117ba6ae68872",
+      "earth_angular_radius_deg_hex": "0x40518e27583c2f41"
+    },
+    {
+      "satellite_position_km_hex": [
+        "0x40ba7a0000000000",
+        "0x405ec00000000000",
+        "0xc07c800000000000"
+      ],
+      "sun_position_km_hex": [
+        "0x41a1d55d5c000000",
+        "0x412e848000000000",
+        "0xc11e848000000000"
+      ],
+      "moon_position_km_hex": [
+        "0xc117764000000000",
+        "0x40c81c8000000000",
+        "0x40ba850000000000"
+      ],
+      "observer_position_km_hex": [
+        "0xc0b8ea0000000000",
+        "0x4059000000000000",
+        "0x4049000000000000"
+      ],
+      "sun_angle_deg_hex": "0x4066091c484a7158",
+      "moon_angle_deg_hex": "0x400fc22850bd874f",
+      "sun_elevation_deg_hex": "0x405592389094e2b1",
+      "phase_angle_deg_hex": "0x40663f01b89bb002",
+      "earth_angular_radius_deg_hex": "0x405175b6ce90117e"
+    }
+  ],
+  "dop": {
+    "line_of_sight_hex": [
+      [
+        "0x0000000000000000",
+        "0x3fd5e3a8748a0bf6",
+        "0x3fee11f642522d1c"
+      ],
+      [
+        "0x3fe0000000000000",
+        "0xbfd0000000000000",
+        "0x3fea8779cda8eea5"
+      ],
+      [
+        "0xbfe0000000000000",
+        "0xbfd0000000000000",
+        "0x3fea8779cda8eea5"
+      ],
+      [
+        "0x3fea0aa16f5e991a",
+        "0x3fde11f642522d1b",
+        "0x3fd5e3a8748a0bf5"
+      ]
+    ],
+    "weights_hex": [
+      "0x3ff0000000000000",
+      "0x3ff0000000000000",
+      "0x3ff0000000000000",
+      "0x3ff0000000000000"
+    ],
+    "receiver": {
+      "lat_rad_hex": "0x3fe921fb54442d18",
+      "lon_rad_hex": "0x3fc657184ae74487",
+      "height_m_hex": "0x4028000000000000"
+    },
+    "gdop_hex": "0x4012b31a0eae9efc",
+    "pdop_hex": "0x400f2c90a6e2bd75",
+    "hdop_hex": "0x40044332dbacc178",
+    "vdop_hex": "0x4007b0d93d801d94",
+    "tdop_hex": "0x4004a93aeb387470"
+  }
+}

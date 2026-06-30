@@ -1,0 +1,133 @@
+{
+  "source": "cdm_python_reference_self_validates",
+  "kvn_fixture": "tests/fixtures/cdm/ccsds_example2.kvn",
+  "xml_fixture": "tests/fixtures/cdm/ccsds_example2.xml",
+  "from_kvn": {
+    "creation_date": "2010-03-12T22:31:12.000",
+    "originator": "JSPOC",
+    "message_id": "201113719185",
+    "tca": "2010-03-13T22:37:52.618",
+    "miss_distance_m_hex": "0x4086580000000000",
+    "relative_speed_m_s_hex": "0x40ccd50000000000",
+    "collision_probability_hex": "0x3f09596d599fae87",
+    "collision_probability_method": "FOSTER-1992",
+    "hard_body_radius_m_hex": null,
+    "object1": {
+      "object_designator": "12345",
+      "catalog_name": "SATCAT",
+      "object_name": "SATELLITE A",
+      "international_designator": "1997-030E",
+      "object_type": "PAYLOAD",
+      "ref_frame": "EME2000",
+      "position_km_hex": [
+        "0x40a41431b280f12c",
+        "0x40a1894f4f93bc0a",
+        "0x40b8897f7b7c7821"
+      ],
+      "velocity_km_s_hex": [
+        "0x4011acd1ee300512",
+        "0x4013558d8a1f5bc3",
+        "0xc00c36d56f4c82d4"
+      ],
+      "covariance_rtn_hex": [
+        "0x4044b5c28f5c28f6",
+        "0xc0212872b020c49c",
+        "0x40a3ca0000000000",
+        "0xc0372147ae147ae1",
+        "0x402ab851eb851eb8",
+        "0x4051beb851eb851f"
+      ]
+    },
+    "object2": {
+      "object_designator": "30337",
+      "catalog_name": "SATCAT",
+      "object_name": "FENGYUN 1C DEB",
+      "international_designator": "1999-025AA",
+      "object_type": "DEBRIS",
+      "ref_frame": "EME2000",
+      "position_km_hex": [
+        "0x40a41314e3bcd35b",
+        "0x40a18a2fee2c98e5",
+        "0x40b88999960fa15e"
+      ],
+      "velocity_km_s_hex": [
+        "0xc0071be0ded288ce",
+        "0xc018076be490c9f8",
+        "0x400aa15241851f53"
+      ],
+      "covariance_rtn_hex": [
+        "0x4094e40000000000",
+        "0xc0e7778000000000",
+        "0x4143033000000000",
+        "0xc0407d70a3d70a3d",
+        "0xc087b70a3d70a3d7",
+        "0x4051c33333333333"
+      ]
+    }
+  },
+  "from_xml": {
+    "creation_date": "2010-03-12T22:31:12.000",
+    "originator": "JSPOC",
+    "message_id": "201113719185",
+    "tca": "2010-03-13T22:37:52.618",
+    "miss_distance_m_hex": "0x4086580000000000",
+    "relative_speed_m_s_hex": "0x40ccd50000000000",
+    "collision_probability_hex": "0x3f09596d599fae87",
+    "collision_probability_method": "FOSTER-1992",
+    "hard_body_radius_m_hex": null,
+    "object1": {
+      "object_designator": "12345",
+      "catalog_name": "SATCAT",
+      "object_name": "SATELLITE A",
+      "international_designator": "1997-030E",
+      "object_type": "PAYLOAD",
+      "ref_frame": "EME2000",
+      "position_km_hex": [
+        "0x40a41431b280f12c",
+        "0x40a1894f4f93bc0a",
+        "0x40b8897f7b7c7821"
+      ],
+      "velocity_km_s_hex": [
+        "0x4011acd1ee300512",
+        "0x4013558d8a1f5bc3",
+        "0xc00c36d56f4c82d4"
+      ],
+      "covariance_rtn_hex": [
+        "0x4044b5c28f5c28f6",
+        "0xc0212872b020c49c",
+        "0x40a3ca0000000000",
+        "0xc0372147ae147ae1",
+        "0x402ab851eb851eb8",
+        "0x4051beb851eb851f"
+      ]
+    },
+    "object2": {
+      "object_designator": "30337",
+      "catalog_name": "SATCAT",
+      "object_name": "FENGYUN 1C DEB",
+      "international_designator": "1999-025AA",
+      "object_type": "DEBRIS",
+      "ref_frame": "EME2000",
+      "position_km_hex": [
+        "0x40a41314e3bcd35b",
+        "0x40a18a2fee2c98e5",
+        "0x40b88999960fa15e"
+      ],
+      "velocity_km_s_hex": [
+        "0xc0071be0ded288ce",
+        "0xc018076be490c9f8",
+        "0x400aa15241851f53"
+      ],
+      "covariance_rtn_hex": [
+        "0x4094e40000000000",
+        "0xc0e7778000000000",
+        "0x4143033000000000",
+        "0xc0407d70a3d70a3d",
+        "0xc087b70a3d70a3d7",
+        "0x4051c33333333333"
+      ]
+    }
+  },
+  "encoded_kvn": "CCSDS_CDM_VERS = 1.0\nCREATION_DATE = 2010-03-12T22:31:12.000\nORIGINATOR = JSPOC\nMESSAGE_ID = 201113719185\nTCA = 2010-03-13T22:37:52.618\nMISS_DISTANCE = 715 [m]\nRELATIVE_SPEED = 14762 [m/s]\nCOLLISION_PROBABILITY = 0.00004835\nCOLLISION_PROBABILITY_METHOD = FOSTER-1992\nOBJECT = OBJECT1\nOBJECT_DESIGNATOR = 12345\nCATALOG_NAME = SATCAT\nOBJECT_NAME = SATELLITE A\nINTERNATIONAL_DESIGNATOR = 1997-030E\nOBJECT_TYPE = PAYLOAD\nEPHEMERIS_NAME = EPHEMERIS SATELLITE A\nCOVARIANCE_METHOD = CALCULATED\nMANEUVERABLE = YES\nREF_FRAME = EME2000\nGRAVITY_MODEL = EGM-96: 36D 36O\nATMOSPHERIC_MODEL = JACCHIA 70 DCA\nN_BODY_PERTURBATIONS = MOON, SUN\nSOLAR_RAD_PRESSURE = NO\nEARTH_TIDES = NO\nINTRACK_THRUST = NO\nX = 2570.097065 [km]\nY = 2244.654904 [km]\nZ = 6281.497978 [km]\nX_DOT = 4.418769571 [km/s]\nY_DOT = 4.833547743 [km/s]\nZ_DOT = -3.526774282 [km/s]\nCR_R = 41.42 [m**2]\nCT_R = -8.579 [m**2]\nCT_T = 2533 [m**2]\nCN_R = -23.13 [m**2]\nCN_T = 13.36 [m**2]\nCN_N = 70.98 [m**2]\nCRDOT_R = 0.00252 [m**2/s]\nCRDOT_T = -5.476 [m**2/s]\nCRDOT_N = 0.0008626 [m**2/s]\nCRDOT_RDOT = 0.005744 [m**2/s**2]\nCTDOT_R = -0.01006 [m**2/s]\nCTDOT_T = 0.004041 [m**2/s]\nCTDOT_N = -0.001359 [m**2/s]\nCTDOT_RDOT = -0.00001502 [m**2/s**2]\nCTDOT_TDOT = 0.00001049 [m**2/s**2]\nCNDOT_R = 0.001053 [m**2/s]\nCNDOT_T = -0.003412 [m**2/s]\nCNDOT_N = 0.01213 [m**2/s]\nCNDOT_RDOT = -0.000003004 [m**2/s**2]\nCNDOT_TDOT = -0.000001091 [m**2/s**2]\nCNDOT_NDOT = 0.00005529 [m**2/s**2]\nOBJECT = OBJECT2\nOBJECT_DESIGNATOR = 30337\nCATALOG_NAME = SATCAT\nOBJECT_NAME = FENGYUN 1C DEB\nINTERNATIONAL_DESIGNATOR = 1999-025AA\nOBJECT_TYPE = DEBRIS\nEPHEMERIS_NAME = NONE\nCOVARIANCE_METHOD = CALCULATED\nMANEUVERABLE = NO\nREF_FRAME = EME2000\nGRAVITY_MODEL = EGM-96: 36D 36O\nATMOSPHERIC_MODEL = JACCHIA 70 DCA\nN_BODY_PERTURBATIONS = MOON, SUN\nSOLAR_RAD_PRESSURE = YES\nEARTH_TIDES = NO\nINTRACK_THRUST = NO\nX = 2569.5408 [km]\nY = 2245.093614 [km]\nZ = 6281.599946 [km]\nX_DOT = -2.8886125 [km/s]\nY_DOT = -6.007247516 [km/s]\nZ_DOT = 3.328770172 [km/s]\nCR_R = 1337 [m**2]\nCT_R = -48060 [m**2]\nCT_T = 2492000 [m**2]\nCN_R = -32.98 [m**2]\nCN_T = -758.88 [m**2]\nCN_N = 71.05 [m**2]\nCRDOT_R = 0.002591 [m**2/s]\nCRDOT_T = -0.04152 [m**2/s]\nCRDOT_N = -0.000001784 [m**2/s]\nCRDOT_RDOT = 0.00006886 [m**2/s**2]\nCTDOT_R = -0.01016 [m**2/s]\nCTDOT_T = -0.0001506 [m**2/s]\nCTDOT_N = 0.001637 [m**2/s]\nCTDOT_RDOT = -0.000002987 [m**2/s**2]\nCTDOT_TDOT = 0.00001059 [m**2/s**2]\nCNDOT_R = 0.0044 [m**2/s]\nCNDOT_T = 0.008482 [m**2/s]\nCNDOT_N = 0.00008633 [m**2/s]\nCNDOT_RDOT = -0.000001903 [m**2/s**2]\nCNDOT_TDOT = -0.000004594 [m**2/s**2]\nCNDOT_NDOT = 0.00005178 [m**2/s**2]",
+  "encoded_xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<cdm id=\"CCSDS_CDM_VERS\" version=\"1.0\">\n  <header>\n    <CCSDS_CDM_VERS>1.0</CCSDS_CDM_VERS>\n    <CREATION_DATE>2010-03-12T22:31:12.000</CREATION_DATE>\n    <ORIGINATOR>JSPOC</ORIGINATOR>\n    <MESSAGE_ID>201113719185</MESSAGE_ID>\n  </header>\n  <body>\n    <relativeMetadataData>\n      <TCA>2010-03-13T22:37:52.618</TCA>\n      <MISS_DISTANCE units=\"m\">715</MISS_DISTANCE>\n      <RELATIVE_SPEED units=\"m/s\">14762</RELATIVE_SPEED>\n      <COLLISION_PROBABILITY>0.00004835</COLLISION_PROBABILITY>\n      <COLLISION_PROBABILITY_METHOD>FOSTER-1992</COLLISION_PROBABILITY_METHOD>\n    </relativeMetadataData>\n    <segment>\n      <metadata>\n        <OBJECT>OBJECT1</OBJECT>\n        <OBJECT_DESIGNATOR>12345</OBJECT_DESIGNATOR>\n        <CATALOG_NAME>SATCAT</CATALOG_NAME>\n        <OBJECT_NAME>SATELLITE A</OBJECT_NAME>\n        <INTERNATIONAL_DESIGNATOR>1997-030E</INTERNATIONAL_DESIGNATOR>\n        <OBJECT_TYPE>PAYLOAD</OBJECT_TYPE>\n        <REF_FRAME>EME2000</REF_FRAME>\n      </metadata>\n      <data>\n        <stateVector>\n          <X units=\"km\">2570.097065</X>\n          <Y units=\"km\">2244.654904</Y>\n          <Z units=\"km\">6281.497978</Z>\n          <X_DOT units=\"km/s\">4.418769571</X_DOT>\n          <Y_DOT units=\"km/s\">4.833547743</Y_DOT>\n          <Z_DOT units=\"km/s\">-3.526774282</Z_DOT>\n        </stateVector>\n        <covarianceMatrix>\n          <CR_R units=\"m**2\">41.42</CR_R>\n          <CT_R units=\"m**2\">-8.579</CT_R>\n          <CT_T units=\"m**2\">2533</CT_T>\n          <CN_R units=\"m**2\">-23.13</CN_R>\n          <CN_T units=\"m**2\">13.36</CN_T>\n          <CN_N units=\"m**2\">70.98</CN_N>\n        </covarianceMatrix>\n      </data>\n    </segment>\n    <segment>\n      <metadata>\n        <OBJECT>OBJECT2</OBJECT>\n        <OBJECT_DESIGNATOR>30337</OBJECT_DESIGNATOR>\n        <CATALOG_NAME>SATCAT</CATALOG_NAME>\n        <OBJECT_NAME>FENGYUN 1C DEB</OBJECT_NAME>\n        <INTERNATIONAL_DESIGNATOR>1999-025AA</INTERNATIONAL_DESIGNATOR>\n        <OBJECT_TYPE>DEBRIS</OBJECT_TYPE>\n        <REF_FRAME>EME2000</REF_FRAME>\n      </metadata>\n      <data>\n        <stateVector>\n          <X units=\"km\">2569.5408</X>\n          <Y units=\"km\">2245.093614</Y>\n          <Z units=\"km\">6281.599946</Z>\n          <X_DOT units=\"km/s\">-2.8886125</X_DOT>\n          <Y_DOT units=\"km/s\">-6.007247516</Y_DOT>\n          <Z_DOT units=\"km/s\">3.328770172</Z_DOT>\n        </stateVector>\n        <covarianceMatrix>\n          <CR_R units=\"m**2\">1337</CR_R>\n          <CT_R units=\"m**2\">-48060</CT_R>\n          <CT_T units=\"m**2\">2492000</CT_T>\n          <CN_R units=\"m**2\">-32.98</CN_R>\n          <CN_T units=\"m**2\">-758.88</CN_T>\n          <CN_N units=\"m**2\">71.05</CN_N>\n        </covarianceMatrix>\n      </data>\n    </segment>\n  </body>\n</cdm>"
+}

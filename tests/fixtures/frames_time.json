@@ -1,0 +1,480 @@
+{
+  "source": "frames_time_reference_self_validates",
+  "sample": {
+    "position_km_hex": [
+      "0x40b0e10000000000",
+      "0xc0b62e0000000000",
+      "0x40a9140000000000"
+    ],
+    "velocity_km_s_hex": [
+      "0xbff3be76c8b43958",
+      "0x4016b645a1cac083",
+      "0x401c0c49ba5e353f"
+    ],
+    "geodetic_lat_lon_alt_hex": [
+      "0x4049bd2bd3c36113",
+      "0xbf589374bc6a7efa",
+      "0x3fa78d4fdf3b645a"
+    ]
+  },
+  "epochs": [
+    {
+      "calendar": {
+        "year": 2000,
+        "month": 1,
+        "day": 1,
+        "hour": 12,
+        "minute": 0,
+        "second": 0,
+        "microsecond": 0
+      },
+      "unix_micros": 946728000000000,
+      "jd_whole_hex": "0x4142b42c80000000",
+      "tt_jd_hex": "0x4142b42c801857a6",
+      "ut1_jd_hex": "0x4142b42c80002279",
+      "tdb_jd_hex": "0x4142b42c801857a4",
+      "tt_fraction_hex": "0x3f4857a5f91384a8",
+      "ut1_fraction_hex": "0x3ed13c474fcb1480",
+      "tdb_fraction_hex": "0x3f4857a397ea766e",
+      "delta_t_seconds_hex": "0x404fea1b5fd7d6ec",
+      "gmst_radians_hex": "0x4013947784821f8e",
+      "gast_radians_hex": "0x40139467466addb8",
+      "mean_obliquity_radians_hex": "0x3fda2e92bb2618b4",
+      "nutation_dpsi_hex": "0xbf11b4d07b3b8a53",
+      "nutation_deps_hex": "0xbefd5461f75a3b77",
+      "precession_matrix_hex": [
+        [
+          "0x3ff0000000000000",
+          "0xbdff4093eca922b8",
+          "0xbdeb293976e0fe3c"
+        ],
+        [
+          "0x3dff4093eca922c3",
+          "0x3ff0000000000000",
+          "0x3ce7800000000000"
+        ],
+        [
+          "0x3deb293976e0fe10",
+          "0xbce7800000000000",
+          "0x3ff0000000000000"
+        ]
+      ],
+      "nutation_matrix_hex": [
+        [
+          "0x3feffffffec67c9a",
+          "0x3f103ec6b83bac9a",
+          "0x3efc2c3258262f9d"
+        ],
+        [
+          "0xbf103ed3a14c532e",
+          "0x3feffffffec25352",
+          "0x3efd5428c1a58000"
+        ],
+        [
+          "0xbefc2bbb3a21f6bf",
+          "0xbefd549b2bcf0000",
+          "0x3fefffffff98a208"
+        ]
+      ],
+      "teme_to_gcrs_skyfield": {
+        "position_hex": [
+          "0x40b0e0e9df2121ef",
+          "0xc0b62e170079f009",
+          "0x40a913ea330bb6cb"
+        ],
+        "velocity_hex": [
+          "0xbff3bf3cf88855df",
+          "0x4016b61226b1232e",
+          "0x401c0c6ab199ec14"
+        ]
+      },
+      "teme_to_gcrs_direct": {
+        "position_hex": [
+          "0x40b0e0e9df2121ef",
+          "0xc0b62e170079f008",
+          "0x40a913ea330bb6ca"
+        ],
+        "velocity_hex": [
+          "0xbff3bf3cf88855de",
+          "0x4016b61226b1232c",
+          "0x401c0c6ab199ec14"
+        ]
+      },
+      "gcrs_to_itrs_skyfield_hex": [
+        "0x40b8e02942dd0e26",
+        "0x40a924736b315b42",
+        "0x40a91415cc51b31e"
+      ],
+      "gcrs_to_itrs_direct_hex": [
+        "0x40b8e02942dd0e27",
+        "0x40a924736b315b42",
+        "0x40a91415cc51b31e"
+      ],
+      "itrs_to_gcrs_hex": [
+        "0xc0b2bf0fcde9725c",
+        "0xc0b4a04b6a0a2416",
+        "0x40a91372147d4742"
+      ]
+    },
+    {
+      "calendar": {
+        "year": 2018,
+        "month": 7,
+        "day": 3,
+        "hour": 19,
+        "minute": 25,
+        "second": 57,
+        "microsecond": 304128
+      },
+      "unix_micros": 1530645957304128,
+      "jd_whole_hex": "0x4142c15f80000000",
+      "tt_jd_hex": "0x4142c15fa7be31ab",
+      "ut1_jd_hex": "0x4142c15fa7a3fb8e",
+      "tdb_jd_hex": "0x4142c15fa7be31ac",
+      "tt_fraction_hex": "0x3fd3df18d583c5a5",
+      "ut1_fraction_hex": "0x3fd3d1fdc73fb771",
+      "tdb_fraction_hex": "0x3fd3df18d5c989a9",
+      "delta_t_seconds_hex": "0x4051472b4eb8b98e",
+      "gmst_radians_hex": "0x400dc6d530dcce6a",
+      "gast_radians_hex": "0x400dc6b62c425b6f",
+      "mean_obliquity_radians_hex": "0x3fda2de2815e96bd",
+      "nutation_dpsi_hex": "0xbf10e80973a469c4",
+      "nutation_deps_hex": "0xbefe803145bb8f27",
+      "precession_matrix_hex": [
+        [
+          "0x3fefffeaa8c89dd7",
+          "0xbf70f29a41f2d681",
+          "0xbf5d748e0f0e46e1"
+        ],
+        [
+          "0x3f70f29a44c9e754",
+          "0x3fefffee0c66fc96",
+          "0xbecf01d94cfa0000"
+        ],
+        [
+          "0x3f5d748df4e8fa55",
+          "0xbecf649549160000",
+          "0x3feffffc9c61a13c"
+        ]
+      ],
+      "nutation_matrix_hex": [
+        [
+          "0x3feffffffee22c80",
+          "0x3f0f05f015d966a7",
+          "0x3efae5b4cde70905"
+        ],
+        [
+          "0xbf0f0609b8bac6d1",
+          "0x3feffffffed53e6c",
+          "0x3efe7ffd1e73c000"
+        ],
+        [
+          "0xbefae53e8653c3ff",
+          "0xbefe80656bcd4000",
+          "0x3fefffffff98a49e"
+        ]
+      ],
+      "teme_to_gcrs_skyfield": {
+        "position_hex": [
+          "0x40b0cf2631704e52",
+          "0xc0b63fefaabf5c19",
+          "0x40a904630afcbda3"
+        ],
+        "velocity_hex": [
+          "0xbff32b48d6993da8",
+          "0x4016bb373601ad0a",
+          "0x401c0ea9ed7716dd"
+        ]
+      },
+      "teme_to_gcrs_direct": {
+        "position_hex": [
+          "0x40b0cf2631704e53",
+          "0xc0b63fefaabf5c19",
+          "0x40a904630afcbda4"
+        ],
+        "velocity_hex": [
+          "0xbff32b48d6993da8",
+          "0x4016bb373601ad0a",
+          "0x401c0ea9ed7716dd"
+        ]
+      },
+      "gcrs_to_itrs_skyfield_hex": [
+        "0xc0805f1fea2c1c01",
+        "0x40bbc8601f35a07d",
+        "0x40a923acd8516395"
+      ],
+      "gcrs_to_itrs_direct_hex": [
+        "0xc0805f1fea2c1c04",
+        "0x40bbc8601f35a07d",
+        "0x40a923acd8516395"
+      ],
+      "itrs_to_gcrs_hex": [
+        "0xc0ba379d1ed933a4",
+        "0x40a2cb9fe665d707",
+        "0x40a92bf4009bae3d"
+      ]
+    },
+    {
+      "calendar": {
+        "year": 2020,
+        "month": 6,
+        "day": 24,
+        "hour": 12,
+        "minute": 34,
+        "second": 56,
+        "microsecond": 0
+      },
+      "unix_micros": 1593002096000000,
+      "jd_whole_hex": "0x4142c2c880000000",
+      "tt_jd_hex": "0x4142c2c883352a84",
+      "ut1_jd_hex": "0x4142c2c8831ad5d1",
+      "tdb_jd_hex": "0x4142c2c883352a8b",
+      "tt_fraction_hex": "0x3f99a95421c04429",
+      "ut1_fraction_hex": "0x3f98d6ae89b96cd0",
+      "tdb_fraction_hex": "0x3f99a9545bdd4fd9",
+      "delta_t_seconds_hex": "0x40515b54fed04e7d",
+      "gmst_radians_hex": "0x3ffc71c6e48edb89",
+      "gast_radians_hex": "0x3ffc7178744910c9",
+      "mean_obliquity_radians_hex": "0x3fda2dcfafb79816",
+      "nutation_dpsi_hex": "0xbf156065da6fa30c",
+      "nutation_deps_hex": "0xbebb02277ae53feb",
+      "precession_matrix_hex": [
+        [
+          "0x3fefffe5db99d712",
+          "0xbf72c1f1843b3a4b",
+          "0xbf604ce1abb42da5"
+        ],
+        [
+          "0x3f72c1f187b4d99f",
+          "0x3fefffea0268b60a",
+          "0xbed300d146e90000"
+        ],
+        [
+          "0x3f604ce19bb53f12",
+          "0xbed33764e6930000",
+          "0x3feffffbd9312102"
+        ]
+      ],
+      "nutation_matrix_hex": [
+        [
+          "0x3feffffffe370afe",
+          "0x3f139cedb47a7b04",
+          "0x3f01011ee667713b"
+        ],
+        [
+          "0xbf139cee9a1bd103",
+          "0x3feffffffe7f26db",
+          "0x3ebafcf173980000"
+        ],
+        [
+          "0xbf01011ac2f8b494",
+          "0xbebb075d80ac0000",
+          "0x3fefffffffb788f3"
+        ]
+      ],
+      "teme_to_gcrs_skyfield": {
+        "position_hex": [
+          "0x40b0cd39b2385eed",
+          "0xc0b641bfc320bd95",
+          "0x40a9031b11fcb5c2"
+        ],
+        "velocity_hex": [
+          "0xbff31bacb65fc382",
+          "0x4016bbf455f7794f",
+          "0x401c0ebb0f4f69b2"
+        ]
+      },
+      "teme_to_gcrs_direct": {
+        "position_hex": [
+          "0x40b0cd39b2385eed",
+          "0xc0b641bfc320bd94",
+          "0x40a9031b11fcb5c2"
+        ],
+        "velocity_hex": [
+          "0xbff31bacb65fc382",
+          "0x4016bbf455f7794e",
+          "0x401c0ebb0f4f69b1"
+        ]
+      },
+      "gcrs_to_itrs_skyfield_hex": [
+        "0xc0b91d6d6da2a015",
+        "0xc0a81a7533d75c4d",
+        "0x40a924f8ad316680"
+      ],
+      "gcrs_to_itrs_direct_hex": [
+        "0xc0b91d6d6da2a015",
+        "0xc0a81a7533d75c4d",
+        "0x40a924f8ad316680"
+      ],
+      "itrs_to_gcrs_hex": [
+        "0x40b25bbf89618c84",
+        "0x40b4fe2e2acb6ad2",
+        "0x40a901ae272aa2ca"
+      ]
+    },
+    {
+      "calendar": {
+        "year": 2023,
+        "month": 11,
+        "day": 15,
+        "hour": 6,
+        "minute": 0,
+        "second": 0,
+        "microsecond": 500000
+      },
+      "unix_micros": 1700028000500000,
+      "jd_whole_hex": "0x4142c53380000000",
+      "tt_jd_hex": "0x4142c533e01a6da5",
+      "ut1_jd_hex": "0x4142c533e0003190",
+      "tdb_jd_hex": "0x4142c533e01a6d85",
+      "tt_fraction_hex": "0x3fe8069b694db950",
+      "ut1_fraction_hex": "0x3fe8000c63e89628",
+      "tdb_fraction_hex": "0x3fe8069b615bfde6",
+      "delta_t_seconds_hex": "0x40514b1b39abb278",
+      "gmst_radians_hex": "0x40041de47801cdfa",
+      "gast_radians_hex": "0x40041dd1363050b7",
+      "mean_obliquity_radians_hex": "0x3fda2daf62e070a3",
+      "nutation_dpsi_hex": "0xbf04fddd9471840d",
+      "nutation_deps_hex": "0x3f04ad771e3dc14c",
+      "precession_matrix_hex": [
+        [
+          "0x3fefffdc7b59fa09",
+          "0xbf75dd373b2f1c04",
+          "0xbf62ffe309ec2592"
+        ],
+        [
+          "0x3f75dd373fe511d7",
+          "0x3fefffe21f4be2e0",
+          "0xbed9d6dbe39b0000"
+        ],
+        [
+          "0x3f62ffe2f43d03b4",
+          "0xbeda1654db760000",
+          "0x3feffffa5c0e1721"
+        ]
+      ],
+      "nutation_matrix_hex": [
+        [
+          "0x3fefffffff91d668",
+          "0x3f03428aa1fcff09",
+          "0x3ef0b2aa57bf8711"
+        ],
+        [
+          "0xbf0342750d5f998f",
+          "0x3fefffffff385fe6",
+          "0xbf04ad812ae96000"
+        ],
+        [
+          "0xbef0b30de77862d7",
+          "0x3f04ad6d111cc000",
+          "0x3fefffffff83ae70"
+        ]
+      ],
+      "teme_to_gcrs_skyfield": {
+        "position_hex": [
+          "0x40b0ca02dc343976",
+          "0xc0b644e0f9e75373",
+          "0x40a900987347b703"
+        ],
+        "velocity_hex": [
+          "0xbff30011f0d9cdf5",
+          "0x4016bd2c6c2b01e2",
+          "0x401c0eea1a6ffe86"
+        ]
+      },
+      "teme_to_gcrs_direct": {
+        "position_hex": [
+          "0x40b0ca02dc343977",
+          "0xc0b644e0f9e75372",
+          "0x40a900987347b704"
+        ],
+        "velocity_hex": [
+          "0xbff30011f0d9cdf4",
+          "0x4016bd2c6c2b01e2",
+          "0x401c0eea1a6ffe86"
+        ]
+      },
+      "gcrs_to_itrs_skyfield_hex": [
+        "0xc0bab37d6ad41391",
+        "0x409fbb207adab791",
+        "0x40a9278309f637c0"
+      ],
+      "gcrs_to_itrs_direct_hex": [
+        "0xc0bab37d6ad41392",
+        "0x409fbb207adab790",
+        "0x40a9278309f637c0"
+      ],
+      "itrs_to_gcrs_hex": [
+        "0xc05e917d7eeb8c10",
+        "0x40bbde1a8a0a350e",
+        "0x40a9141b0acc48c4"
+      ]
+    }
+  ],
+  "geodetic_to_ecef": {
+    "input_hex": [
+      "0x4049bd2bd3c36113",
+      "0xbf589374bc6a7efa",
+      "0x3fa78d4fdf3b645a"
+    ],
+    "ecef_km_hex": [
+      "0x40af1933caa529a8",
+      "0xbfbaada17713aa64",
+      "0x40b366de108ffee4"
+    ]
+  },
+  "ecef_to_geodetic": {
+    "input_km_hex": [
+      "0x40b0e10000000000",
+      "0xc0b62e0000000000",
+      "0x40a9140000000000"
+    ],
+    "geodetic_hex": [
+      "0x403856f6122fcb50",
+      "0xc04a5d42a8fffd7e",
+      "0x4096a5db7a5205c5"
+    ]
+  },
+  "leap_seconds_cases": [
+    {
+      "year": 1999,
+      "month": 1,
+      "day": 1,
+      "value_hex": "0x4040000000000000"
+    },
+    {
+      "year": 2017,
+      "month": 6,
+      "day": 1,
+      "value_hex": "0x4042800000000000"
+    },
+    {
+      "year": 2024,
+      "month": 1,
+      "day": 1,
+      "value_hex": "0x4042800000000000"
+    }
+  ],
+  "leap_second_table": {
+    "source": "IERS Bulletin C (TAI-UTC), bundled in sidereon-core",
+    "first_mjd": 41317,
+    "last_mjd": 57754,
+    "entries": 28
+  },
+  "ut1_coverage": {
+    "source": "IERS Earth Orientation Parameters (UT1-UTC), bundled",
+    "first_mjd": 41684,
+    "last_mjd": 61589,
+    "first_jd_tt_hex": "0x4142a0ea4010c1d7",
+    "last_jd_tt_hex": "0x4142c7cac01a3d1a",
+    "entries": 19906
+  },
+  "gnss_week_tow": {
+    "system": "GPST",
+    "input_week": 100,
+    "input_tow_s_hex": "0x4125180000000000",
+    "normalized_week": 101,
+    "normalized_tow_s_hex": "0x40f5180000000000",
+    "unrolled_week_2_rollovers": 2148
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "source": "pass_finder_arc",
+  "tle": {
+    "line1": "1 25544U 98067A   18184.80969102  .00001614  00000-0  31745-4 0  9993",
+    "line2": "2 25544  51.6414 295.8524 0003435 262.6267 204.2868 15.54005638121106"
+  },
+  "station": {
+    "latitude_deg": 51.5074,
+    "longitude_deg": -0.1278,
+    "altitude_m": 80.0
+  },
+  "window": {
+    "start_unix_us": 1530619200000000,
+    "end_unix_us": 1530705600000000
+  },
+  "options": {
+    "elevation_mask_deg": 0.0,
+    "coarse_step_seconds": 10.0,
+    "time_tolerance_seconds": 0.001
+  },
+  "passes": [
+    {
+      "aos_unix_us": 1530672731076964,
+      "los_unix_us": 1530673217359923,
+      "culmination_unix_us": 1530672973724542,
+      "max_elevation_deg": 8.61830791726523,
+      "max_elevation_deg_hex": "0x40213c92daf7062a"
+    },
+    {
+      "aos_unix_us": 1530678405624694,
+      "los_unix_us": 1530679033205260,
+      "culmination_unix_us": 1530678718589335,
+      "max_elevation_deg": 36.35562767307705,
+      "max_elevation_deg_hex": "0x40422d853524b592"
+    },
+    {
+      "aos_unix_us": 1530684175282896,
+      "los_unix_us": 1530684821877746,
+      "culmination_unix_us": 1530684498320405,
+      "max_elevation_deg": 88.48786827110315,
+      "max_elevation_deg_hex": "0x40561f393bd74939"
+    },
+    {
+      "aos_unix_us": 1530689966059874,
+      "los_unix_us": 1530690611783751,
+      "culmination_unix_us": 1530690289415382,
+      "max_elevation_deg": 79.06400509966448,
+      "max_elevation_deg_hex": "0x4053c418a8d87584"
+    },
+    {
+      "aos_unix_us": 1530695755659484,
+      "los_unix_us": 1530696368109435,
+      "culmination_unix_us": 1530696062786566,
+      "max_elevation_deg": 27.236730728087938,
+      "max_elevation_deg_hex": "0x403b3c9a628f1891"
+    },
+    {
+      "aos_unix_us": 1530701594809874,
+      "los_unix_us": 1530702000124204,
+      "culmination_unix_us": 1530701797783611,
+      "max_elevation_deg": 5.063216217846758,
+      "max_elevation_deg_hex": "0x401440bbc090ea20"
+    }
+  ]
+}
