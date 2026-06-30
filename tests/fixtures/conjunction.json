@@ -1,0 +1,192 @@
+{
+  "source": "conjunction_reference_self_validates",
+  "object1": {
+    "position_km_hex": [
+      "0x4077a654562e09ff",
+      "0x40b0d1b8cd962068",
+      "0x40b678c47e6b3fea"
+    ],
+    "velocity_km_s_hex": [
+      "0x4002e2eb3d02f358",
+      "0x4016524288f7c708",
+      "0xc0114a15ddd19bad"
+    ],
+    "covariance_km2_hex": [
+      [
+        "0x404649b252a580b2",
+        "0x40546b3611a50b01",
+        "0xc050f799ddd824f8"
+      ],
+      [
+        "0x40546b3611a50b01",
+        "0x4063ce8246ea9427",
+        "0xc06013bdd2761b5f"
+      ],
+      [
+        "0xc050f799ddd824f8",
+        "0xc06013bdd2761b82",
+        "0x405a5f650ca20632"
+      ]
+    ]
+  },
+  "object2": {
+    "position_km_hex": [
+      "0x40776849f912a5f5",
+      "0x40b0d38f9c94f69d",
+      "0x40b677216312f4cf"
+    ],
+    "velocity_km_s_hex": [
+      "0xc0158d70a9469c02",
+      "0xc00f931a6bef9ae1",
+      "0x400a9522d700be7d"
+    ],
+    "covariance_km2_hex": [
+      [
+        "0x40027c40f5df5210",
+        "0x3ffb2f52226218ed",
+        "0xbff6ac1972fffc94"
+      ],
+      [
+        "0x3ffb2f52226218ed",
+        "0x3ff3fe412f82c349",
+        "0xbff0aaf948eb0a9d"
+      ],
+      [
+        "0xbff6ac1972fffc94",
+        "0xbff0aaf948eb0a9d",
+        "0x3febd0fb84a8c0f7"
+      ]
+    ]
+  },
+  "hard_body_radius_km_hex": "0x3f947ae147ae147b",
+  "frame": {
+    "x_hat_hex": [
+      "0xbfeb02f4662154bd",
+      "0x3fd9a18697bda8c9",
+      "0xbfd6d0d7b7022dc4"
+    ],
+    "y_hat_hex": [
+      "0xbfe12434cd293f4e",
+      "0xbfe51337d14ac4df",
+      "0x3fe0e9730c7fc1bc"
+    ],
+    "z_hat_hex": [
+      "0x3f97b01cdfbe0b50",
+      "0xbfe462ea6c8a0065",
+      "0xbfe8a791034bfaef"
+    ],
+    "relative_position_km_hex": [
+      "0xc00f052e8db20500",
+      "0x3ffd6cefed635000",
+      "0xbffa31b584b1b000"
+    ],
+    "relative_velocity_km_s_hex": [
+      "0xc01efee647c815ae",
+      "0xc0230de7df77ca3c",
+      "0x401e94a74951faec"
+    ],
+    "miss_km_hex": "0x40125f76bb635a77",
+    "relative_speed_km_s_hex": "0x402cee85c45b2fca"
+  },
+  "collision_probability": [
+    {
+      "method": "FOSTER_EQUAL_AREA",
+      "pc_hex": "0x3efc5fe7e374e761",
+      "miss_km_hex": "0x40125f76bb635a77",
+      "relative_speed_km_s_hex": "0x402cee85c45b2fca",
+      "sigma_x_km_hex": "0x400b2f8b338c261f",
+      "sigma_z_km_hex": "0x3fe9dc263a96e94c"
+    },
+    {
+      "method": "FOSTER_NUMERICAL",
+      "pc_hex": "0x3efc5fed59662e48",
+      "miss_km_hex": "0x40125f76bb635a77",
+      "relative_speed_km_s_hex": "0x402cee85c45b2fca",
+      "sigma_x_km_hex": "0x400b2f8b338c261f",
+      "sigma_z_km_hex": "0x3fe9dc263a96e94c"
+    },
+    {
+      "method": "ALFANO_2005",
+      "pc_hex": "0x3efc5edd3b73ec59",
+      "miss_km_hex": "0x40125f76bb635a77",
+      "relative_speed_km_s_hex": "0x402cee85c45b2fca",
+      "sigma_x_km_hex": "0x400b2f8b338c261f",
+      "sigma_z_km_hex": "0x3fe9dc263a96e94c"
+    }
+  ],
+  "combined_covariance_km2_hex": [
+    [
+      "0x40477176620375d3",
+      "0x4054d7f35a2e9365",
+      "0xc051524a43a424ea"
+    ],
+    [
+      "0x4054d7f35a2e9365",
+      "0x4063f67ec94999ae",
+      "0xc0603513c507f174"
+    ],
+    [
+      "0xc051524a43a424ea",
+      "0xc0603513c507f197",
+      "0x405a970703ab57b4"
+    ]
+  ],
+  "encounter_plane_covariance_hex": [
+    [
+      "0x4026fc81fd4426f9",
+      "0xbfe8a335dde393c0"
+    ],
+    [
+      "0xbfe8a335dde380c4",
+      "0x3fe6a5df1933e61c"
+    ]
+  ],
+  "rtn": {
+    "position_km_hex": [
+      "0x40bb581f7ced9168",
+      "0x40934a0000000000",
+      "0xc06f566666666666"
+    ],
+    "velocity_km_s_hex": [
+      "0x3ff3333333333333",
+      "0x401d99999999999a",
+      "0x3fd3333333333333"
+    ],
+    "covariance_rtn_hex": [
+      [
+        "0x4010000000000000",
+        "0x3fe0000000000000",
+        "0x3fb999999999999a"
+      ],
+      [
+        "0x3fe0000000000000",
+        "0x4022000000000000",
+        "0x3fc999999999999a"
+      ],
+      [
+        "0x3fb999999999999a",
+        "0x3fc999999999999a",
+        "0x4030000000000000"
+      ]
+    ],
+    "covariance_eci_hex": [
+      [
+        "0x4010077f74cce7ac",
+        "0xbfd92b0043adb450",
+        "0x3fe26dc422b0767a"
+      ],
+      [
+        "0xbfd92b0043adb44a",
+        "0x402207fb1ad4c218",
+        "0xbfb9ef5fd1874930"
+      ],
+      [
+        "0x3fe26dc422b0767a",
+        "0xbfb9ef5fd1874930",
+        "0x402ff4452ac4ca0f"
+      ]
+    ],
+    "symmetric": true,
+    "positive_semidefinite": true
+  }
+}

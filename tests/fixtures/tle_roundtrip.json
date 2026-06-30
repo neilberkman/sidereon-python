@@ -1,0 +1,40 @@
+{
+  "source": "iss_round_trip_fixture_self_validates",
+  "opsmode": "afspc",
+  "tle": {
+    "line1": "1 25544U 98067A   18184.80969102  .00001614  00000-0  31745-4 0  9993",
+    "line2": "2 25544  51.6414 295.8524 0003435 262.6267 204.2868 15.54005638121106"
+  },
+  "encoded": {
+    "line1": "1 25544U 98067A   18184.80969102  .00001614  00000-0  31745-4 0  9993",
+    "line2": "2 25544  51.6414 295.8524 0003435 262.6267 204.2868 15.54005638121106"
+  },
+  "elements": {
+    "catalog_number": "25544",
+    "classification": "U",
+    "international_designator": "98067A",
+    "epoch_year": 2018,
+    "epoch_day_of_year": 184.80969102,
+    "inclination_deg": 51.6414,
+    "raan_deg": 295.8524,
+    "eccentricity": 0.0003435,
+    "arg_perigee_deg": 262.6267,
+    "mean_anomaly_deg": 204.2868,
+    "mean_motion": 15.54005638,
+    "mean_motion_dot": 0.00001614,
+    "mean_motion_double_dot": 0.0,
+    "bstar": 0.000031745,
+    "rev_number": 12110
+  },
+  "checksum_case": {
+    "line1": "1 25544U 98067A   18184.80969102  .00001614  00000-0  31745-4 0  9990",
+    "line2": "2 25544  51.6414 295.8524 0003435 262.6267 204.2868 15.54005638121106",
+    "warnings": [
+      {
+        "line_label": "line 1",
+        "expected": 0,
+        "computed": 3
+      }
+    ]
+  }
+}

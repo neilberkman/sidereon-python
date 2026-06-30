@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: rustfmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: cargo fmt --check
+        run: cargo fmt --check
+      - name: cargo clippy -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+
+  python:
+    name: ruff + build + pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Create venv + install tooling
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip maturin ruff pytest
+      - name: ruff check
+        run: |
+          . .venv/bin/activate
+          ruff check .
+      - name: ruff format --check
+        run: |
+          . .venv/bin/activate
+          ruff format --check .
+      - name: Build the extension (maturin develop)
+        run: |
+          . .venv/bin/activate
+          maturin develop
+      - name: pytest
+        run: |
+          . .venv/bin/activate
+          # The published sidereon-core crate ships without its test fixtures, so
+          # tests that import _helpers.CORE_FIXTURES cannot resolve them in CI
+          # (there is no sibling core checkout and Cargo.lock pins the registry
+          # release, not a git rev). Run the binding's own tests and every
+          # fixture-independent test; the fixture-dependent files are exercised
+          # against a local core checkout during development. The ignore list is
+          # derived from the source so it never goes stale.
+          mapfile -t ignore < <(grep -rl CORE_FIXTURES tests/test_*.py | sed 's/^/--ignore=/')
+          pytest "${ignore[@]}"

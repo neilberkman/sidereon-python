@@ -1,0 +1,3020 @@
+//! RTK baseline binding: static float and validated fixed solves.
+//!
+//! The RTK epoch input is a structured record (per-satellite base/rover
+//! code+phase plus transmit-time satellite positions) that the engine builds
+//! from RINEX+SP3 upstream. This binding only MARSHALS that record: Python dicts
+//! are deserialized into mirror structs and rebuilt into the `sidereon-core`
+//! input types, then handed to `sidereon::solve_rtk_float` /
+//! `sidereon::solve_rtk_fixed`. No modeling happens here.
+
+use std::collections::BTreeMap;
+
+use numpy::PyArray1;
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+use pyo3::types::{PyAny, PyModule};
+
+use sidereon_core::rtk::{BaselineReferenceSelection, CycleSlipReceiver};
+use sidereon_core::rtk_filter::defaults::{
+    AMBIGUITY_TOL_M, MAX_ITERATIONS, PARTIAL_MIN_AMBIGUITIES, POSITION_TOL_M, RATIO_THRESHOLD,
+};
+use sidereon_core::rtk_filter::{
+    fix_wide_lane_rtk_arc as core_fix_wide_lane_rtk_arc,
+    prepare_ionosphere_free_rtk_arc as core_prepare_ionosphere_free_rtk_arc,
+    solve_moving_baseline as core_solve_moving_baseline, solve_rtk_arc as core_solve_rtk_arc,
+    solve_static_rtk_arc as core_solve_static_rtk_arc, AmbiguityScale, AmbiguitySet,
+    CycleSlipOptions, CycleSlipPolicy, CycleSlipSplitArc, DynamicsModel, Epoch, FilterState,
+    FixedSolveOpts, FloatBaselineSolution, FloatResidual, FloatSolveOpts, InnovationScreen,
+    InnovationScreenOpts, IntegerSearchMeta, IntegerStatus as RtkIntegerStatus, MeasModel,
+    MovingBaselineEpoch, MovingBaselineEpochSolution, MovingBaselineOpts, MovingBaselineStatus,
+    ResidualValidationOpts, RtkArcConfig, RtkArcEpoch, RtkArcEpochSolution, RtkArcObservation,
+    RtkArcPreprocessing, RtkArcSolution, RtkDualCycleSlipConfig, RtkDualFrequencyArcEpoch,
+    RtkDualFrequencyObservation, RtkDualFrequencySatelliteObservation, RtkIonosphereFreeArcConfig,
+    RtkIonosphereFreeArcSolution, RtkStaticArcConfig, RtkStaticArcSolution, RtkWideLaneArcConfig,
+    RtkWideLaneArcSolution, SatMeas, SearchOpts, StochasticModel, UpdateOpts,
+    ValidatedFixedBaselineSolution, ValidatedFixedSolveOpts, WideLaneOptions,
+};
+
+use crate::marshal::option_py_or_default;
+use crate::{np_array, to_solve_err};
+
+// --- input value/config objects -------------------------------------------
+
+/// Integer ambiguity-fix status.
+#[pyclass(module = "sidereon._sidereon", name = "IntegerStatus", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq)]
+#[allow(non_camel_case_types)]
+#[allow(clippy::upper_case_acronyms)]
+pub(crate) enum PyIntegerStatus {
+    /// The ambiguity search accepted an integer fix.
+    FIXED,
+    /// The ambiguity search rejected the integer fix.
+    NOT_FIXED,
+}
+
+impl From<RtkIntegerStatus> for PyIntegerStatus {
+    fn from(status: RtkIntegerStatus) -> Self {
+        match status {
+            RtkIntegerStatus::Fixed => PyIntegerStatus::FIXED,
+            RtkIntegerStatus::NotFixed => PyIntegerStatus::NOT_FIXED,
+        }
+    }
+}
+
+#[pymethods]
+impl PyIntegerStatus {
+    fn __repr__(&self) -> &'static str {
+        match self {
+            PyIntegerStatus::FIXED => "IntegerStatus.FIXED",
+            PyIntegerStatus::NOT_FIXED => "IntegerStatus.NOT_FIXED",
+        }
+    }
+}
+
+/// RTK stochastic measurement weighting model.
+#[pyclass(module = "sidereon._sidereon", name = "RtkStochasticModel", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum PyRtkStochasticModel {
+    /// Simple sigma model, optionally elevation weighted.
+    SIMPLE,
+    /// RTKLIB-compatible stochastic model.
+    RTKLIB,
+}
+
+impl PyRtkStochasticModel {
+    fn from_label(value: &str) -> PyResult<Self> {
+        match value {
+            "simple" => Ok(Self::SIMPLE),
+            "rtklib" => Ok(Self::RTKLIB),
+            other => Err(PyValueError::new_err(format!(
+                "unknown stochastic model {other:?}; expected \"simple\" or \"rtklib\""
+            ))),
+        }
+    }
+}
+
+impl From<StochasticModel> for PyRtkStochasticModel {
+    fn from(model: StochasticModel) -> Self {
+        match model {
+            StochasticModel::Simple { .. } => Self::SIMPLE,
+            StochasticModel::Rtklib => Self::RTKLIB,
+        }
+    }
+}
+
+#[pymethods]
+impl PyRtkStochasticModel {
+    /// Stable lowercase selector accepted as a string alias.
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            PyRtkStochasticModel::SIMPLE => "simple",
+            PyRtkStochasticModel::RTKLIB => "rtklib",
+        }
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            PyRtkStochasticModel::SIMPLE => "RtkStochasticModel.SIMPLE",
+            PyRtkStochasticModel::RTKLIB => "RtkStochasticModel.RTKLIB",
+        }
+    }
+}
+
+fn extract_stochastic_model(obj: &Bound<'_, PyAny>) -> PyResult<PyRtkStochasticModel> {
+    if let Ok(model) = obj.extract::<PyRtkStochasticModel>() {
+        return Ok(model);
+    }
+    PyRtkStochasticModel::from_label(&obj.extract::<String>()?)
+}
+
+/// One satellite's base/rover measurements for an RTK epoch.
+#[pyclass(module = "sidereon._sidereon", name = "RtkSatMeasurement")]
+#[derive(Clone)]
+pub struct PyRtkSatMeasurement {
+    inner: SatMeas,
+}
+
+#[pymethods]
+impl PyRtkSatMeasurement {
+    /// Create one base/rover code+phase measurement row.
+    #[new]
+    #[pyo3(signature = (
+        sat,
+        sd_ambiguity_id,
+        base_code_m,
+        base_phase_m,
+        rover_code_m,
+        rover_phase_m,
+        base_tx_pos,
+        rover_tx_pos,
+        pos,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        sat: String,
+        sd_ambiguity_id: String,
+        base_code_m: f64,
+        base_phase_m: f64,
+        rover_code_m: f64,
+        rover_phase_m: f64,
+        base_tx_pos: [f64; 3],
+        rover_tx_pos: [f64; 3],
+        pos: [f64; 3],
+    ) -> Self {
+        Self {
+            inner: SatMeas {
+                sat,
+                sd_ambiguity_id,
+                base_code_m,
+                base_phase_m,
+                rover_code_m,
+                rover_phase_m,
+                base_tx_pos,
+                rover_tx_pos,
+                pos,
+            },
+        }
+    }
+
+    #[getter]
+    fn sat(&self) -> &str {
+        &self.inner.sat
+    }
+
+    #[getter]
+    fn sd_ambiguity_id(&self) -> &str {
+        &self.inner.sd_ambiguity_id
+    }
+
+    #[getter]
+    fn base_code_m(&self) -> f64 {
+        self.inner.base_code_m
+    }
+
+    #[getter]
+    fn base_phase_m(&self) -> f64 {
+        self.inner.base_phase_m
+    }
+
+    #[getter]
+    fn rover_code_m(&self) -> f64 {
+        self.inner.rover_code_m
+    }
+
+    #[getter]
+    fn rover_phase_m(&self) -> f64 {
+        self.inner.rover_phase_m
+    }
+
+    #[getter]
+    fn base_tx_pos(&self) -> [f64; 3] {
+        self.inner.base_tx_pos
+    }
+
+    #[getter]
+    fn rover_tx_pos(&self) -> [f64; 3] {
+        self.inner.rover_tx_pos
+    }
+
+    #[getter]
+    fn pos(&self) -> [f64; 3] {
+        self.inner.pos
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkSatMeasurement(sat={:?}, sd_ambiguity_id={:?})",
+            self.inner.sat, self.inner.sd_ambiguity_id
+        )
+    }
+}
+
+impl PyRtkSatMeasurement {
+    fn to_core(&self) -> SatMeas {
+        self.inner.clone()
+    }
+}
+
+/// One RTK epoch with reference and non-reference satellite rows.
+#[pyclass(module = "sidereon._sidereon", name = "RtkEpoch")]
+#[derive(Clone)]
+pub struct PyRtkEpoch {
+    inner: Epoch,
+}
+
+#[pymethods]
+impl PyRtkEpoch {
+    /// Create one RTK epoch.
+    #[new]
+    #[pyo3(signature = (references, nonref, dt_s, velocity_mps=None))]
+    fn new(
+        py: Python<'_>,
+        references: Vec<Py<PyRtkSatMeasurement>>,
+        nonref: Vec<Py<PyRtkSatMeasurement>>,
+        dt_s: f64,
+        velocity_mps: Option<[f64; 3]>,
+    ) -> Self {
+        let references = references
+            .iter()
+            .map(|row| row.borrow(py).to_core())
+            .collect();
+        let nonref = nonref.iter().map(|row| row.borrow(py).to_core()).collect();
+        Self {
+            inner: Epoch {
+                references,
+                nonref,
+                velocity_mps,
+                dt_s,
+            },
+        }
+    }
+
+    #[getter]
+    fn reference_count(&self) -> usize {
+        self.inner.references.len()
+    }
+
+    #[getter]
+    fn nonref_count(&self) -> usize {
+        self.inner.nonref.len()
+    }
+
+    #[getter]
+    fn velocity_mps(&self) -> Option<[f64; 3]> {
+        self.inner.velocity_mps
+    }
+
+    #[getter]
+    fn dt_s(&self) -> f64 {
+        self.inner.dt_s
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkEpoch(references={}, nonref={}, dt_s={:.3})",
+            self.inner.references.len(),
+            self.inner.nonref.len(),
+            self.inner.dt_s
+        )
+    }
+}
+
+impl PyRtkEpoch {
+    fn to_core(&self) -> Epoch {
+        self.inner.clone()
+    }
+}
+
+/// RTK measurement weighting and correction model.
+#[pyclass(module = "sidereon._sidereon", name = "RtkMeasurementModel")]
+#[derive(Clone, Copy)]
+pub struct PyRtkMeasurementModel {
+    inner: MeasModel,
+}
+
+#[pymethods]
+impl PyRtkMeasurementModel {
+    /// Create an RTK measurement model.
+    #[new]
+    #[pyo3(signature = (
+        code_sigma_m,
+        phase_sigma_m,
+        sagnac=true,
+        stochastic=PyRtkStochasticModel::SIMPLE,
+        elevation_weighting=false,
+    ))]
+    fn new(
+        code_sigma_m: f64,
+        phase_sigma_m: f64,
+        sagnac: bool,
+        #[pyo3(from_py_with = extract_stochastic_model)] stochastic: PyRtkStochasticModel,
+        elevation_weighting: bool,
+    ) -> PyResult<Self> {
+        let stochastic = match stochastic {
+            PyRtkStochasticModel::SIMPLE => StochasticModel::Simple {
+                elevation_weighting,
+            },
+            PyRtkStochasticModel::RTKLIB => StochasticModel::Rtklib,
+        };
+        Ok(Self {
+            inner: MeasModel {
+                code_sigma_m,
+                phase_sigma_m,
+                sagnac,
+                stochastic,
+            },
+        })
+    }
+
+    #[getter]
+    fn code_sigma_m(&self) -> f64 {
+        self.inner.code_sigma_m
+    }
+
+    #[getter]
+    fn phase_sigma_m(&self) -> f64 {
+        self.inner.phase_sigma_m
+    }
+
+    #[getter]
+    fn sagnac(&self) -> bool {
+        self.inner.sagnac
+    }
+
+    #[getter]
+    fn stochastic(&self) -> PyRtkStochasticModel {
+        PyRtkStochasticModel::from(self.inner.stochastic)
+    }
+
+    #[getter]
+    fn elevation_weighting(&self) -> bool {
+        match self.inner.stochastic {
+            StochasticModel::Simple {
+                elevation_weighting,
+            } => elevation_weighting,
+            StochasticModel::Rtklib => false,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkMeasurementModel(code_sigma_m={:.3}, phase_sigma_m={:.5}, stochastic={:?})",
+            self.inner.code_sigma_m,
+            self.inner.phase_sigma_m,
+            self.stochastic().label()
+        )
+    }
+}
+
+/// Iteration controls for an RTK float solve.
+#[pyclass(module = "sidereon._sidereon", name = "RtkFloatOptions")]
+#[derive(Clone, Copy)]
+pub struct PyRtkFloatOptions {
+    inner: FloatSolveOpts,
+}
+
+#[pymethods]
+impl PyRtkFloatOptions {
+    /// Create RTK float solve controls.
+    #[new]
+    #[pyo3(signature = (position_tol_m=POSITION_TOL_M, ambiguity_tol_m=AMBIGUITY_TOL_M, max_iterations=MAX_ITERATIONS))]
+    fn new(position_tol_m: f64, ambiguity_tol_m: f64, max_iterations: usize) -> Self {
+        Self {
+            inner: FloatSolveOpts {
+                position_tol_m,
+                ambiguity_tol_m,
+                max_iterations,
+            },
+        }
+    }
+
+    #[getter]
+    fn position_tol_m(&self) -> f64 {
+        self.inner.position_tol_m
+    }
+
+    #[getter]
+    fn ambiguity_tol_m(&self) -> f64 {
+        self.inner.ambiguity_tol_m
+    }
+
+    #[getter]
+    fn max_iterations(&self) -> usize {
+        self.inner.max_iterations
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkFloatOptions(position_tol_m={:.3e}, ambiguity_tol_m={:.3e}, max_iterations={})",
+            self.inner.position_tol_m, self.inner.ambiguity_tol_m, self.inner.max_iterations
+        )
+    }
+}
+
+impl Default for PyRtkFloatOptions {
+    fn default() -> Self {
+        Self::new(POSITION_TOL_M, AMBIGUITY_TOL_M, MAX_ITERATIONS)
+    }
+}
+
+/// Iteration and integer-search controls for RTK fixed solving.
+#[pyclass(module = "sidereon._sidereon", name = "RtkFixedOptions")]
+#[derive(Clone, Copy)]
+pub struct PyRtkFixedOptions {
+    inner: FixedSolveOpts,
+}
+
+#[pymethods]
+impl PyRtkFixedOptions {
+    /// Create RTK fixed solve controls.
+    #[new]
+    #[pyo3(signature = (
+        position_tol_m=POSITION_TOL_M,
+        ambiguity_tol_m=AMBIGUITY_TOL_M,
+        max_iterations=MAX_ITERATIONS,
+        ratio_threshold=RATIO_THRESHOLD,
+        partial_ambiguity_resolution=false,
+        partial_min_ambiguities=PARTIAL_MIN_AMBIGUITIES,
+    ))]
+    fn new(
+        position_tol_m: f64,
+        ambiguity_tol_m: f64,
+        max_iterations: usize,
+        ratio_threshold: f64,
+        partial_ambiguity_resolution: bool,
+        partial_min_ambiguities: usize,
+    ) -> Self {
+        Self {
+            inner: FixedSolveOpts {
+                position_tol_m,
+                ambiguity_tol_m,
+                max_iterations,
+                ratio_threshold,
+                partial_ambiguity_resolution,
+                partial_min_ambiguities,
+            },
+        }
+    }
+
+    #[getter]
+    fn position_tol_m(&self) -> f64 {
+        self.inner.position_tol_m
+    }
+
+    #[getter]
+    fn ambiguity_tol_m(&self) -> f64 {
+        self.inner.ambiguity_tol_m
+    }
+
+    #[getter]
+    fn max_iterations(&self) -> usize {
+        self.inner.max_iterations
+    }
+
+    #[getter]
+    fn ratio_threshold(&self) -> f64 {
+        self.inner.ratio_threshold
+    }
+
+    #[getter]
+    fn partial_ambiguity_resolution(&self) -> bool {
+        self.inner.partial_ambiguity_resolution
+    }
+
+    #[getter]
+    fn partial_min_ambiguities(&self) -> usize {
+        self.inner.partial_min_ambiguities
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkFixedOptions(ratio_threshold={:.3}, partial_ambiguity_resolution={})",
+            self.inner.ratio_threshold, self.inner.partial_ambiguity_resolution
+        )
+    }
+}
+
+impl Default for PyRtkFixedOptions {
+    fn default() -> Self {
+        Self::new(
+            POSITION_TOL_M,
+            AMBIGUITY_TOL_M,
+            MAX_ITERATIONS,
+            RATIO_THRESHOLD,
+            false,
+            PARTIAL_MIN_AMBIGUITIES,
+        )
+    }
+}
+
+/// Residual validation controls for RTK fixed solving.
+#[pyclass(module = "sidereon._sidereon", name = "RtkResidualValidationOptions")]
+#[derive(Clone, Copy)]
+pub struct PyRtkResidualValidationOptions {
+    inner: ResidualValidationOpts,
+}
+
+#[pymethods]
+impl PyRtkResidualValidationOptions {
+    /// Create residual-validation controls.
+    #[new]
+    #[pyo3(signature = (threshold_sigma=None, max_exclusions=0))]
+    fn new(threshold_sigma: Option<f64>, max_exclusions: usize) -> Self {
+        Self {
+            inner: ResidualValidationOpts {
+                threshold_sigma,
+                max_exclusions,
+            },
+        }
+    }
+
+    #[getter]
+    fn threshold_sigma(&self) -> Option<f64> {
+        self.inner.threshold_sigma
+    }
+
+    #[getter]
+    fn max_exclusions(&self) -> usize {
+        self.inner.max_exclusions
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkResidualValidationOptions(threshold_sigma={:?}, max_exclusions={})",
+            self.inner.threshold_sigma, self.inner.max_exclusions
+        )
+    }
+}
+
+impl Default for PyRtkResidualValidationOptions {
+    fn default() -> Self {
+        Self::new(None, 0)
+    }
+}
+
+fn validated_fixed_opts_from_py(
+    py: Python<'_>,
+    float_options: Option<&Py<PyRtkFloatOptions>>,
+    fixed_options: Option<&Py<PyRtkFixedOptions>>,
+    residual_options: Option<&Py<PyRtkResidualValidationOptions>>,
+) -> ValidatedFixedSolveOpts {
+    let float = option_py_or_default(
+        py,
+        float_options,
+        |value| value.inner,
+        || PyRtkFloatOptions::default().inner,
+    );
+    let fixed = option_py_or_default(
+        py,
+        fixed_options,
+        |value| value.inner,
+        || PyRtkFixedOptions::default().inner,
+    );
+    let residual = option_py_or_default(
+        py,
+        residual_options,
+        |value| value.inner,
+        || PyRtkResidualValidationOptions::default().inner,
+    );
+    ValidatedFixedSolveOpts {
+        float,
+        fixed,
+        residual,
+    }
+}
+
+/// Complete typed input bundle for an RTK float solve.
+#[pyclass(module = "sidereon._sidereon", name = "RtkFloatConfig")]
+pub struct PyRtkFloatConfig {
+    epochs: Vec<Epoch>,
+    base: [f64; 3],
+    ambiguity_ids: Vec<String>,
+    model: MeasModel,
+    initial_baseline_m: [f64; 3],
+    opts: FloatSolveOpts,
+}
+
+#[pymethods]
+impl PyRtkFloatConfig {
+    /// Create an RTK float solve configuration.
+    #[new]
+    #[pyo3(signature = (
+        epochs,
+        base,
+        ambiguity_ids,
+        model,
+        initial_baseline_m=[0.0; 3],
+        options=None,
+    ))]
+    fn new(
+        py: Python<'_>,
+        epochs: Vec<Py<PyRtkEpoch>>,
+        base: [f64; 3],
+        ambiguity_ids: Vec<String>,
+        model: &PyRtkMeasurementModel,
+        initial_baseline_m: [f64; 3],
+        options: Option<Py<PyRtkFloatOptions>>,
+    ) -> Self {
+        let epochs = epochs
+            .iter()
+            .map(|epoch| epoch.borrow(py).to_core())
+            .collect();
+        let opts = option_py_or_default(
+            py,
+            options.as_ref(),
+            |value| value.inner,
+            || PyRtkFloatOptions::default().inner,
+        );
+        Self {
+            epochs,
+            base,
+            ambiguity_ids,
+            model: model.inner,
+            initial_baseline_m,
+            opts,
+        }
+    }
+
+    #[getter]
+    fn epoch_count(&self) -> usize {
+        self.epochs.len()
+    }
+
+    #[getter]
+    fn base(&self) -> [f64; 3] {
+        self.base
+    }
+
+    #[getter]
+    fn ambiguity_ids(&self) -> Vec<String> {
+        self.ambiguity_ids.clone()
+    }
+
+    #[getter]
+    fn initial_baseline_m(&self) -> [f64; 3] {
+        self.initial_baseline_m
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkFloatConfig(epochs={}, ambiguity_ids={})",
+            self.epochs.len(),
+            self.ambiguity_ids.len()
+        )
+    }
+}
+
+/// Complete typed input bundle for an RTK fixed solve.
+#[pyclass(module = "sidereon._sidereon", name = "RtkFixedConfig")]
+pub struct PyRtkFixedConfig {
+    epochs: Vec<Epoch>,
+    base: [f64; 3],
+    ambiguity_ids: Vec<String>,
+    ambiguity_satellites: BTreeMap<String, String>,
+    wavelengths_m: BTreeMap<String, f64>,
+    offsets_m: BTreeMap<String, f64>,
+    model: MeasModel,
+    opts: ValidatedFixedSolveOpts,
+    float_only_systems: Vec<String>,
+    initial_baseline_m: [f64; 3],
+}
+
+#[pymethods]
+impl PyRtkFixedConfig {
+    /// Create an RTK fixed solve configuration.
+    #[new]
+    #[pyo3(signature = (
+        epochs,
+        base,
+        ambiguity_ids,
+        ambiguity_satellites,
+        wavelengths_m,
+        offsets_m,
+        model,
+        float_options=None,
+        fixed_options=None,
+        residual_options=None,
+        float_only_systems=Vec::new(),
+        initial_baseline_m=[0.0; 3],
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        py: Python<'_>,
+        epochs: Vec<Py<PyRtkEpoch>>,
+        base: [f64; 3],
+        ambiguity_ids: Vec<String>,
+        ambiguity_satellites: BTreeMap<String, String>,
+        wavelengths_m: BTreeMap<String, f64>,
+        offsets_m: BTreeMap<String, f64>,
+        model: &PyRtkMeasurementModel,
+        float_options: Option<Py<PyRtkFloatOptions>>,
+        fixed_options: Option<Py<PyRtkFixedOptions>>,
+        residual_options: Option<Py<PyRtkResidualValidationOptions>>,
+        float_only_systems: Vec<String>,
+        initial_baseline_m: [f64; 3],
+    ) -> Self {
+        let epochs = epochs
+            .iter()
+            .map(|epoch| epoch.borrow(py).to_core())
+            .collect();
+        let opts = validated_fixed_opts_from_py(
+            py,
+            float_options.as_ref(),
+            fixed_options.as_ref(),
+            residual_options.as_ref(),
+        );
+        Self {
+            epochs,
+            base,
+            ambiguity_ids,
+            ambiguity_satellites,
+            wavelengths_m,
+            offsets_m,
+            model: model.inner,
+            opts,
+            float_only_systems,
+            initial_baseline_m,
+        }
+    }
+
+    #[getter]
+    fn epoch_count(&self) -> usize {
+        self.epochs.len()
+    }
+
+    #[getter]
+    fn base(&self) -> [f64; 3] {
+        self.base
+    }
+
+    #[getter]
+    fn ambiguity_ids(&self) -> Vec<String> {
+        self.ambiguity_ids.clone()
+    }
+
+    #[getter]
+    fn float_only_systems(&self) -> Vec<String> {
+        self.float_only_systems.clone()
+    }
+
+    #[getter]
+    fn initial_baseline_m(&self) -> [f64; 3] {
+        self.initial_baseline_m
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkFixedConfig(epochs={}, ambiguity_ids={}, float_only_systems={})",
+            self.epochs.len(),
+            self.ambiguity_ids.len(),
+            self.float_only_systems.len()
+        )
+    }
+}
+
+// --- result objects --------------------------------------------------------
+
+/// Static float RTK baseline solution.
+///
+/// `baseline` is the rover-minus-base ECEF baseline as a numpy `float64` array
+/// of shape `(3,)`, metres. Ambiguity estimates are keyed by ambiguity id.
+#[pyclass(module = "sidereon._sidereon", name = "RtkFloatSolution")]
+pub struct PyRtkFloatSolution {
+    inner: FloatBaselineSolution,
+}
+
+#[pymethods]
+impl PyRtkFloatSolution {
+    /// Baseline (rover minus base) as a numpy array `[dx, dy, dz]` metres.
+    #[getter]
+    fn baseline<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.baseline_m)
+    }
+
+    #[getter]
+    fn baseline_m(&self) -> [f64; 3] {
+        self.inner.baseline_m
+    }
+
+    /// Float single-difference ambiguities in metres, keyed by ambiguity id.
+    #[getter]
+    fn ambiguities_m(&self) -> BTreeMap<String, f64> {
+        self.inner.ambiguities_m.iter().cloned().collect()
+    }
+
+    #[getter]
+    fn code_rms_m(&self) -> f64 {
+        self.inner.code_rms_m
+    }
+
+    #[getter]
+    fn phase_rms_m(&self) -> f64 {
+        self.inner.phase_rms_m
+    }
+
+    #[getter]
+    fn weighted_rms_m(&self) -> f64 {
+        self.inner.weighted_rms_m
+    }
+
+    #[getter]
+    fn converged(&self) -> bool {
+        self.inner.converged
+    }
+
+    #[getter]
+    fn iterations(&self) -> usize {
+        self.inner.iterations
+    }
+
+    #[getter]
+    fn n_observations(&self) -> usize {
+        self.inner.n_observations
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkFloatSolution(baseline=[{:.4}, {:.4}, {:.4}], phase_rms_m={:.4}, converged={})",
+            self.inner.baseline_m[0],
+            self.inner.baseline_m[1],
+            self.inner.baseline_m[2],
+            self.inner.phase_rms_m,
+            self.inner.converged
+        )
+    }
+}
+
+/// Validated fixed RTK baseline solution.
+///
+/// `fixed_baseline` and `float_baseline` are rover-minus-base ECEF baselines as
+/// numpy `float64` arrays of shape `(3,)`, metres.
+#[pyclass(module = "sidereon._sidereon", name = "RtkFixedSolution")]
+pub struct PyRtkFixedSolution {
+    inner: ValidatedFixedBaselineSolution,
+}
+
+#[pymethods]
+impl PyRtkFixedSolution {
+    /// Fixed (integer-resolved) baseline as a numpy array `[dx, dy, dz]` metres.
+    #[getter]
+    fn fixed_baseline<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.fixed_solution.baseline_m)
+    }
+
+    #[getter]
+    fn fixed_baseline_m(&self) -> [f64; 3] {
+        self.inner.fixed_solution.baseline_m
+    }
+
+    /// The underlying float baseline as a numpy array `[dx, dy, dz]` metres.
+    #[getter]
+    fn float_baseline<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.float_solution.baseline_m)
+    }
+
+    #[getter]
+    fn float_baseline_m(&self) -> [f64; 3] {
+        self.inner.float_solution.baseline_m
+    }
+
+    /// Integer ambiguity-fix status.
+    #[getter]
+    fn integer_status(&self) -> PyIntegerStatus {
+        self.inner.fixed_solution.search.integer_status.into()
+    }
+
+    #[getter]
+    fn integer_ratio(&self) -> Option<f64> {
+        self.inner.fixed_solution.search.integer_ratio
+    }
+
+    #[getter]
+    fn integer_candidates(&self) -> usize {
+        self.inner.fixed_solution.search.integer_candidates
+    }
+
+    #[getter]
+    fn converged(&self) -> bool {
+        self.inner.fixed_solution.converged
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkFixedSolution(fixed_baseline=[{:.4}, {:.4}, {:.4}], integer_status={:?})",
+            self.inner.fixed_solution.baseline_m[0],
+            self.inner.fixed_solution.baseline_m[1],
+            self.inner.fixed_solution.baseline_m[2],
+            self.inner.fixed_solution.search.integer_status
+        )
+    }
+}
+
+// --- solve entry points ----------------------------------------------------
+
+#[pyfunction]
+#[pyo3(signature = (config))]
+fn solve_rtk_float(config: &PyRtkFloatConfig) -> PyResult<PyRtkFloatSolution> {
+    let inner = sidereon::solve_rtk_float(
+        &config.epochs,
+        config.base,
+        &config.ambiguity_ids,
+        config.initial_baseline_m,
+        &config.model,
+        config.opts,
+        None,
+    )
+    .map_err(to_solve_err)?;
+    Ok(PyRtkFloatSolution { inner })
+}
+
+#[pyfunction]
+#[pyo3(signature = (config))]
+fn solve_rtk_fixed(config: &PyRtkFixedConfig) -> PyResult<PyRtkFixedSolution> {
+    let ambiguities = AmbiguitySet {
+        ids: &config.ambiguity_ids,
+        satellites: &config.ambiguity_satellites,
+        scale: AmbiguityScale {
+            wavelengths_m: &config.wavelengths_m,
+            offsets_m: &config.offsets_m,
+        },
+        float_only_systems: &config.float_only_systems,
+    };
+
+    let inner = sidereon::solve_rtk_fixed(
+        &config.epochs,
+        config.base,
+        ambiguities,
+        config.initial_baseline_m,
+        &config.model,
+        config.opts,
+        None,
+    )
+    .map_err(to_solve_err)?;
+    Ok(PyRtkFixedSolution { inner })
+}
+
+// --- moving-baseline RTK ---------------------------------------------------
+
+/// One moving-baseline epoch: the base receiver's own ECEF position this epoch,
+/// the double-difference observations, and the ambiguity set to resolve.
+///
+/// Both receivers move, so the base position is supplied per epoch (typically
+/// the base's own navigation fix) rather than held constant. The observation
+/// epoch and ambiguity set are exactly the inputs the static fixed-base solver
+/// takes.
+#[pyclass(module = "sidereon._sidereon", name = "MovingBaselineEpoch")]
+pub struct PyMovingBaselineEpoch {
+    base_position_m: [f64; 3],
+    epoch: Epoch,
+    ambiguity_ids: Vec<String>,
+    ambiguity_satellites: BTreeMap<String, String>,
+    wavelengths_m: BTreeMap<String, f64>,
+    offsets_m: BTreeMap<String, f64>,
+    float_only_systems: Vec<String>,
+}
+
+#[pymethods]
+impl PyMovingBaselineEpoch {
+    /// Create one moving-baseline epoch.
+    #[new]
+    #[pyo3(signature = (
+        base_position_m,
+        epoch,
+        ambiguity_ids,
+        ambiguity_satellites,
+        wavelengths_m,
+        offsets_m,
+        float_only_systems=Vec::new(),
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        base_position_m: [f64; 3],
+        epoch: &PyRtkEpoch,
+        ambiguity_ids: Vec<String>,
+        ambiguity_satellites: BTreeMap<String, String>,
+        wavelengths_m: BTreeMap<String, f64>,
+        offsets_m: BTreeMap<String, f64>,
+        float_only_systems: Vec<String>,
+    ) -> Self {
+        Self {
+            base_position_m,
+            epoch: epoch.to_core(),
+            ambiguity_ids,
+            ambiguity_satellites,
+            wavelengths_m,
+            offsets_m,
+            float_only_systems,
+        }
+    }
+
+    #[getter]
+    fn base_position_m(&self) -> [f64; 3] {
+        self.base_position_m
+    }
+
+    #[getter]
+    fn ambiguity_ids(&self) -> Vec<String> {
+        self.ambiguity_ids.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MovingBaselineEpoch(base_position_m=[{:.3}, {:.3}, {:.3}], ambiguity_ids={})",
+            self.base_position_m[0],
+            self.base_position_m[1],
+            self.base_position_m[2],
+            self.ambiguity_ids.len()
+        )
+    }
+}
+
+/// One solved moving-baseline epoch.
+///
+/// `baseline` is the rover-minus-base ECEF baseline as a numpy `float64` array
+/// of shape `(3,)`, metres: the integer-fixed baseline when `fixed` is true,
+/// otherwise the float baseline.
+#[pyclass(module = "sidereon._sidereon", name = "MovingBaselineEpochSolution")]
+pub struct PyMovingBaselineEpochSolution {
+    inner: MovingBaselineEpochSolution,
+}
+
+#[pymethods]
+impl PyMovingBaselineEpochSolution {
+    /// Base receiver ECEF position used for this epoch, numpy `[x, y, z]` metres.
+    #[getter]
+    fn base_position<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.base_position_m)
+    }
+
+    #[getter]
+    fn base_position_m(&self) -> [f64; 3] {
+        self.inner.base_position_m
+    }
+
+    /// Baseline (rover minus base) as a numpy array `[dx, dy, dz]` metres.
+    #[getter]
+    fn baseline<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.baseline_m)
+    }
+
+    #[getter]
+    fn baseline_m(&self) -> [f64; 3] {
+        self.inner.baseline_m
+    }
+
+    /// Euclidean baseline length, metres.
+    #[getter]
+    fn baseline_length_m(&self) -> f64 {
+        self.inner.baseline_length_m
+    }
+
+    /// Whether the integer ambiguities were fixed this epoch.
+    #[getter]
+    fn fixed(&self) -> bool {
+        matches!(self.inner.status, MovingBaselineStatus::Fixed)
+    }
+
+    /// Integer ambiguity-fix status this epoch.
+    #[getter]
+    fn integer_status(&self) -> PyIntegerStatus {
+        self.inner.fixed.search.integer_status.into()
+    }
+
+    #[getter]
+    fn integer_ratio(&self) -> Option<f64> {
+        self.inner.fixed.search.integer_ratio
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MovingBaselineEpochSolution(baseline=[{:.4}, {:.4}, {:.4}], baseline_length_m={:.4}, \
+             fixed={})",
+            self.inner.baseline_m[0],
+            self.inner.baseline_m[1],
+            self.inner.baseline_m[2],
+            self.inner.baseline_length_m,
+            matches!(self.inner.status, MovingBaselineStatus::Fixed),
+        )
+    }
+}
+
+/// Solve a sequence of moving-baseline RTK epochs, each against its own base
+/// position.
+///
+/// `epochs` is a list of `MovingBaselineEpoch`. With `warm_start` enabled, each
+/// solved baseline seeds the next epoch's float linearization point for
+/// continuity; the first epoch always starts from `initial_baseline_m`. Raises
+/// `SolveError` (tagged with the failing epoch index) on a solve failure.
+#[pyfunction]
+#[pyo3(signature = (
+    epochs,
+    model,
+    float_options=None,
+    fixed_options=None,
+    initial_baseline_m=[0.0; 3],
+    warm_start=true,
+))]
+fn solve_moving_baseline(
+    py: Python<'_>,
+    epochs: Vec<Py<PyMovingBaselineEpoch>>,
+    model: &PyRtkMeasurementModel,
+    float_options: Option<Py<PyRtkFloatOptions>>,
+    fixed_options: Option<Py<PyRtkFixedOptions>>,
+    initial_baseline_m: [f64; 3],
+    warm_start: bool,
+) -> PyResult<Vec<PyMovingBaselineEpochSolution>> {
+    let float = option_py_or_default(
+        py,
+        float_options.as_ref(),
+        |value| value.inner,
+        || PyRtkFloatOptions::default().inner,
+    );
+    let fixed = option_py_or_default(
+        py,
+        fixed_options.as_ref(),
+        |value| value.inner,
+        || PyRtkFixedOptions::default().inner,
+    );
+    let opts = MovingBaselineOpts {
+        model: model.inner,
+        float,
+        fixed,
+        initial_baseline_m,
+        warm_start,
+    };
+
+    // Hold the borrows alive for the duration of the solve so the borrowed
+    // `MovingBaselineEpoch` views into each epoch's owned data stay valid.
+    let borrows: Vec<PyRef<'_, PyMovingBaselineEpoch>> =
+        epochs.iter().map(|epoch| epoch.borrow(py)).collect();
+    let mb_epochs: Vec<MovingBaselineEpoch<'_>> = borrows
+        .iter()
+        .map(|epoch| MovingBaselineEpoch {
+            base_position_m: epoch.base_position_m,
+            epoch: &epoch.epoch,
+            ambiguities: AmbiguitySet {
+                ids: &epoch.ambiguity_ids,
+                satellites: &epoch.ambiguity_satellites,
+                scale: AmbiguityScale {
+                    wavelengths_m: &epoch.wavelengths_m,
+                    offsets_m: &epoch.offsets_m,
+                },
+                float_only_systems: &epoch.float_only_systems,
+            },
+        })
+        .collect();
+
+    let solutions = core_solve_moving_baseline(&mb_epochs, opts, None).map_err(to_solve_err)?;
+    Ok(solutions
+        .into_iter()
+        .map(|inner| PyMovingBaselineEpochSolution { inner })
+        .collect())
+}
+
+// --- sequential RTK arc driver ---------------------------------------------
+
+/// One raw single-frequency code/carrier observation at a receiver, for the
+/// sequential RTK arc driver.
+#[pyclass(module = "sidereon._sidereon", name = "RtkArcObservation")]
+#[derive(Clone)]
+pub struct PyRtkArcObservation {
+    inner: RtkArcObservation,
+}
+
+#[pymethods]
+impl PyRtkArcObservation {
+    /// Create one raw base/rover code+carrier observation.
+    ///
+    /// `ambiguity_id` is the ambiguity-arc id: a clean arc uses the satellite id;
+    /// a cycle-slip split carries a distinct id (e.g. `"G05#2"`) so the
+    /// single-difference key resets.
+    ///
+    /// `lli` is the optional loss-of-lock indicator consumed only by the optional
+    /// cycle-slip preprocessing (`RtkArcPreprocessing.cycle_slip`): bit 0 set marks
+    /// a slip on this satellite at this epoch. `None` (default) is no-LLI and
+    /// leaves the solve unchanged.
+    #[new]
+    #[pyo3(signature = (satellite_id, ambiguity_id, code_m, phase_m, lli=None))]
+    fn new(
+        satellite_id: String,
+        ambiguity_id: String,
+        code_m: f64,
+        phase_m: f64,
+        lli: Option<i64>,
+    ) -> Self {
+        Self {
+            inner: RtkArcObservation {
+                satellite_id,
+                ambiguity_id,
+                code_m,
+                phase_m,
+                lli,
+            },
+        }
+    }
+
+    #[getter]
+    fn satellite_id(&self) -> &str {
+        &self.inner.satellite_id
+    }
+
+    #[getter]
+    fn ambiguity_id(&self) -> &str {
+        &self.inner.ambiguity_id
+    }
+
+    #[getter]
+    fn code_m(&self) -> f64 {
+        self.inner.code_m
+    }
+
+    #[getter]
+    fn phase_m(&self) -> f64 {
+        self.inner.phase_m
+    }
+
+    #[getter]
+    fn lli(&self) -> Option<i64> {
+        self.inner.lli
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkArcObservation(satellite_id={:?}, ambiguity_id={:?})",
+            self.inner.satellite_id, self.inner.ambiguity_id
+        )
+    }
+}
+
+/// One raw RTK arc epoch: paired base/rover observations and the satellite
+/// positions needed to form double differences.
+#[pyclass(module = "sidereon._sidereon", name = "RtkArcEpoch")]
+#[derive(Clone)]
+pub struct PyRtkArcEpoch {
+    inner: RtkArcEpoch,
+}
+
+#[pymethods]
+impl PyRtkArcEpoch {
+    /// Create one raw RTK arc epoch.
+    ///
+    /// `satellite_positions_m` are the shared receive-time satellite ECEF
+    /// positions (used for the variance model and reference geometry). The
+    /// per-receiver `base_satellite_positions_m` / `rover_satellite_positions_m`
+    /// default to the shared map when left empty. `prediction_time_s` is the
+    /// optional epoch time coordinate (seconds) used to form prediction deltas.
+    #[new]
+    #[pyo3(signature = (
+        base,
+        rover,
+        satellite_positions_m,
+        base_satellite_positions_m=BTreeMap::new(),
+        rover_satellite_positions_m=BTreeMap::new(),
+        velocity_mps=None,
+        prediction_time_s=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        py: Python<'_>,
+        base: Vec<Py<PyRtkArcObservation>>,
+        rover: Vec<Py<PyRtkArcObservation>>,
+        satellite_positions_m: BTreeMap<String, [f64; 3]>,
+        base_satellite_positions_m: BTreeMap<String, [f64; 3]>,
+        rover_satellite_positions_m: BTreeMap<String, [f64; 3]>,
+        velocity_mps: Option<[f64; 3]>,
+        prediction_time_s: Option<f64>,
+    ) -> Self {
+        let base = base.iter().map(|o| o.borrow(py).inner.clone()).collect();
+        let rover = rover.iter().map(|o| o.borrow(py).inner.clone()).collect();
+        Self {
+            inner: RtkArcEpoch {
+                base,
+                rover,
+                satellite_positions_m,
+                base_satellite_positions_m,
+                rover_satellite_positions_m,
+                velocity_mps,
+                prediction_time_s,
+            },
+        }
+    }
+
+    #[getter]
+    fn base_count(&self) -> usize {
+        self.inner.base.len()
+    }
+
+    #[getter]
+    fn rover_count(&self) -> usize {
+        self.inner.rover.len()
+    }
+
+    #[getter]
+    fn velocity_mps(&self) -> Option<[f64; 3]> {
+        self.inner.velocity_mps
+    }
+
+    #[getter]
+    fn prediction_time_s(&self) -> Option<f64> {
+        self.inner.prediction_time_s
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkArcEpoch(base={}, rover={})",
+            self.inner.base.len(),
+            self.inner.rover.len()
+        )
+    }
+}
+
+/// Map a cycle-slip policy selector string into the core [`CycleSlipPolicy`].
+fn extract_cycle_slip_policy(label: &str) -> PyResult<CycleSlipPolicy> {
+    match label {
+        "error" => Ok(CycleSlipPolicy::Error),
+        "drop_satellite" => Ok(CycleSlipPolicy::DropSatellite),
+        "split_arc" => Ok(CycleSlipPolicy::SplitArc),
+        other => Err(PyValueError::new_err(format!(
+            "unknown cycle-slip policy {other:?}; expected \"error\", \"drop_satellite\", or \
+             \"split_arc\""
+        ))),
+    }
+}
+
+/// Selector string for a core [`CycleSlipPolicy`] (inverse of
+/// [`extract_cycle_slip_policy`]).
+fn cycle_slip_policy_label(policy: CycleSlipPolicy) -> &'static str {
+    match policy {
+        CycleSlipPolicy::Error => "error",
+        CycleSlipPolicy::DropSatellite => "drop_satellite",
+        CycleSlipPolicy::SplitArc => "split_arc",
+    }
+}
+
+/// Selector string for a core [`CycleSlipReceiver`].
+fn cycle_slip_receiver_label(receiver: CycleSlipReceiver) -> &'static str {
+    match receiver {
+        CycleSlipReceiver::Base => "base",
+        CycleSlipReceiver::Rover => "rover",
+    }
+}
+
+/// Map a dynamics-model selector string into the core [`DynamicsModel`].
+fn extract_dynamics_model(label: &str) -> PyResult<DynamicsModel> {
+    match label {
+        "constant_position" => Ok(DynamicsModel::ConstantPosition),
+        "velocity_propagated" => Ok(DynamicsModel::VelocityPropagated),
+        other => Err(PyValueError::new_err(format!(
+            "unknown dynamics model {other:?}; expected \"constant_position\" or \
+             \"velocity_propagated\""
+        ))),
+    }
+}
+
+/// Per-epoch sequential-update controls for the RTK arc driver.
+#[pyclass(module = "sidereon._sidereon", name = "RtkArcUpdateOptions")]
+#[derive(Clone)]
+pub struct PyRtkArcUpdateOptions {
+    inner: UpdateOpts,
+}
+
+#[pymethods]
+impl PyRtkArcUpdateOptions {
+    /// Create RTK arc per-epoch update controls.
+    ///
+    /// `dynamics` is `"constant_position"` (default) or `"velocity_propagated"`.
+    /// A predicted-residual innovation screen is enabled only when
+    /// `innovation_threshold_sigma` is supplied. `process_noise_baseline_sigma_m`
+    /// at `0.0` is the static filter.
+    #[new]
+    #[pyo3(signature = (
+        hold_sigma_m=1.0e-4,
+        position_tol_m=POSITION_TOL_M,
+        ambiguity_tol_m=AMBIGUITY_TOL_M,
+        max_iterations=MAX_ITERATIONS,
+        process_noise_baseline_sigma_m=0.0,
+        dynamics="constant_position".to_string(),
+        float_only_systems=Vec::new(),
+        innovation_threshold_sigma=None,
+        innovation_min_rows=0,
+        report_residuals=false,
+        ar_arming_sigma_m=None,
+        ratio_threshold=RATIO_THRESHOLD,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        hold_sigma_m: f64,
+        position_tol_m: f64,
+        ambiguity_tol_m: f64,
+        max_iterations: usize,
+        process_noise_baseline_sigma_m: f64,
+        dynamics: String,
+        float_only_systems: Vec<String>,
+        innovation_threshold_sigma: Option<f64>,
+        innovation_min_rows: usize,
+        report_residuals: bool,
+        ar_arming_sigma_m: Option<f64>,
+        ratio_threshold: f64,
+    ) -> PyResult<Self> {
+        let dynamics_model = extract_dynamics_model(&dynamics)?;
+        let innovation_screen =
+            innovation_threshold_sigma.map(|threshold_sigma| InnovationScreenOpts {
+                threshold_sigma,
+                min_rows: innovation_min_rows,
+            });
+        Ok(Self {
+            inner: UpdateOpts {
+                hold_sigma_m,
+                position_tol_m,
+                ambiguity_tol_m,
+                max_iterations,
+                process_noise_baseline_sigma_m,
+                dynamics_model,
+                float_only_systems,
+                innovation_screen,
+                report_residuals,
+                receiver_antenna_corrections: None,
+                ar_arming_sigma_m,
+                search: SearchOpts { ratio_threshold },
+            },
+        })
+    }
+
+    #[getter]
+    fn hold_sigma_m(&self) -> f64 {
+        self.inner.hold_sigma_m
+    }
+
+    #[getter]
+    fn report_residuals(&self) -> bool {
+        self.inner.report_residuals
+    }
+
+    #[getter]
+    fn ratio_threshold(&self) -> f64 {
+        self.inner.search.ratio_threshold
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkArcUpdateOptions(hold_sigma_m={:.3e}, ratio_threshold={:.3})",
+            self.inner.hold_sigma_m, self.inner.search.ratio_threshold
+        )
+    }
+}
+
+impl Default for PyRtkArcUpdateOptions {
+    fn default() -> Self {
+        Self::new(
+            1.0e-4,
+            POSITION_TOL_M,
+            AMBIGUITY_TOL_M,
+            MAX_ITERATIONS,
+            0.0,
+            "constant_position".to_string(),
+            Vec::new(),
+            None,
+            0,
+            false,
+            None,
+            RATIO_THRESHOLD,
+        )
+        .expect("constant_position is a valid dynamics model")
+    }
+}
+
+/// Optional preprocessing chained ahead of the sequential RTK arc solve.
+#[pyclass(module = "sidereon._sidereon", name = "RtkArcPreprocessing")]
+#[derive(Clone, Default)]
+pub struct PyRtkArcPreprocessing {
+    inner: RtkArcPreprocessing,
+}
+
+#[pymethods]
+impl PyRtkArcPreprocessing {
+    /// Create optional RTK arc preprocessing controls.
+    ///
+    /// Every stage is opt-in; the all-default value leaves the solve identical to
+    /// the bare core solve. When set, stages run before the sequential filter in
+    /// this fixed order: cycle-slip handling, then Hatch code smoothing, then
+    /// elevation masking.
+    ///
+    /// `cycle_slip` is `"error"`, `"drop_satellite"`, or `"split_arc"` (or `None`
+    /// to skip cycle-slip handling); it reads each observation's `lli`.
+    /// `hatch_window_cap` is the code-smoothing window cap (`None` skips
+    /// smoothing). `elevation_mask_deg` masks satellites at the base receiver below
+    /// the given elevation (`None` skips masking).
+    #[new]
+    #[pyo3(signature = (cycle_slip=None, hatch_window_cap=None, elevation_mask_deg=None))]
+    fn new(
+        cycle_slip: Option<String>,
+        hatch_window_cap: Option<usize>,
+        elevation_mask_deg: Option<f64>,
+    ) -> PyResult<Self> {
+        let cycle_slip = cycle_slip
+            .map(|label| extract_cycle_slip_policy(&label))
+            .transpose()?;
+        Ok(Self {
+            inner: RtkArcPreprocessing {
+                cycle_slip,
+                hatch_window_cap,
+                elevation_mask_deg,
+            },
+        })
+    }
+
+    #[getter]
+    fn cycle_slip(&self) -> Option<&'static str> {
+        self.inner.cycle_slip.map(cycle_slip_policy_label)
+    }
+
+    #[getter]
+    fn hatch_window_cap(&self) -> Option<usize> {
+        self.inner.hatch_window_cap
+    }
+
+    #[getter]
+    fn elevation_mask_deg(&self) -> Option<f64> {
+        self.inner.elevation_mask_deg
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkArcPreprocessing(cycle_slip={:?}, hatch_window_cap={:?}, elevation_mask_deg={:?})",
+            self.inner.cycle_slip.map(cycle_slip_policy_label),
+            self.inner.hatch_window_cap,
+            self.inner.elevation_mask_deg,
+        )
+    }
+}
+
+fn reference_selection(
+    reference_satellite: Option<String>,
+    reference_per_system: Option<BTreeMap<String, String>>,
+) -> BaselineReferenceSelection {
+    match (reference_per_system, reference_satellite) {
+        (Some(per_system), _) => BaselineReferenceSelection::PerSystem(per_system),
+        (None, Some(sat)) => BaselineReferenceSelection::Satellite(sat),
+        (None, None) => BaselineReferenceSelection::Auto,
+    }
+}
+
+/// Complete typed configuration for a sequential RTK arc solve.
+#[pyclass(module = "sidereon._sidereon", name = "RtkArcConfig")]
+pub struct PyRtkArcConfig {
+    inner: RtkArcConfig,
+}
+
+#[pymethods]
+impl PyRtkArcConfig {
+    /// Create a sequential RTK arc configuration.
+    ///
+    /// Reference selection is geometry-based per constellation by default;
+    /// pass `reference_per_system` (a constellation-letter to satellite-id map)
+    /// or `reference_satellite` (single-system data only) to fix it.
+    #[new]
+    #[pyo3(signature = (
+        base,
+        model,
+        wavelengths_m,
+        offsets_m,
+        baseline_prior_sigma_m,
+        ambiguity_prior_sigma_m,
+        initial_baseline_m=[0.0; 3],
+        update_options=None,
+        reference_satellite=None,
+        reference_per_system=None,
+        preprocessing=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        py: Python<'_>,
+        base: [f64; 3],
+        model: &PyRtkMeasurementModel,
+        wavelengths_m: BTreeMap<String, f64>,
+        offsets_m: BTreeMap<String, f64>,
+        baseline_prior_sigma_m: f64,
+        ambiguity_prior_sigma_m: f64,
+        initial_baseline_m: [f64; 3],
+        update_options: Option<Py<PyRtkArcUpdateOptions>>,
+        reference_satellite: Option<String>,
+        reference_per_system: Option<BTreeMap<String, String>>,
+        preprocessing: Option<Py<PyRtkArcPreprocessing>>,
+    ) -> Self {
+        let reference = reference_selection(reference_satellite, reference_per_system);
+        let update_opts = option_py_or_default(
+            py,
+            update_options.as_ref(),
+            |value| value.inner.clone(),
+            || PyRtkArcUpdateOptions::default().inner,
+        );
+        let preprocessing = option_py_or_default(
+            py,
+            preprocessing.as_ref(),
+            |value| value.inner.clone(),
+            RtkArcPreprocessing::default,
+        );
+        Self {
+            inner: RtkArcConfig {
+                base_m: base,
+                reference,
+                model: model.inner,
+                baseline_prior_sigma_m,
+                ambiguity_prior_sigma_m,
+                initial_baseline_m,
+                wavelengths_m,
+                offsets_m,
+                update_opts,
+                preprocessing,
+            },
+        }
+    }
+
+    #[getter]
+    fn base(&self) -> [f64; 3] {
+        self.inner.base_m
+    }
+
+    #[getter]
+    fn initial_baseline_m(&self) -> [f64; 3] {
+        self.inner.initial_baseline_m
+    }
+
+    /// Optional preprocessing chained ahead of the solve.
+    #[getter]
+    fn preprocessing(&self) -> PyRtkArcPreprocessing {
+        PyRtkArcPreprocessing {
+            inner: self.inner.preprocessing.clone(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkArcConfig(base=[{:.3}, {:.3}, {:.3}], ambiguities={})",
+            self.inner.base_m[0],
+            self.inner.base_m[1],
+            self.inner.base_m[2],
+            self.inner.wavelengths_m.len()
+        )
+    }
+}
+
+/// LAMBDA integer-search diagnostics for one RTK arc epoch.
+#[pyclass(module = "sidereon._sidereon", name = "RtkArcIntegerSearch")]
+#[derive(Clone)]
+pub struct PyRtkArcIntegerSearch {
+    inner: IntegerSearchMeta,
+}
+
+#[pymethods]
+impl PyRtkArcIntegerSearch {
+    #[getter]
+    fn integer_status(&self) -> PyIntegerStatus {
+        self.inner.integer_status.into()
+    }
+
+    #[getter]
+    fn integer_method(&self) -> &str {
+        self.inner.integer_method
+    }
+
+    #[getter]
+    fn integer_ratio(&self) -> Option<f64> {
+        self.inner.integer_ratio
+    }
+
+    #[getter]
+    fn integer_best_score(&self) -> Option<f64> {
+        self.inner.integer_best_score
+    }
+
+    #[getter]
+    fn integer_second_best_score(&self) -> Option<f64> {
+        self.inner.integer_second_best_score
+    }
+
+    #[getter]
+    fn integer_candidates(&self) -> usize {
+        self.inner.integer_candidates
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkArcIntegerSearch(integer_status={:?}, integer_candidates={})",
+            self.inner.integer_status, self.inner.integer_candidates
+        )
+    }
+}
+
+/// One public residual row at an RTK arc epoch's reported solution.
+#[pyclass(module = "sidereon._sidereon", name = "RtkArcResidual")]
+#[derive(Clone)]
+pub struct PyRtkArcResidual {
+    inner: FloatResidual,
+}
+
+#[pymethods]
+impl PyRtkArcResidual {
+    #[getter]
+    fn epoch_index(&self) -> usize {
+        self.inner.epoch_index
+    }
+    #[getter]
+    fn satellite_id(&self) -> &str {
+        &self.inner.satellite_id
+    }
+    #[getter]
+    fn reference_satellite_id(&self) -> &str {
+        &self.inner.reference_satellite_id
+    }
+    #[getter]
+    fn ambiguity_id(&self) -> &str {
+        &self.inner.ambiguity_id
+    }
+    #[getter]
+    fn code_m(&self) -> f64 {
+        self.inner.code_m
+    }
+    #[getter]
+    fn phase_m(&self) -> f64 {
+        self.inner.phase_m
+    }
+    #[getter]
+    fn code_sigma_m(&self) -> f64 {
+        self.inner.code_sigma_m
+    }
+    #[getter]
+    fn phase_sigma_m(&self) -> f64 {
+        self.inner.phase_sigma_m
+    }
+    #[getter]
+    fn code_normalized(&self) -> f64 {
+        self.inner.code_normalized
+    }
+    #[getter]
+    fn phase_normalized(&self) -> f64 {
+        self.inner.phase_normalized
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkArcResidual(satellite_id={:?}, reference_satellite_id={:?})",
+            self.inner.satellite_id, self.inner.reference_satellite_id
+        )
+    }
+}
+
+/// Predicted-residual (innovation) screen diagnostics for one RTK arc epoch.
+///
+/// Present only when the screen is enabled for the arc; carries the per-epoch
+/// accepted/rejected row counts and the `coasted` flag (set when the screen left
+/// too few rows for a measurement update, so the epoch carried the prior).
+#[pyclass(module = "sidereon._sidereon", name = "RtkArcInnovationScreen")]
+#[derive(Clone)]
+pub struct PyRtkArcInnovationScreen {
+    inner: InnovationScreen,
+}
+
+#[pymethods]
+impl PyRtkArcInnovationScreen {
+    /// Per-row normalized-innovation rejection threshold (sigma).
+    #[getter]
+    fn threshold_sigma(&self) -> f64 {
+        self.inner.threshold_sigma
+    }
+
+    /// Minimum surviving rows required to run the measurement update.
+    #[getter]
+    fn min_rows(&self) -> usize {
+        self.inner.min_rows
+    }
+
+    /// Candidate rows presented to the screen this epoch.
+    #[getter]
+    fn input_rows(&self) -> usize {
+        self.inner.input_rows
+    }
+
+    /// Rows that passed the screen and entered the update.
+    #[getter]
+    fn accepted_rows(&self) -> usize {
+        self.inner.accepted_rows
+    }
+
+    /// Rows the screen rejected this epoch.
+    #[getter]
+    fn rejected_rows(&self) -> usize {
+        self.inner.rejected_rows
+    }
+
+    /// Rejected rows that were code (pseudorange) rows.
+    #[getter]
+    fn rejected_code_rows(&self) -> usize {
+        self.inner.rejected_code_rows
+    }
+
+    /// Rejected rows that were phase (carrier) rows.
+    #[getter]
+    fn rejected_phase_rows(&self) -> usize {
+        self.inner.rejected_phase_rows
+    }
+
+    /// Largest absolute normalized innovation over all candidate rows, or `None`
+    /// when there were no rows.
+    #[getter]
+    fn max_abs_normalized_innovation(&self) -> Option<f64> {
+        self.inner.max_abs_normalized_innovation
+    }
+
+    /// Largest absolute normalized innovation among the rejected rows, or `None`
+    /// when none were rejected.
+    #[getter]
+    fn max_rejected_abs_normalized_innovation(&self) -> Option<f64> {
+        self.inner.max_rejected_abs_normalized_innovation
+    }
+
+    /// Whether the epoch coasted (too few surviving rows to update, prior carried).
+    #[getter]
+    fn coasted(&self) -> bool {
+        self.inner.coasted
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkArcInnovationScreen(input_rows={}, accepted_rows={}, rejected_rows={}, coasted={})",
+            self.inner.input_rows,
+            self.inner.accepted_rows,
+            self.inner.rejected_rows,
+            self.inner.coasted
+        )
+    }
+}
+
+/// One epoch's reported baseline/ambiguity solution from the RTK arc driver.
+#[pyclass(module = "sidereon._sidereon", name = "RtkArcEpochSolution")]
+#[derive(Clone)]
+pub struct PyRtkArcEpochSolution {
+    inner: RtkArcEpochSolution,
+}
+
+#[pymethods]
+impl PyRtkArcEpochSolution {
+    /// Ambiguity-conditioned reported baseline, numpy `[dx, dy, dz]` metres.
+    #[getter]
+    fn reported_baseline<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.reported_baseline_m)
+    }
+
+    #[getter]
+    fn reported_baseline_m(&self) -> [f64; 3] {
+        self.inner.reported_baseline_m
+    }
+
+    /// Carried float (Kalman posterior) baseline, numpy `[dx, dy, dz]` metres.
+    #[getter]
+    fn float_baseline<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.float_baseline_m)
+    }
+
+    #[getter]
+    fn float_baseline_m(&self) -> [f64; 3] {
+        self.inner.float_baseline_m
+    }
+
+    #[getter]
+    fn integer_fixed(&self) -> bool {
+        self.inner.integer_fixed
+    }
+
+    #[getter]
+    fn integer_ratio(&self) -> f64 {
+        self.inner.integer_ratio
+    }
+
+    #[getter]
+    fn newly_fixed(&self) -> Vec<String> {
+        self.inner.newly_fixed.clone()
+    }
+
+    #[getter]
+    fn fixed_ids(&self) -> Vec<String> {
+        self.inner.fixed_ids.clone()
+    }
+
+    /// Reported single-difference ambiguities as `(id, metres)` in column order.
+    #[getter]
+    fn sd_ambiguities_m(&self) -> Vec<(String, f64)> {
+        self.inner.sd_ambiguities_m.clone()
+    }
+
+    #[getter]
+    fn fixed_double_difference_ids(&self) -> Vec<String> {
+        self.inner.fixed_double_difference_ids.clone()
+    }
+
+    #[getter]
+    fn used_satellite_ids(&self) -> Vec<String> {
+        self.inner.used_satellite_ids.clone()
+    }
+
+    /// LAMBDA search diagnostics, or `None` when no search ran this epoch.
+    #[getter]
+    fn search(&self) -> Option<PyRtkArcIntegerSearch> {
+        self.inner
+            .search
+            .clone()
+            .map(|inner| PyRtkArcIntegerSearch { inner })
+    }
+
+    /// Public residual rows at the reported solution (empty unless enabled).
+    #[getter]
+    fn residuals(&self) -> Vec<PyRtkArcResidual> {
+        self.inner
+            .residuals
+            .iter()
+            .map(|inner| PyRtkArcResidual {
+                inner: inner.clone(),
+            })
+            .collect()
+    }
+
+    /// Predicted-residual (innovation) screen result for this epoch, or `None`
+    /// when the screen is disabled. Carries the rejected-row counts and the
+    /// `coasted` flag.
+    #[getter]
+    fn innovation_screen(&self) -> Option<PyRtkArcInnovationScreen> {
+        self.inner
+            .innovation_screen
+            .clone()
+            .map(|inner| PyRtkArcInnovationScreen { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkArcEpochSolution(reported_baseline=[{:.4}, {:.4}, {:.4}], integer_fixed={})",
+            self.inner.reported_baseline_m[0],
+            self.inner.reported_baseline_m[1],
+            self.inner.reported_baseline_m[2],
+            self.inner.integer_fixed
+        )
+    }
+}
+
+/// The carried sequential filter state after the last RTK arc epoch.
+#[pyclass(module = "sidereon._sidereon", name = "RtkFilterState")]
+#[derive(Clone)]
+pub struct PyRtkFilterState {
+    inner: FilterState,
+}
+
+#[pymethods]
+impl PyRtkFilterState {
+    #[getter]
+    fn version(&self) -> u16 {
+        self.inner.version
+    }
+
+    /// Per-constellation reference single-difference ambiguity ids.
+    #[getter]
+    fn references(&self) -> BTreeMap<String, String> {
+        self.inner.references.clone()
+    }
+
+    /// Single-difference ambiguity ids, in information-matrix column order.
+    #[getter]
+    fn sd_ambiguity_ids(&self) -> Vec<String> {
+        self.inner.sd_ambiguity_ids.clone()
+    }
+
+    /// Float (Kalman posterior) baseline, numpy `[dx, dy, dz]` metres.
+    #[getter]
+    fn baseline<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.baseline_m)
+    }
+
+    #[getter]
+    fn baseline_m(&self) -> [f64; 3] {
+        self.inner.baseline_m
+    }
+
+    /// Float single-difference ambiguities (metres), parallel to the ids.
+    #[getter]
+    fn sd_ambiguities_m(&self) -> Vec<f64> {
+        self.inner.sd_ambiguities_m.clone()
+    }
+
+    /// Row-major `n x n` information matrix, `n = 3 + sd_ambiguity_ids.len()`.
+    #[getter]
+    fn information(&self) -> Vec<f64> {
+        self.inner.information.clone()
+    }
+
+    #[getter]
+    fn ambiguity_prior_sigma_m(&self) -> f64 {
+        self.inner.ambiguity_prior_sigma_m
+    }
+
+    #[getter]
+    fn epoch_count(&self) -> usize {
+        self.inner.epoch_count
+    }
+
+    /// Held fixed integer double-difference ambiguities (id to cycles).
+    #[getter]
+    fn fixed_cycles(&self) -> BTreeMap<String, i64> {
+        self.inner.fixed_cycles.clone()
+    }
+
+    /// Held fixed double-difference ambiguities (id to metres).
+    #[getter]
+    fn fixed_m(&self) -> BTreeMap<String, f64> {
+        self.inner.fixed_m.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkFilterState(sd_ambiguity_ids={}, epoch_count={})",
+            self.inner.sd_ambiguity_ids.len(),
+            self.inner.epoch_count
+        )
+    }
+}
+
+/// Split-arc metadata produced by cycle-slip preprocessing under the
+/// `"split_arc"` policy.
+#[pyclass(module = "sidereon._sidereon", name = "CycleSlipSplitArc")]
+#[derive(Clone)]
+pub struct PyCycleSlipSplitArc {
+    inner: CycleSlipSplitArc,
+}
+
+#[pymethods]
+impl PyCycleSlipSplitArc {
+    /// Receiver side the split occurred on (`"base"` or `"rover"`).
+    #[getter]
+    fn receiver(&self) -> &'static str {
+        cycle_slip_receiver_label(self.inner.receiver)
+    }
+
+    #[getter]
+    fn satellite_id(&self) -> &str {
+        &self.inner.satellite_id
+    }
+
+    #[getter]
+    fn ambiguity_id(&self) -> &str {
+        &self.inner.ambiguity_id
+    }
+
+    #[getter]
+    fn start_epoch_index(&self) -> usize {
+        self.inner.start_epoch_index
+    }
+
+    #[getter]
+    fn end_epoch_index(&self) -> usize {
+        self.inner.end_epoch_index
+    }
+
+    #[getter]
+    fn n_epochs(&self) -> usize {
+        self.inner.n_epochs
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CycleSlipSplitArc(satellite_id={:?}, ambiguity_id={:?}, start_epoch_index={}, \
+             end_epoch_index={})",
+            self.inner.satellite_id,
+            self.inner.ambiguity_id,
+            self.inner.start_epoch_index,
+            self.inner.end_epoch_index,
+        )
+    }
+}
+
+/// Full sequential RTK arc solution.
+#[pyclass(module = "sidereon._sidereon", name = "RtkArcSolution")]
+pub struct PyRtkArcSolution {
+    inner: RtkArcSolution,
+}
+
+#[pymethods]
+impl PyRtkArcSolution {
+    /// Per-constellation reference single-difference ambiguity ids.
+    #[getter]
+    fn references(&self) -> BTreeMap<String, String> {
+        self.inner.references.clone()
+    }
+
+    /// Per-epoch reported solutions, in input order.
+    #[getter]
+    fn epochs(&self) -> Vec<PyRtkArcEpochSolution> {
+        self.inner
+            .epochs
+            .iter()
+            .map(|inner| PyRtkArcEpochSolution {
+                inner: inner.clone(),
+            })
+            .collect()
+    }
+
+    /// Final carried filter state after the last epoch.
+    #[getter]
+    fn final_state(&self) -> PyRtkFilterState {
+        PyRtkFilterState {
+            inner: self.inner.final_state.clone(),
+        }
+    }
+
+    /// Satellites dropped during cycle-slip preprocessing under the
+    /// `"drop_satellite"` policy, sorted. Empty when cycle-slip preprocessing is
+    /// disabled or no slip occurred.
+    #[getter]
+    fn dropped_sats(&self) -> Vec<String> {
+        self.inner.dropped_sats.clone()
+    }
+
+    /// Split-arc metadata produced by cycle-slip preprocessing under the
+    /// `"split_arc"` policy. Empty otherwise.
+    #[getter]
+    fn split_cycle_slip_arcs(&self) -> Vec<PyCycleSlipSplitArc> {
+        self.inner
+            .split_cycle_slip_arcs
+            .iter()
+            .map(|inner| PyCycleSlipSplitArc {
+                inner: inner.clone(),
+            })
+            .collect()
+    }
+
+    /// Satellites masked below the elevation mask in any epoch, sorted. Empty when
+    /// elevation masking is disabled.
+    #[getter]
+    fn elevation_masked_sats(&self) -> Vec<String> {
+        self.inner.elevation_masked_sats.clone()
+    }
+
+    /// Posterior measurement covariance (row-major `n x n`, metres squared): the
+    /// inverse of `final_state`'s information matrix. Empty only if that inversion
+    /// is singular.
+    #[getter]
+    fn measurement_covariance(&self) -> Vec<f64> {
+        self.inner.measurement_covariance.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkArcSolution(references={}, epochs={})",
+            self.inner.references.len(),
+            self.inner.epochs.len()
+        )
+    }
+}
+
+/// Solve a sequential RTK baseline arc from raw rover+base epochs.
+///
+/// `epochs` is a list of `RtkArcEpoch`; `config` is an `RtkArcConfig`. Reference
+/// satellites are selected once for the whole arc; an epoch whose update fails
+/// aborts the arc at that epoch. Returns an `RtkArcSolution`. Raises `SolveError`
+/// on an empty arc, too few satellites, reference-selection failure, or a
+/// per-epoch update failure.
+#[pyfunction]
+#[pyo3(signature = (epochs, config))]
+fn solve_rtk_arc(
+    py: Python<'_>,
+    epochs: Vec<Py<PyRtkArcEpoch>>,
+    config: &PyRtkArcConfig,
+) -> PyResult<PyRtkArcSolution> {
+    let epochs: Vec<RtkArcEpoch> = epochs
+        .iter()
+        .map(|epoch| epoch.borrow(py).inner.clone())
+        .collect();
+    let inner = core_solve_rtk_arc(&epochs, &config.inner).map_err(to_solve_err)?;
+    Ok(PyRtkArcSolution { inner })
+}
+
+/// Complete typed configuration for a static RTK arc solve.
+#[pyclass(module = "sidereon._sidereon", name = "RtkStaticArcConfig")]
+pub struct PyRtkStaticArcConfig {
+    inner: RtkStaticArcConfig,
+}
+
+#[pymethods]
+impl PyRtkStaticArcConfig {
+    /// Create a static RTK arc configuration.
+    #[new]
+    #[pyo3(signature = (
+        arc,
+        float_options=None,
+        fixed_options=None,
+        residual_options=None,
+    ))]
+    fn new(
+        py: Python<'_>,
+        arc: &PyRtkArcConfig,
+        float_options: Option<Py<PyRtkFloatOptions>>,
+        fixed_options: Option<Py<PyRtkFixedOptions>>,
+        residual_options: Option<Py<PyRtkResidualValidationOptions>>,
+    ) -> Self {
+        let opts = validated_fixed_opts_from_py(
+            py,
+            float_options.as_ref(),
+            fixed_options.as_ref(),
+            residual_options.as_ref(),
+        );
+        Self {
+            inner: RtkStaticArcConfig {
+                arc: arc.inner.clone(),
+                opts,
+            },
+        }
+    }
+
+    #[getter]
+    fn base(&self) -> [f64; 3] {
+        self.inner.arc.base_m
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkStaticArcConfig(base=[{:.3}, {:.3}, {:.3}])",
+            self.inner.arc.base_m[0], self.inner.arc.base_m[1], self.inner.arc.base_m[2]
+        )
+    }
+}
+
+/// Static arc float and fixed RTK solution.
+#[pyclass(module = "sidereon._sidereon", name = "RtkStaticArcSolution")]
+pub struct PyRtkStaticArcSolution {
+    inner: RtkStaticArcSolution,
+}
+
+#[pymethods]
+impl PyRtkStaticArcSolution {
+    #[getter]
+    fn references(&self) -> BTreeMap<String, String> {
+        self.inner.references.clone()
+    }
+
+    #[getter]
+    fn ambiguity_ids(&self) -> Vec<String> {
+        self.inner.ambiguity_ids.clone()
+    }
+
+    #[getter]
+    fn ambiguity_satellites(&self) -> BTreeMap<String, String> {
+        self.inner.ambiguity_satellites.clone()
+    }
+
+    #[getter]
+    fn float_solution(&self) -> PyRtkFloatSolution {
+        PyRtkFloatSolution {
+            inner: self.inner.float_solution.clone(),
+        }
+    }
+
+    #[getter]
+    fn fixed_solution(&self) -> PyRtkFixedSolution {
+        PyRtkFixedSolution {
+            inner: self.inner.fixed_solution.clone(),
+        }
+    }
+
+    #[getter]
+    fn dropped_sats(&self) -> Vec<String> {
+        self.inner.dropped_sats.clone()
+    }
+
+    #[getter]
+    fn split_cycle_slip_arcs(&self) -> Vec<PyCycleSlipSplitArc> {
+        self.inner
+            .split_cycle_slip_arcs
+            .iter()
+            .map(|inner| PyCycleSlipSplitArc {
+                inner: inner.clone(),
+            })
+            .collect()
+    }
+
+    #[getter]
+    fn elevation_masked_sats(&self) -> Vec<String> {
+        self.inner.elevation_masked_sats.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkStaticArcSolution(references={}, ambiguity_ids={})",
+            self.inner.references.len(),
+            self.inner.ambiguity_ids.len()
+        )
+    }
+}
+
+/// Solve one static RTK baseline over a raw rover+base arc.
+#[pyfunction]
+#[pyo3(signature = (epochs, config))]
+fn solve_static_rtk_arc(
+    py: Python<'_>,
+    epochs: Vec<Py<PyRtkArcEpoch>>,
+    config: &PyRtkStaticArcConfig,
+) -> PyResult<PyRtkStaticArcSolution> {
+    let epochs: Vec<RtkArcEpoch> = epochs
+        .iter()
+        .map(|epoch| epoch.borrow(py).inner.clone())
+        .collect();
+    let inner = core_solve_static_rtk_arc(&epochs, &config.inner).map_err(to_solve_err)?;
+    Ok(PyRtkStaticArcSolution { inner })
+}
+
+/// One dual-frequency observation at a receiver.
+#[pyclass(module = "sidereon._sidereon", name = "RtkDualFrequencyObservation")]
+#[derive(Clone)]
+pub struct PyRtkDualFrequencyObservation {
+    inner: RtkDualFrequencyObservation,
+}
+
+#[pymethods]
+impl PyRtkDualFrequencyObservation {
+    /// Create one dual-frequency code+carrier observation.
+    #[new]
+    #[pyo3(signature = (
+        ambiguity_id,
+        p1_m,
+        p2_m,
+        phi1_cycles,
+        phi2_cycles,
+        f1_hz,
+        f2_hz,
+        lli1=None,
+        lli2=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        ambiguity_id: String,
+        p1_m: f64,
+        p2_m: f64,
+        phi1_cycles: f64,
+        phi2_cycles: f64,
+        f1_hz: f64,
+        f2_hz: f64,
+        lli1: Option<i64>,
+        lli2: Option<i64>,
+    ) -> Self {
+        Self {
+            inner: RtkDualFrequencyObservation {
+                ambiguity_id,
+                p1_m,
+                p2_m,
+                phi1_cycles,
+                phi2_cycles,
+                f1_hz,
+                f2_hz,
+                lli1,
+                lli2,
+            },
+        }
+    }
+
+    #[getter]
+    fn ambiguity_id(&self) -> &str {
+        &self.inner.ambiguity_id
+    }
+
+    #[getter]
+    fn p1_m(&self) -> f64 {
+        self.inner.p1_m
+    }
+
+    #[getter]
+    fn p2_m(&self) -> f64 {
+        self.inner.p2_m
+    }
+
+    #[getter]
+    fn phi1_cycles(&self) -> f64 {
+        self.inner.phi1_cycles
+    }
+
+    #[getter]
+    fn phi2_cycles(&self) -> f64 {
+        self.inner.phi2_cycles
+    }
+
+    #[getter]
+    fn f1_hz(&self) -> f64 {
+        self.inner.f1_hz
+    }
+
+    #[getter]
+    fn f2_hz(&self) -> f64 {
+        self.inner.f2_hz
+    }
+
+    #[getter]
+    fn lli1(&self) -> Option<i64> {
+        self.inner.lli1
+    }
+
+    #[getter]
+    fn lli2(&self) -> Option<i64> {
+        self.inner.lli2
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkDualFrequencyObservation(ambiguity_id={:?})",
+            self.inner.ambiguity_id
+        )
+    }
+}
+
+/// One satellite's paired base and rover dual-frequency observations.
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "RtkDualFrequencySatelliteObservation"
+)]
+#[derive(Clone)]
+pub struct PyRtkDualFrequencySatelliteObservation {
+    inner: RtkDualFrequencySatelliteObservation,
+}
+
+#[pymethods]
+impl PyRtkDualFrequencySatelliteObservation {
+    /// Create one satellite row for a dual-frequency RTK arc epoch.
+    #[new]
+    #[pyo3(signature = (satellite_id, base, rover))]
+    fn new(
+        satellite_id: String,
+        base: &PyRtkDualFrequencyObservation,
+        rover: &PyRtkDualFrequencyObservation,
+    ) -> Self {
+        Self {
+            inner: RtkDualFrequencySatelliteObservation {
+                satellite_id,
+                base: base.inner.clone(),
+                rover: rover.inner.clone(),
+            },
+        }
+    }
+
+    #[getter]
+    fn satellite_id(&self) -> &str {
+        &self.inner.satellite_id
+    }
+
+    #[getter]
+    fn base(&self) -> PyRtkDualFrequencyObservation {
+        PyRtkDualFrequencyObservation {
+            inner: self.inner.base.clone(),
+        }
+    }
+
+    #[getter]
+    fn rover(&self) -> PyRtkDualFrequencyObservation {
+        PyRtkDualFrequencyObservation {
+            inner: self.inner.rover.clone(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkDualFrequencySatelliteObservation(satellite_id={:?})",
+            self.inner.satellite_id
+        )
+    }
+}
+
+/// One dual-frequency RTK arc epoch.
+#[pyclass(module = "sidereon._sidereon", name = "RtkDualFrequencyArcEpoch")]
+#[derive(Clone)]
+pub struct PyRtkDualFrequencyArcEpoch {
+    inner: RtkDualFrequencyArcEpoch,
+}
+
+#[pymethods]
+impl PyRtkDualFrequencyArcEpoch {
+    /// Create one dual-frequency RTK arc epoch.
+    #[new]
+    #[pyo3(signature = (
+        jd_whole,
+        jd_fraction,
+        observations,
+        satellite_positions_m,
+        epoch_sort_key=None,
+        gap_time_s=None,
+        base_satellite_positions_m=BTreeMap::new(),
+        rover_satellite_positions_m=BTreeMap::new(),
+        velocity_mps=None,
+        prediction_time_s=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        py: Python<'_>,
+        jd_whole: f64,
+        jd_fraction: f64,
+        observations: Vec<Py<PyRtkDualFrequencySatelliteObservation>>,
+        satellite_positions_m: BTreeMap<String, [f64; 3]>,
+        epoch_sort_key: Option<String>,
+        gap_time_s: Option<f64>,
+        base_satellite_positions_m: BTreeMap<String, [f64; 3]>,
+        rover_satellite_positions_m: BTreeMap<String, [f64; 3]>,
+        velocity_mps: Option<[f64; 3]>,
+        prediction_time_s: Option<f64>,
+    ) -> Self {
+        let observations = observations
+            .iter()
+            .map(|observation| observation.borrow(py).inner.clone())
+            .collect();
+        Self {
+            inner: RtkDualFrequencyArcEpoch {
+                jd_whole,
+                jd_fraction,
+                epoch_sort_key,
+                gap_time_s,
+                observations,
+                satellite_positions_m,
+                base_satellite_positions_m,
+                rover_satellite_positions_m,
+                velocity_mps,
+                prediction_time_s,
+            },
+        }
+    }
+
+    #[getter]
+    fn jd_whole(&self) -> f64 {
+        self.inner.jd_whole
+    }
+
+    #[getter]
+    fn jd_fraction(&self) -> f64 {
+        self.inner.jd_fraction
+    }
+
+    #[getter]
+    fn epoch_sort_key(&self) -> Option<String> {
+        self.inner.epoch_sort_key.clone()
+    }
+
+    #[getter]
+    fn gap_time_s(&self) -> Option<f64> {
+        self.inner.gap_time_s
+    }
+
+    #[getter]
+    fn observation_count(&self) -> usize {
+        self.inner.observations.len()
+    }
+
+    #[getter]
+    fn velocity_mps(&self) -> Option<[f64; 3]> {
+        self.inner.velocity_mps
+    }
+
+    #[getter]
+    fn prediction_time_s(&self) -> Option<f64> {
+        self.inner.prediction_time_s
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkDualFrequencyArcEpoch(observations={})",
+            self.inner.observations.len()
+        )
+    }
+}
+
+/// Wide-lane integer estimation controls.
+#[pyclass(module = "sidereon._sidereon", name = "RtkWideLaneOptions")]
+#[derive(Clone, Copy)]
+pub struct PyRtkWideLaneOptions {
+    inner: WideLaneOptions,
+}
+
+#[pymethods]
+impl PyRtkWideLaneOptions {
+    /// Create wide-lane integer estimation controls.
+    #[new]
+    #[pyo3(signature = (min_epochs, tolerance_cycles, skip_short_fragments=false))]
+    fn new(min_epochs: usize, tolerance_cycles: f64, skip_short_fragments: bool) -> Self {
+        Self {
+            inner: WideLaneOptions {
+                min_epochs,
+                tolerance_cycles,
+                skip_short_fragments,
+            },
+        }
+    }
+
+    #[getter]
+    fn min_epochs(&self) -> usize {
+        self.inner.min_epochs
+    }
+
+    #[getter]
+    fn tolerance_cycles(&self) -> f64 {
+        self.inner.tolerance_cycles
+    }
+
+    #[getter]
+    fn skip_short_fragments(&self) -> bool {
+        self.inner.skip_short_fragments
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkWideLaneOptions(min_epochs={}, tolerance_cycles={:.3}, \
+             skip_short_fragments={})",
+            self.inner.min_epochs, self.inner.tolerance_cycles, self.inner.skip_short_fragments
+        )
+    }
+}
+
+/// Optional dual-frequency cycle-slip preprocessing controls.
+#[pyclass(module = "sidereon._sidereon", name = "RtkDualCycleSlipConfig")]
+#[derive(Clone, Copy)]
+pub struct PyRtkDualCycleSlipConfig {
+    inner: RtkDualCycleSlipConfig,
+}
+
+#[pymethods]
+impl PyRtkDualCycleSlipConfig {
+    /// Create dual-frequency cycle-slip preprocessing controls.
+    #[new]
+    #[pyo3(signature = (
+        policy,
+        gf_threshold_m=0.05,
+        mw_threshold_cycles=4.0,
+        min_arc_gap_s=300.0,
+    ))]
+    fn new(
+        policy: String,
+        gf_threshold_m: f64,
+        mw_threshold_cycles: f64,
+        min_arc_gap_s: f64,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: RtkDualCycleSlipConfig {
+                policy: extract_cycle_slip_policy(&policy)?,
+                options: CycleSlipOptions {
+                    gf_threshold_m,
+                    mw_threshold_cycles,
+                    min_arc_gap_s,
+                },
+            },
+        })
+    }
+
+    #[getter]
+    fn policy(&self) -> &'static str {
+        cycle_slip_policy_label(self.inner.policy)
+    }
+
+    #[getter]
+    fn gf_threshold_m(&self) -> f64 {
+        self.inner.options.gf_threshold_m
+    }
+
+    #[getter]
+    fn mw_threshold_cycles(&self) -> f64 {
+        self.inner.options.mw_threshold_cycles
+    }
+
+    #[getter]
+    fn min_arc_gap_s(&self) -> f64 {
+        self.inner.options.min_arc_gap_s
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkDualCycleSlipConfig(policy={:?})",
+            cycle_slip_policy_label(self.inner.policy)
+        )
+    }
+}
+
+/// Complete typed configuration for wide-lane RTK arc fixing.
+#[pyclass(module = "sidereon._sidereon", name = "RtkWideLaneArcConfig")]
+pub struct PyRtkWideLaneArcConfig {
+    inner: RtkWideLaneArcConfig,
+}
+
+#[pymethods]
+impl PyRtkWideLaneArcConfig {
+    /// Create a wide-lane RTK arc configuration.
+    #[new]
+    #[pyo3(signature = (
+        base,
+        options,
+        reference_satellite=None,
+        reference_per_system=None,
+        cycle_slip=None,
+    ))]
+    fn new(
+        py: Python<'_>,
+        base: [f64; 3],
+        options: &PyRtkWideLaneOptions,
+        reference_satellite: Option<String>,
+        reference_per_system: Option<BTreeMap<String, String>>,
+        cycle_slip: Option<Py<PyRtkDualCycleSlipConfig>>,
+    ) -> Self {
+        let cycle_slip = cycle_slip.as_ref().map(|config| config.borrow(py).inner);
+        Self {
+            inner: RtkWideLaneArcConfig {
+                base_m: base,
+                reference: reference_selection(reference_satellite, reference_per_system),
+                options: options.inner,
+                cycle_slip,
+            },
+        }
+    }
+
+    #[getter]
+    fn base(&self) -> [f64; 3] {
+        self.inner.base_m
+    }
+
+    #[getter]
+    fn options(&self) -> PyRtkWideLaneOptions {
+        PyRtkWideLaneOptions {
+            inner: self.inner.options,
+        }
+    }
+
+    #[getter]
+    fn cycle_slip(&self) -> Option<PyRtkDualCycleSlipConfig> {
+        self.inner
+            .cycle_slip
+            .map(|inner| PyRtkDualCycleSlipConfig { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkWideLaneArcConfig(base=[{:.3}, {:.3}, {:.3}])",
+            self.inner.base_m[0], self.inner.base_m[1], self.inner.base_m[2]
+        )
+    }
+}
+
+/// Wide-lane RTK arc fixing result.
+#[pyclass(module = "sidereon._sidereon", name = "RtkWideLaneArcSolution")]
+pub struct PyRtkWideLaneArcSolution {
+    inner: RtkWideLaneArcSolution,
+}
+
+#[pymethods]
+impl PyRtkWideLaneArcSolution {
+    #[getter]
+    fn references(&self) -> BTreeMap<String, String> {
+        self.inner.references.clone()
+    }
+
+    #[getter]
+    fn wide_lane_cycles(&self) -> BTreeMap<String, i64> {
+        self.inner.wide_lane_cycles.clone()
+    }
+
+    #[getter]
+    fn epochs(&self) -> Vec<PyRtkDualFrequencyArcEpoch> {
+        self.inner
+            .epochs
+            .iter()
+            .map(|inner| PyRtkDualFrequencyArcEpoch {
+                inner: inner.clone(),
+            })
+            .collect()
+    }
+
+    #[getter]
+    fn dropped_sats(&self) -> Vec<String> {
+        self.inner.dropped_sats.clone()
+    }
+
+    #[getter]
+    fn split_cycle_slip_arcs(&self) -> Vec<PyCycleSlipSplitArc> {
+        self.inner
+            .split_cycle_slip_arcs
+            .iter()
+            .map(|inner| PyCycleSlipSplitArc {
+                inner: inner.clone(),
+            })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkWideLaneArcSolution(references={}, wide_lane_cycles={})",
+            self.inner.references.len(),
+            self.inner.wide_lane_cycles.len()
+        )
+    }
+}
+
+/// Fix wide-lane RTK ambiguities over a dual-frequency arc.
+#[pyfunction]
+#[pyo3(signature = (epochs, config))]
+fn fix_wide_lane_rtk_arc(
+    py: Python<'_>,
+    epochs: Vec<Py<PyRtkDualFrequencyArcEpoch>>,
+    config: &PyRtkWideLaneArcConfig,
+) -> PyResult<PyRtkWideLaneArcSolution> {
+    let epochs: Vec<RtkDualFrequencyArcEpoch> = epochs
+        .iter()
+        .map(|epoch| epoch.borrow(py).inner.clone())
+        .collect();
+    let inner = core_fix_wide_lane_rtk_arc(&epochs, &config.inner).map_err(to_solve_err)?;
+    Ok(PyRtkWideLaneArcSolution { inner })
+}
+
+/// Complete typed configuration for ionosphere-free RTK arc setup.
+#[pyclass(module = "sidereon._sidereon", name = "RtkIonosphereFreeArcConfig")]
+pub struct PyRtkIonosphereFreeArcConfig {
+    inner: RtkIonosphereFreeArcConfig,
+}
+
+#[pymethods]
+impl PyRtkIonosphereFreeArcConfig {
+    /// Create an ionosphere-free RTK arc setup configuration.
+    #[new]
+    #[pyo3(signature = (
+        base,
+        initial_baseline_m=[0.0; 3],
+        reference_satellite=None,
+        reference_per_system=None,
+        apply_troposphere=false,
+    ))]
+    fn new(
+        base: [f64; 3],
+        initial_baseline_m: [f64; 3],
+        reference_satellite: Option<String>,
+        reference_per_system: Option<BTreeMap<String, String>>,
+        apply_troposphere: bool,
+    ) -> Self {
+        Self {
+            inner: RtkIonosphereFreeArcConfig {
+                base_m: base,
+                initial_baseline_m,
+                reference: reference_selection(reference_satellite, reference_per_system),
+                apply_troposphere,
+            },
+        }
+    }
+
+    #[getter]
+    fn base(&self) -> [f64; 3] {
+        self.inner.base_m
+    }
+
+    #[getter]
+    fn initial_baseline_m(&self) -> [f64; 3] {
+        self.inner.initial_baseline_m
+    }
+
+    #[getter]
+    fn apply_troposphere(&self) -> bool {
+        self.inner.apply_troposphere
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkIonosphereFreeArcConfig(base=[{:.3}, {:.3}, {:.3}], \
+             apply_troposphere={})",
+            self.inner.base_m[0],
+            self.inner.base_m[1],
+            self.inner.base_m[2],
+            self.inner.apply_troposphere
+        )
+    }
+}
+
+/// Ionosphere-free RTK arc setup result.
+#[pyclass(module = "sidereon._sidereon", name = "RtkIonosphereFreeArcSolution")]
+pub struct PyRtkIonosphereFreeArcSolution {
+    inner: RtkIonosphereFreeArcSolution,
+}
+
+#[pymethods]
+impl PyRtkIonosphereFreeArcSolution {
+    #[getter]
+    fn references(&self) -> BTreeMap<String, String> {
+        self.inner.references.clone()
+    }
+
+    #[getter]
+    fn epochs(&self) -> Vec<PyRtkArcEpoch> {
+        self.inner
+            .epochs
+            .iter()
+            .map(|inner| PyRtkArcEpoch {
+                inner: inner.clone(),
+            })
+            .collect()
+    }
+
+    #[getter]
+    fn wavelengths_m(&self) -> BTreeMap<String, f64> {
+        self.inner.wavelengths_m.clone()
+    }
+
+    #[getter]
+    fn offsets_m(&self) -> BTreeMap<String, f64> {
+        self.inner.offsets_m.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkIonosphereFreeArcSolution(references={}, epochs={})",
+            self.inner.references.len(),
+            self.inner.epochs.len()
+        )
+    }
+}
+
+/// Prepare ionosphere-free single-frequency RTK arc inputs from dual-frequency data.
+#[pyfunction]
+#[pyo3(signature = (epochs, wide_lane_cycles, config))]
+fn prepare_ionosphere_free_rtk_arc(
+    py: Python<'_>,
+    epochs: Vec<Py<PyRtkDualFrequencyArcEpoch>>,
+    wide_lane_cycles: BTreeMap<String, i64>,
+    config: &PyRtkIonosphereFreeArcConfig,
+) -> PyResult<PyRtkIonosphereFreeArcSolution> {
+    let epochs: Vec<RtkDualFrequencyArcEpoch> = epochs
+        .iter()
+        .map(|epoch| epoch.borrow(py).inner.clone())
+        .collect();
+    let inner = core_prepare_ionosphere_free_rtk_arc(&epochs, &wide_lane_cycles, &config.inner)
+        .map_err(to_solve_err)?;
+    Ok(PyRtkIonosphereFreeArcSolution { inner })
+}
+
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyRtkFloatSolution>()?;
+    m.add_class::<PyRtkFixedSolution>()?;
+    m.add_class::<PyMovingBaselineEpoch>()?;
+    m.add_class::<PyMovingBaselineEpochSolution>()?;
+    m.add_function(wrap_pyfunction!(solve_moving_baseline, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_rtk_float, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_rtk_fixed, m)?)?;
+    m.add_class::<PyIntegerStatus>()?;
+    m.add_class::<PyRtkStochasticModel>()?;
+    m.add_class::<PyRtkSatMeasurement>()?;
+    m.add_class::<PyRtkEpoch>()?;
+    m.add_class::<PyRtkMeasurementModel>()?;
+    m.add_class::<PyRtkFloatOptions>()?;
+    m.add_class::<PyRtkFixedOptions>()?;
+    m.add_class::<PyRtkResidualValidationOptions>()?;
+    m.add_class::<PyRtkFloatConfig>()?;
+    m.add_class::<PyRtkFixedConfig>()?;
+    m.add_class::<PyRtkArcObservation>()?;
+    m.add_class::<PyRtkArcEpoch>()?;
+    m.add_class::<PyRtkArcUpdateOptions>()?;
+    m.add_class::<PyRtkArcPreprocessing>()?;
+    m.add_class::<PyRtkArcConfig>()?;
+    m.add_class::<PyRtkArcIntegerSearch>()?;
+    m.add_class::<PyRtkArcResidual>()?;
+    m.add_class::<PyRtkArcInnovationScreen>()?;
+    m.add_class::<PyRtkArcEpochSolution>()?;
+    m.add_class::<PyCycleSlipSplitArc>()?;
+    m.add_class::<PyRtkFilterState>()?;
+    m.add_class::<PyRtkArcSolution>()?;
+    m.add_function(wrap_pyfunction!(solve_rtk_arc, m)?)?;
+    m.add_class::<PyRtkStaticArcConfig>()?;
+    m.add_class::<PyRtkStaticArcSolution>()?;
+    m.add_function(wrap_pyfunction!(solve_static_rtk_arc, m)?)?;
+    m.add_class::<PyRtkDualFrequencyObservation>()?;
+    m.add_class::<PyRtkDualFrequencySatelliteObservation>()?;
+    m.add_class::<PyRtkDualFrequencyArcEpoch>()?;
+    m.add_class::<PyRtkWideLaneOptions>()?;
+    m.add_class::<PyRtkDualCycleSlipConfig>()?;
+    m.add_class::<PyRtkWideLaneArcConfig>()?;
+    m.add_class::<PyRtkWideLaneArcSolution>()?;
+    m.add_function(wrap_pyfunction!(fix_wide_lane_rtk_arc, m)?)?;
+    m.add_class::<PyRtkIonosphereFreeArcConfig>()?;
+    m.add_class::<PyRtkIonosphereFreeArcSolution>()?;
+    m.add_function(wrap_pyfunction!(prepare_ionosphere_free_rtk_arc, m)?)?;
+    Ok(())
+}

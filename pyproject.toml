@@ -1,0 +1,59 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "sidereon"
+version = "0.9.0"
+description = "Python bindings for the Sidereon GNSS positioning engine (SP3 loading and SPP/RTK/PPP solves)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+keywords = ["gnss", "sp3", "positioning", "rtk", "ppp"]
+classifiers = [
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = ["numpy>=1.21", "httpx>=0.24", "platformdirs>=3"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not network'"
+markers = [
+  "network: hits a live archive over the network (excluded by default)",
+]
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# The re-export import block and `__all__` are grouped by feature area so the two
+# mirror each other; alphabetical isort would desync them.
+"python/sidereon/__init__.py" = ["I001"]
+# Benchmarks deliberately touch lazy attributes to force the work being timed.
+"bench/bench_fleet.py" = ["B018"]
+
+[tool.mypy]
+# mypy >=2 cannot analyze as 3.9 and numpy's stubs need >=3.12 to parse, so the
+# version is left to the host interpreter; ruff `target-version = "py39"` is the
+# py39 syntax guardrail.
+files = ["python/sidereon"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+no_implicit_optional = true
+
+[tool.maturin]
+# Mixed Rust/Python layout: the compiled extension is `sidereon._sidereon`, and
+# the hand-written ergonomic surface lives under python/sidereon/.
+python-source = "python"
+module-name = "sidereon._sidereon"
+features = ["pyo3/extension-module"]
