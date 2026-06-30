@@ -16,8 +16,8 @@ use sidereon_core::astro::angles as core_angles;
 use sidereon_core::astro::events::eclipse as core_eclipse;
 use sidereon_core::astro::frames::transforms::geodetic_to_itrs;
 use sidereon_core::geometry::{
-    self as core_geometry, DopError, DopOptions, DopWeighting as CoreDopWeighting, LineOfSight,
-    VisibilityOptions, Wgs84Geodetic,
+    self as core_geometry, dop_with_convention as core_dop_with_convention, DopError, DopOptions,
+    DopWeighting as CoreDopWeighting, EnuConvention, LineOfSight, VisibilityOptions, Wgs84Geodetic,
 };
 use sidereon_core::{GnssSatelliteId, GnssSystem};
 
@@ -352,6 +352,65 @@ fn extract_dop_weighting(obj: &Bound<'_, PyAny>) -> PyResult<PyDopWeighting> {
         return Ok(value);
     }
     PyDopWeighting::from_label(&obj.extract::<String>()?)
+}
+
+/// Local ENU convention for the DOP horizontal/vertical split.
+#[pyclass(module = "sidereon._sidereon", name = "EnuConvention", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum PyEnuConvention {
+    /// Geodetic-ellipsoid-normal ENU (the GNSS-standard default).
+    GEODETIC_NORMAL,
+    /// Geocentric-radial ENU (up is the spherical radial direction).
+    GEOCENTRIC_RADIAL,
+}
+
+impl PyEnuConvention {
+    fn from_label(value: &str) -> PyResult<Self> {
+        match value {
+            "geodetic_normal" => Ok(Self::GEODETIC_NORMAL),
+            "geocentric_radial" => Ok(Self::GEOCENTRIC_RADIAL),
+            other => Err(PyValueError::new_err(format!(
+                "unknown ENU convention {other:?}; expected \"geodetic_normal\" or \"geocentric_radial\""
+            ))),
+        }
+    }
+}
+
+impl From<PyEnuConvention> for EnuConvention {
+    fn from(value: PyEnuConvention) -> Self {
+        match value {
+            PyEnuConvention::GEODETIC_NORMAL => EnuConvention::GeodeticNormal,
+            PyEnuConvention::GEOCENTRIC_RADIAL => EnuConvention::GeocentricRadial,
+        }
+    }
+}
+
+#[pymethods]
+impl PyEnuConvention {
+    /// Stable lowercase selector accepted as a string alias.
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::GEODETIC_NORMAL => "geodetic_normal",
+            Self::GEOCENTRIC_RADIAL => "geocentric_radial",
+        }
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::GEODETIC_NORMAL => "EnuConvention.GEODETIC_NORMAL",
+            Self::GEOCENTRIC_RADIAL => "EnuConvention.GEOCENTRIC_RADIAL",
+        }
+    }
+}
+
+fn extract_enu_convention(obj: &Bound<'_, PyAny>) -> PyResult<PyEnuConvention> {
+    if let Ok(value) = obj.extract::<PyEnuConvention>() {
+        return Ok(value);
+    }
+    PyEnuConvention::from_label(&obj.extract::<String>()?)
 }
 
 /// GNSS dilution-of-precision scalars.
@@ -855,6 +914,50 @@ fn gnss_dop(
     dop_from_rows(&rows, &weights, &receiver)
 }
 
+/// GNSS dilution of precision with an explicit ENU convention for the
+/// horizontal/vertical split.
+///
+/// `line_of_sight` is a numpy `(n, 3)` array of ECEF unit vectors and `receiver`
+/// is WGS84 geodetic; `convention` is `EnuConvention.GEODETIC_NORMAL` (the
+/// default DOP path) or `EnuConvention.GEOCENTRIC_RADIAL` (or the string alias),
+/// which changes only HDOP/VDOP. Optional `weights` is a positive numpy `(n,)`
+/// array; at least four rows are required.
+#[pyfunction]
+#[pyo3(signature = (line_of_sight, receiver, convention, weights=None))]
+fn gnss_dop_with_convention(
+    line_of_sight: PyReadonlyArray2<'_, f64>,
+    receiver: PyRef<'_, PyWgs84Geodetic>,
+    #[pyo3(from_py_with = extract_enu_convention)] convention: PyEnuConvention,
+    weights: Option<PyReadonlyArray1<'_, f64>>,
+) -> PyResult<PyDop> {
+    let rows = rows3_from_array(
+        "line_of_sight",
+        &line_of_sight,
+        EmptyPolicy::Reject,
+        FinitePolicy::RequireFinite,
+    )?;
+    let weights = weights_or_unit(weights.as_ref(), rows.len())?;
+    let los: Vec<LineOfSight> = rows
+        .iter()
+        .map(|r| LineOfSight::new(r[0], r[1], r[2]))
+        .collect();
+    match core_dop_with_convention(
+        &los,
+        &weights,
+        Wgs84Geodetic::try_from(&*receiver)?,
+        convention.into(),
+    ) {
+        Ok(dop) => Ok(PyDop::from(dop)),
+        Err(DopError::InvalidInput { field, reason }) => Err(PyValueError::new_err(format!(
+            "invalid DOP input {field}: {reason}"
+        ))),
+        Err(DopError::TooFewSatellites) => Err(PyValueError::new_err(
+            "at least four geometry rows are required",
+        )),
+        Err(DopError::Singular) => Err(to_solve_err(DopError::Singular)),
+    }
+}
+
 /// Sample SP3-derived GNSS DOP over a J2000 epoch grid.
 ///
 /// `station` is either [`Wgs84Geodetic`] or an ECEF metre vector `(3,)`.
@@ -1159,6 +1262,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEclipseStatus>()?;
     m.add_class::<PyWgs84Geodetic>()?;
     m.add_class::<PyDopWeighting>()?;
+    m.add_class::<PyEnuConvention>()?;
     m.add_class::<PyDop>()?;
     m.add_class::<PyDopSeries>()?;
     m.add_class::<PyDopAtEpoch>()?;
@@ -1171,6 +1275,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(phase_angle, m)?)?;
     m.add_function(wrap_pyfunction!(earth_angular_radius, m)?)?;
     m.add_function(wrap_pyfunction!(gnss_dop, m)?)?;
+    m.add_function(wrap_pyfunction!(gnss_dop_with_convention, m)?)?;
     m.add_function(wrap_pyfunction!(gnss_dop_series, m)?)?;
     m.add_function(wrap_pyfunction!(gnss_dop_at_epoch, m)?)?;
     m.add_function(wrap_pyfunction!(gnss_dop_series_uniform, m)?)?;

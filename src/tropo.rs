@@ -63,8 +63,10 @@ fn tropo_zenith_delay(
 ///
 /// Returns `(dry, wet)`. The mapping depends on `elevation_rad`, the receiver
 /// `lat_rad` and `height_m`, and the seasonal day-of-year taken from
-/// `epoch_unix_us` (unix-microsecond UTC). Raises `ValueError` below the horizon
-/// or on out-of-domain input.
+/// `epoch_unix_us` (unix-microsecond UTC). A sub-horizon (`<= 0`) elevation is a
+/// transient solver state, so it clamps to the `asin(0.01)` mapping floor and
+/// returns finite factors rather than erroring; out-of-domain meteorology or a
+/// non-finite input still raises `ValueError`.
 #[pyfunction]
 fn tropo_mapping_factors(
     elevation_rad: f64,
@@ -83,7 +85,9 @@ fn tropo_mapping_factors(
 /// Composes the Saastamoinen zenith delays with the Niell mapping at
 /// `elevation_rad`. The receiver `lat_rad`/`lon_rad`/`height_m` and the
 /// meteorology drive the zenith terms; `epoch_unix_us` (unix-microsecond UTC)
-/// sets the seasonal day-of-year. Raises `ValueError` on out-of-domain input.
+/// sets the seasonal day-of-year. A sub-horizon (`<= 0`) elevation saturates the
+/// slant to exactly `0.0` rather than erroring; out-of-domain meteorology or a
+/// non-finite input still raises `ValueError`.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 fn tropo_slant_delay(

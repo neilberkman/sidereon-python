@@ -659,7 +659,7 @@ fn time_offset_err(py: Python<'_>, err: TimeOffsetError) -> PyErr {
 /// `to`-scale reading of the same instant. Defined for the atomic scales
 /// (TAI/TT/GPST/GST/QZSST/BDT) whose mutual offsets are constants. Raises
 /// `ValueError` for the UTC-based scales (UTC/GLONASST) whose offset is
-/// leap-second dependent — use [`timescale_offset_at`] with an epoch — and for
+/// leap-second dependent, use [`timescale_offset_at`] with an epoch, and for
 /// TDB (epoch-dependent periodic term). The raised `ValueError` carries a
 /// `.code` attribute (a `TimeOffsetErrorCode`).
 #[pyfunction]

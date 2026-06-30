@@ -1,7 +1,7 @@
 name: release
 
 # Keyless publish to PyPI via OIDC Trusted Publishing.
-# Trigger: push a version tag (e.g. v0.9.0). No PyPI API token / secret is used —
+# Trigger: push a version tag (e.g. v0.9.0). No PyPI API token / secret is used ,
 # PyPI exchanges the GitHub OIDC token for a short-lived upload credential and
 # records PEP 740 attestations (provenance) automatically. Requires a Trusted
 # Publisher to be configured on pypi.org for the `sidereon` project pointing at

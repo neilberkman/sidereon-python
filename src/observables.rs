@@ -21,7 +21,10 @@ use sidereon_core::frequencies::{
     rinex_observation_wavelength_m as core_rinex_observation_wavelength_m, wavelength_m,
     CarrierBand, CarrierPair,
 };
-use sidereon_core::observables::{predict, PredictOptions, PredictedObservables};
+use sidereon_core::observables::{
+    predict, predict_batch, predict_batch_parallel, ObservablesError, PredictOptions,
+    PredictedObservables, PredictRequest,
+};
 use sidereon_core::quality::{
     self, PseudorangeVarianceModel, PseudorangeVarianceOptions, QualityError, RaimWeights,
     WeightEntry,
@@ -35,7 +38,9 @@ use sidereon_core::velocity::{
 };
 use sidereon_core::GnssSatelliteId;
 
-use crate::marshal::{fixed_array, option_py_or_default, FinitePolicy, PyGnssSystem};
+use crate::marshal::{
+    fixed_array, option_py_or_default, rows3_from_array, EmptyPolicy, FinitePolicy, PyGnssSystem,
+};
 use crate::rinex::PyBroadcastEphemeris;
 use crate::{np_array, to_solve_err, PySp3};
 
@@ -2021,6 +2026,19 @@ fn parse_satellite(token: &str) -> PyResult<GnssSatelliteId> {
         .map_err(|err| PyValueError::new_err(format!("invalid satellite token {token:?}: {err}")))
 }
 
+/// Map a core observable failure to a Python exception, splitting a malformed
+/// input ([`ObservablesError::InvalidInput`] -> `ValueError`) from a no-data gap
+/// or structured ephemeris/solve failure ([`ObservablesError::NoEphemeris`] /
+/// [`ObservablesError::Ephemeris`] -> `SolveError`). The expected no-ephemeris
+/// gap is folded to a `None` batch entry at the call site before this runs, so on
+/// the batch path it only ever classifies a genuine failure.
+fn observables_error(err: ObservablesError) -> PyErr {
+    match err {
+        ObservablesError::InvalidInput { .. } => PyValueError::new_err(err.to_string()),
+        ObservablesError::NoEphemeris | ObservablesError::Ephemeris(_) => to_solve_err(err),
+    }
+}
+
 /// Predict geometric observables for one satellite from an SP3 precise product.
 #[pyfunction]
 #[pyo3(signature = (sp3, satellite_id, receiver_ecef_m, t_rx_j2000_s, carrier_hz, light_time=false, sagnac=true))]
@@ -2050,7 +2068,7 @@ fn observe(
             sagnac,
         },
     )
-    .map_err(to_solve_err)?;
+    .map_err(observables_error)?;
     Ok(PyPredictedObservables { inner })
 }
 
@@ -2083,8 +2101,79 @@ fn observe_broadcast(
             sagnac,
         },
     )
-    .map_err(to_solve_err)?;
+    .map_err(observables_error)?;
     Ok(PyPredictedObservables { inner })
+}
+
+/// Predict geometric observables for many `(satellite, receiver, epoch)` requests
+/// from an SP3 precise product, in one call.
+///
+/// `satellite_ids` is a length-`n` list of canonical tokens, `receivers_ecef_m`
+/// an `(n, 3)` numpy array of static receiver ECEF positions in metres, and
+/// `t_rx_j2000_s` a length-`n` numpy array of receive epochs in seconds since
+/// J2000. Each request is independent, so one batch can mix satellites,
+/// receivers, and epochs freely. Returns a length-`n` list whose entry `i` is the
+/// [`PredictedObservables`] for request `i`, or `None` only when that request has
+/// no ephemeris at the epoch (the expected no-data gap). An invalid input raises
+/// `ValueError` and a structured ephemeris/solve failure raises `SolveError`
+/// rather than being masked as a missing entry. With `parallel=True` the
+/// independent requests fan across a thread pool; each value is bit-identical to
+/// the serial path.
+#[pyfunction]
+#[pyo3(signature = (sp3, satellite_ids, receivers_ecef_m, t_rx_j2000_s, carrier_hz, *, light_time=false, sagnac=true, parallel=true))]
+#[allow(clippy::too_many_arguments)]
+fn observe_batch(
+    sp3: &PySp3,
+    satellite_ids: Vec<String>,
+    receivers_ecef_m: PyReadonlyArray2<'_, f64>,
+    t_rx_j2000_s: PyReadonlyArray1<'_, f64>,
+    carrier_hz: f64,
+    light_time: bool,
+    sagnac: bool,
+    parallel: bool,
+) -> PyResult<Vec<Option<PyPredictedObservables>>> {
+    let receivers = rows3_from_array(
+        "receivers_ecef_m",
+        &receivers_ecef_m,
+        EmptyPolicy::Allow,
+        FinitePolicy::RequireFinite,
+    )?;
+    let epochs = t_rx_j2000_s
+        .as_slice()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    if satellite_ids.len() != receivers.len() || satellite_ids.len() != epochs.len() {
+        return Err(PyValueError::new_err(format!(
+            "satellite_ids ({}), receivers_ecef_m ({}), and t_rx_j2000_s ({}) must have the same length",
+            satellite_ids.len(),
+            receivers.len(),
+            epochs.len()
+        )));
+    }
+    let mut requests: Vec<PredictRequest> = Vec::with_capacity(satellite_ids.len());
+    for (index, token) in satellite_ids.iter().enumerate() {
+        requests.push((parse_satellite(token)?, receivers[index], epochs[index]));
+    }
+    let options = PredictOptions {
+        carrier_hz,
+        light_time,
+        sagnac,
+    };
+    let results = if parallel {
+        predict_batch_parallel(&sp3.inner, &requests, options)
+    } else {
+        predict_batch(&sp3.inner, &requests, options)
+    };
+    results
+        .into_iter()
+        .map(|result| match result {
+            Ok(inner) => Ok(Some(PyPredictedObservables { inner })),
+            // The expected no-data gap is the only failure that maps to a missing
+            // entry; an invalid input or a structured ephemeris/solve failure
+            // surfaces as a Python exception rather than a silent `None`.
+            Err(ObservablesError::NoEphemeris) => Ok(None),
+            Err(err) => Err(observables_error(err)),
+        })
+        .collect()
 }
 
 /// GPS C/A code chips for a PRN as numpy `int8` `(1023,)`, with chips `+1` or `-1`.
@@ -2403,6 +2492,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPredictedObservables>()?;
     m.add_function(wrap_pyfunction!(observe, m)?)?;
     m.add_function(wrap_pyfunction!(observe_broadcast, m)?)?;
+    m.add_function(wrap_pyfunction!(observe_batch, m)?)?;
     m.add_function(wrap_pyfunction!(ca_code_py, m)?)?;
     m.add_function(wrap_pyfunction!(ca_chip_py, m)?)?;
     m.add_function(wrap_pyfunction!(autocorrelation, m)?)?;

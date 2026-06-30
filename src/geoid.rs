@@ -15,8 +15,11 @@ use pyo3::types::PyModule;
 use pyo3::Bound;
 
 use sidereon_core::geoid::{
-    ellipsoidal_height_m as core_ellipsoidal_height_m, geoid_undulation as core_geoid_undulation,
-    orthometric_height_m as core_orthometric_height_m, GeoidGrid,
+    egm96_ellipsoidal_height_m as core_egm96_ellipsoidal_height_m,
+    egm96_orthometric_height_m as core_egm96_orthometric_height_m,
+    egm96_undulation as core_egm96_undulation, ellipsoidal_height_m as core_ellipsoidal_height_m,
+    geoid_undulation as core_geoid_undulation, orthometric_height_m as core_orthometric_height_m,
+    GeoidGrid,
 };
 
 fn to_geoid_err<E: std::fmt::Debug>(err: E) -> PyErr {
@@ -116,10 +119,44 @@ fn ellipsoidal_height_m(orthometric_height_m: f64, lat_rad: f64, lon_rad: f64) -
     core_ellipsoidal_height_m(orthometric_height_m, lat_rad, lon_rad)
 }
 
+/// Geoid undulation `N` (metres above the WGS84 ellipsoid) at a geodetic
+/// position in radians, from the embedded GENUINE EGM96 1-degree global grid.
+///
+/// Latitude positive north, longitude positive east, both radians. This is the
+/// recommended zero-setup default for metre-class datum work: the bilinear lookup
+/// tracks the full 15-arcminute EGM96 grid to ~0.4 m RMS. The coarse 30-degree
+/// [`geoid_undulation`] is only a sanity-check fallback.
+#[pyfunction]
+#[pyo3(signature = (lat_rad, lon_rad))]
+fn egm96_undulation(lat_rad: f64, lon_rad: f64) -> f64 {
+    core_egm96_undulation(lat_rad, lon_rad)
+}
+
+/// Orthometric height `H = h - N` (metres above mean sea level) from an
+/// ellipsoidal height and a geodetic position in radians, using the embedded
+/// genuine EGM96 1-degree model.
+#[pyfunction]
+#[pyo3(signature = (ellipsoidal_height_m, lat_rad, lon_rad))]
+fn egm96_orthometric_height_m(ellipsoidal_height_m: f64, lat_rad: f64, lon_rad: f64) -> f64 {
+    core_egm96_orthometric_height_m(ellipsoidal_height_m, lat_rad, lon_rad)
+}
+
+/// Ellipsoidal height `h = H + N` (metres above the WGS84 ellipsoid) from an
+/// orthometric height and a geodetic position in radians, using the embedded
+/// genuine EGM96 1-degree model.
+#[pyfunction]
+#[pyo3(signature = (orthometric_height_m, lat_rad, lon_rad))]
+fn egm96_ellipsoidal_height_m(orthometric_height_m: f64, lat_rad: f64, lon_rad: f64) -> f64 {
+    core_egm96_ellipsoidal_height_m(orthometric_height_m, lat_rad, lon_rad)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGeoidGrid>()?;
     m.add_function(wrap_pyfunction!(geoid_undulation, m)?)?;
     m.add_function(wrap_pyfunction!(orthometric_height_m, m)?)?;
     m.add_function(wrap_pyfunction!(ellipsoidal_height_m, m)?)?;
+    m.add_function(wrap_pyfunction!(egm96_undulation, m)?)?;
+    m.add_function(wrap_pyfunction!(egm96_orthometric_height_m, m)?)?;
+    m.add_function(wrap_pyfunction!(egm96_ellipsoidal_height_m, m)?)?;
     Ok(())
 }

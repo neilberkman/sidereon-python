@@ -18,9 +18,9 @@ Bit-exactness boundary (mirrors the core's own contract):
 
 import datetime
 import json
+import math
 import os
 
-import pytest
 import sidereon
 from _helpers import CORE_FIXTURES
 
@@ -133,15 +133,38 @@ def test_below_zenith_mapping_and_slant_match_golden_within_reconstruction_band(
     assert abs(slant - _exp(c, "slant_m")) < RECONSTRUCTION_TOL_M
 
 
-def test_below_horizon_elevation_is_rejected():
+# The 0.9.1 troposphere hardening clamps a sub-horizon elevation (a transient
+# solver state) instead of rejecting it, mirroring the core's own
+# `tropo_clamps_transient_solver_states` contract: the Niell mapping floors at
+# asin(0.01) rad and the composed slant saturates to exactly 0.0 m.
+TROPO_MIN_MAPPING_ELEVATION_RAD = math.asin(0.01)
+
+
+def test_below_horizon_mapping_clamps_to_floor():
+    """Sub-horizon (<= 0) elevation clamps to the asin(0.01) mapping floor and
+    returns finite factors bit-identical to the floor elevation, not an error."""
     c = _zenith_case()
-    with pytest.raises(ValueError):
-        sidereon.tropo_mapping_factors(
-            0.0, _inp(c, "lat_rad"), _inp(c, "height_m"), DOY28_EPOCH_US
-        )
-    with pytest.raises(ValueError):
-        sidereon.tropo_slant_delay(
-            -0.1,
+    lat = _inp(c, "lat_rad")
+    height = _inp(c, "height_m")
+
+    floored = sidereon.tropo_mapping_factors(
+        TROPO_MIN_MAPPING_ELEVATION_RAD, lat, height, DOY28_EPOCH_US
+    )
+    assert all(math.isfinite(v) for v in floored)
+    for el in (0.0, math.radians(-5.0)):
+        dry, wet = sidereon.tropo_mapping_factors(el, lat, height, DOY28_EPOCH_US)
+        assert math.isfinite(dry) and math.isfinite(wet)
+        # Bit-identical to the floor: sub-horizon snaps to the floor elevation.
+        assert dry.hex() == floored[0].hex()
+        assert wet.hex() == floored[1].hex()
+
+
+def test_below_horizon_slant_saturates_to_zero():
+    """The composed slant below the horizon saturates to exactly 0.0 m."""
+    c = _zenith_case()
+    for el in (0.0, -0.1):
+        slant = sidereon.tropo_slant_delay(
+            el,
             _inp(c, "lat_rad"),
             _inp(c, "lon_rad"),
             _inp(c, "height_m"),
@@ -150,3 +173,4 @@ def test_below_horizon_elevation_is_rejected():
             _inp(c, "relative_humidity"),
             DOY28_EPOCH_US,
         )
+        assert slant == 0.0

@@ -34,6 +34,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfg-if"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -96,6 +102,16 @@ name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+
+[[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
 
 [[package]]
 name = "libm"
@@ -344,9 +360,9 @@ dependencies = [
 
 [[package]]
 name = "quote"
-version = "1.0.45"
+version = "1.0.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
+checksum = "dfbc457d0c7a0759a614551b11a6409e5951f6c7537be1f1b7682b9ae9230368"
 dependencies = [
  "proc-macro2",
 ]
@@ -458,18 +474,18 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sidereon"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5be8d239f4939d9683ec228004b4e079bbfa3eb041df8e43302b9d449c0e8d48"
+checksum = "f58b971650c708293470a7d0edb308875c3372dbe067b1e7ad985d2bbea7b89d"
 dependencies = [
  "sidereon-core",
 ]
 
 [[package]]
 name = "sidereon-core"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "876821c8c169a7715e963fc8493a242bed41585906ac6722893d5c353425953b"
+checksum = "cc463aa3033f296483367fbc4fe63557546effcb78a00e22d141e39f35826ef9"
 dependencies = [
  "cc",
  "libm",
@@ -483,14 +499,16 @@ dependencies = [
 
 [[package]]
 name = "sidereon-py"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
+ "nalgebra",
  "numpy",
  "pyo3",
  "pythonize",
  "serde",
  "sidereon",
  "sidereon-core",
+ "trust-region-least-squares",
 ]
 
 [[package]]
@@ -544,6 +562,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "trust-region-least-squares"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f27e8bc54a4c2fab2d007c2bf0287217718ba05b410517c5dd120e93a281fe55"
+dependencies = [
+ "libloading",
+ "nalgebra",
+ "rayon",
+]
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -570,6 +599,12 @@ dependencies = [
  "bytemuck",
  "safe_arch",
 ]
+
+[[package]]
+name = "windows-link"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
 
 [[package]]
 name = "zmij"
