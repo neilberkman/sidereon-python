@@ -15,17 +15,17 @@ use sidereon_core::carrier_phase::{
     SlipResult, SmoothCodeResult, DEFAULT_HATCH_WINDOW_CAP,
 };
 use sidereon_core::combinations::{self, IonosphereFreeError, PseudorangeDropReason};
+use sidereon_core::ephemeris::{PreciseEphemerisSamples, Sp3};
 use sidereon_core::frequencies::{
     default_iono_free_pair, frequency_hz, rinex_band_frequency_hz, rinex_band_wavelength_m,
     rinex_observation_frequency_hz as core_rinex_observation_frequency_hz,
     rinex_observation_wavelength_m as core_rinex_observation_wavelength_m, wavelength_m,
     CarrierBand, CarrierPair,
 };
-use sidereon_core::ephemeris::{PreciseEphemerisSamples, Sp3};
 use sidereon_core::observables::{
     predict, predict_batch, predict_batch_parallel, predict_ranges as core_predict_ranges,
-    ObservableEphemerisSource, ObservablesError, PredictOptions, PredictedObservables,
-    PredictRequest, RangePrediction, RangePredictionRequest,
+    ObservableEphemerisSource, ObservablesError, PredictOptions, PredictRequest,
+    PredictedObservables, RangePrediction, RangePredictionRequest,
 };
 use sidereon_core::quality::{
     self, PseudorangeVarianceModel, PseudorangeVarianceOptions, QualityError, RaimWeights,
@@ -2211,14 +2211,16 @@ impl PyRangePrediction {
 /// the GIL so the batch compute can run with the GIL released without holding a
 /// Python borrow across the `allow_threads` boundary.
 enum OwnedRangeSource {
-    Sp3(Sp3),
+    // `Sp3` is far larger than `Samples`; box it so the enum is not sized to the
+    // largest variant (clippy::large_enum_variant).
+    Sp3(Box<Sp3>),
     Samples(PreciseEphemerisSamples),
 }
 
 impl OwnedRangeSource {
     fn as_source(&self) -> &dyn ObservableEphemerisSource {
         match self {
-            OwnedRangeSource::Sp3(sp3) => sp3,
+            OwnedRangeSource::Sp3(sp3) => sp3.as_ref(),
             OwnedRangeSource::Samples(samples) => samples,
         }
     }
@@ -2269,7 +2271,7 @@ fn predict_ranges_py(
     // released. The source-polymorphism (Sp3 | PreciseEphemerisSamples,
     // anything else -> TypeError) is unchanged.
     let source: OwnedRangeSource = if let Ok(sp3) = source.downcast::<PySp3>() {
-        OwnedRangeSource::Sp3(sp3.borrow().inner.clone())
+        OwnedRangeSource::Sp3(Box::new(sp3.borrow().inner.clone()))
     } else if let Ok(samples) = source.downcast::<PyPreciseEphemerisSamples>() {
         OwnedRangeSource::Samples(samples.borrow().inner.clone())
     } else {

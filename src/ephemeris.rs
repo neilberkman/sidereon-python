@@ -538,9 +538,7 @@ fn instant_from_j2000_seconds(
     scale: sidereon_core::astro::time::TimeScale,
 ) -> PyResult<Instant> {
     if !seconds.is_finite() {
-        return Err(PyValueError::new_err(
-            "epoch_j2000_seconds must be finite",
-        ));
+        return Err(PyValueError::new_err("epoch_j2000_seconds must be finite"));
     }
     let days = seconds / SECONDS_PER_DAY;
     let whole_days = days.floor();

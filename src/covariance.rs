@@ -181,10 +181,7 @@ fn error_ellipse_2x2(
     if view.shape() != [2, 2] {
         return Err(PyValueError::new_err("covariance must have shape (2, 2)"));
     }
-    let block = [
-        [view[[0, 0]], view[[0, 1]]],
-        [view[[1, 0]], view[[1, 1]]],
-    ];
+    let block = [[view[[0, 0]], view[[0, 1]]], [view[[1, 0]], view[[1, 1]]]];
     let ellipse = core_error_ellipse_2x2(block, confidence).map_err(|err| match err {
         DopError::InvalidInput { field, reason } => {
             PyValueError::new_err(format!("invalid {field}: {reason}"))

@@ -28,7 +28,8 @@ fn to_normality_err(err: NormalityError) -> PyErr {
 /// Read a residual array into a slice, mapping a non-contiguous array to a clear
 /// error.
 fn residual_slice<'a>(x: &'a PyReadonlyArray1<'_, f64>) -> PyResult<&'a [f64]> {
-    x.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))
+    x.as_slice()
+        .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 /// Sample mean, variance, skewness, and kurtosis of a residual set.

@@ -17,14 +17,14 @@
 //! reproduce a pinned SciPy runtime bit-for-bit.
 
 use numpy::ndarray::Array2;
-use numpy::{
-    PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, ToPyArray,
-};
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, ToPyArray};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
-use trust_region_least_squares::batch::{solve_data_problem_drop_one, solve_data_problem_drop_one_with};
+use trust_region_least_squares::batch::{
+    solve_data_problem_drop_one, solve_data_problem_drop_one_with,
+};
 use trust_region_least_squares::data::{
     solve_data_problem, solve_data_problem_with, BuiltinResidual, DataProblem,
 };
@@ -142,7 +142,9 @@ fn require_pairs(
     y: &Option<PyReadonlyArray1<'_, f64>>,
 ) -> PyResult<Vec<f64>> {
     let t = t.ok_or_else(|| {
-        PyValueError::new_err(format!("kind='{kind}' requires the sample abscissae `t` (m,)"))
+        PyValueError::new_err(format!(
+            "kind='{kind}' requires the sample abscissae `t` (m,)"
+        ))
     })?;
     if y.is_none() {
         return Err(PyValueError::new_err(format!(
@@ -155,13 +157,12 @@ fn require_pairs(
 }
 
 fn pairs_y(y: Option<PyReadonlyArray1<'_, f64>>) -> PyResult<Vec<f64>> {
-    Ok(y
-        .ok_or_else(|| {
-            PyValueError::new_err("kind requires the sample ordinates `y` (m,)")
-        })?
-        .as_slice()
-        .map_err(|e| PyValueError::new_err(e.to_string()))?
-        .to_vec())
+    Ok(
+        y.ok_or_else(|| PyValueError::new_err("kind requires the sample ordinates `y` (m,)"))?
+            .as_slice()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?
+            .to_vec(),
+    )
 }
 
 /// A converged trust-region least-squares solve, mirroring the fields
@@ -222,7 +223,11 @@ impl PyLeastSquaresResult {
     /// Jacobian at the solution, numpy `(m, n)` float64.
     #[getter]
     fn jac<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let m = if self.n == 0 { 0 } else { self.jac.len() / self.n };
+        let m = if self.n == 0 {
+            0
+        } else {
+            self.jac.len() / self.n
+        };
         let array = Array2::from_shape_vec((m, self.n), self.jac.clone())
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(array.to_pyarray(py))

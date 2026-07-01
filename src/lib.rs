@@ -38,8 +38,8 @@ mod ils;
 mod iod;
 mod ionex;
 mod lambert;
-mod least_squares;
 mod leap;
+mod least_squares;
 mod lnav;
 mod marshal;
 mod normality;
@@ -66,7 +66,7 @@ mod tca;
 mod tides;
 mod tropo;
 
-pub(crate) use ephemeris::{PySp3, PyPreciseEphemerisSamples};
+pub(crate) use ephemeris::{PyPreciseEphemerisSamples, PySp3};
 
 create_exception!(
     _sidereon,
