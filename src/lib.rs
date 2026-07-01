@@ -66,7 +66,7 @@ mod tca;
 mod tides;
 mod tropo;
 
-pub(crate) use ephemeris::PySp3;
+pub(crate) use ephemeris::{PySp3, PyPreciseEphemerisSamples};
 
 create_exception!(
     _sidereon,

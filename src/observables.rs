@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
@@ -21,9 +21,11 @@ use sidereon_core::frequencies::{
     rinex_observation_wavelength_m as core_rinex_observation_wavelength_m, wavelength_m,
     CarrierBand, CarrierPair,
 };
+use sidereon_core::ephemeris::{PreciseEphemerisSamples, Sp3};
 use sidereon_core::observables::{
-    predict, predict_batch, predict_batch_parallel, ObservablesError, PredictOptions,
-    PredictedObservables, PredictRequest,
+    predict, predict_batch, predict_batch_parallel, predict_ranges as core_predict_ranges,
+    ObservableEphemerisSource, ObservablesError, PredictOptions, PredictedObservables,
+    PredictRequest, RangePrediction, RangePredictionRequest,
 };
 use sidereon_core::quality::{
     self, PseudorangeVarianceModel, PseudorangeVarianceOptions, QualityError, RaimWeights,
@@ -42,7 +44,7 @@ use crate::marshal::{
     fixed_array, option_py_or_default, rows3_from_array, EmptyPolicy, FinitePolicy, PyGnssSystem,
 };
 use crate::rinex::PyBroadcastEphemeris;
-use crate::{np_array, to_solve_err, PySp3};
+use crate::{np_array, to_solve_err, PyPreciseEphemerisSamples, PySp3};
 
 type PyPseudorangeObservation = (String, f64);
 type PyDroppedPseudorange = (String, PyPseudorangeDropReason);
@@ -2105,6 +2107,186 @@ fn observe_broadcast(
     Ok(PyPredictedObservables { inner })
 }
 
+/// One batch range-prediction request: the satellite, the static receiver ECEF
+/// position in metres, and the receive epoch in seconds since J2000.
+#[pyclass(module = "sidereon._sidereon", name = "RangePredictionRequest")]
+#[derive(Clone, Copy)]
+pub struct PyRangePredictionRequest {
+    inner: RangePredictionRequest,
+}
+
+#[pymethods]
+impl PyRangePredictionRequest {
+    /// Create one range-prediction request.
+    ///
+    /// `satellite` is a canonical token such as `"G01"`, `receiver_ecef_m` is a
+    /// length-3 static ECEF position in metres, and `t_rx_j2000_s` is the receive
+    /// epoch in seconds since J2000.
+    #[new]
+    fn new(satellite: &str, receiver_ecef_m: [f64; 3], t_rx_j2000_s: f64) -> PyResult<Self> {
+        Ok(Self {
+            inner: RangePredictionRequest {
+                sat: parse_satellite(satellite)?,
+                receiver_ecef_m,
+                t_rx_j2000_s,
+            },
+        })
+    }
+
+    /// Satellite token, e.g. `"G01"`.
+    #[getter]
+    fn satellite(&self) -> String {
+        self.inner.sat.to_string()
+    }
+
+    /// Static receiver ECEF position as a numpy `(3,)` array, metres.
+    #[getter]
+    fn receiver_ecef_m<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.receiver_ecef_m)
+    }
+
+    /// Receive epoch, seconds since J2000.
+    #[getter]
+    fn t_rx_j2000_s(&self) -> f64 {
+        self.inner.t_rx_j2000_s
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RangePredictionRequest(satellite={:?}, t_rx_j2000_s={})",
+            self.inner.sat.to_string(),
+            self.inner.t_rx_j2000_s
+        )
+    }
+}
+
+/// The geometry-only result of one [`predict_ranges`] request.
+#[pyclass(module = "sidereon._sidereon", name = "RangePrediction")]
+#[derive(Clone, Copy)]
+pub struct PyRangePrediction {
+    inner: RangePrediction,
+}
+
+impl From<RangePrediction> for PyRangePrediction {
+    fn from(inner: RangePrediction) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyRangePrediction {
+    /// Geometric range after optional Sagnac transport, metres.
+    #[getter]
+    fn geometric_range_m(&self) -> f64 {
+        self.inner.geometric_range_m
+    }
+
+    /// Satellite clock offset at transmit time, seconds (or `None`).
+    #[getter]
+    fn sat_clock_s(&self) -> Option<f64> {
+        self.inner.sat_clock_s
+    }
+
+    /// Transmit time as seconds since J2000.
+    #[getter]
+    fn transmit_time_j2000_s(&self) -> f64 {
+        self.inner.transmit_time_j2000_s
+    }
+
+    /// Sagnac-transported satellite ECEF position as a numpy `(3,)` array, metres.
+    #[getter]
+    fn sat_pos_ecef_m<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.sat_pos_ecef_m)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RangePrediction(geometric_range_m={:.3}, transmit_time_j2000_s={}, sat_clock_s={:?})",
+            self.inner.geometric_range_m, self.inner.transmit_time_j2000_s, self.inner.sat_clock_s
+        )
+    }
+}
+
+/// An owned precise-ephemeris source for [`predict_ranges_py`], decoded under
+/// the GIL so the batch compute can run with the GIL released without holding a
+/// Python borrow across the `allow_threads` boundary.
+enum OwnedRangeSource {
+    Sp3(Sp3),
+    Samples(PreciseEphemerisSamples),
+}
+
+impl OwnedRangeSource {
+    fn as_source(&self) -> &dyn ObservableEphemerisSource {
+        match self {
+            OwnedRangeSource::Sp3(sp3) => sp3,
+            OwnedRangeSource::Samples(samples) => samples,
+        }
+    }
+}
+
+/// Predict geometric ranges for many `(satellite, receiver, epoch)` requests in
+/// one call.
+///
+/// `source` is an [`Sp3`](crate) precise product or a
+/// [`PreciseEphemerisSamples`](crate) source. `requests` is a list of
+/// [`RangePredictionRequest`]; the whole batch is evaluated inside one call so no
+/// per-request Python dispatch is paid. Returns a list of [`RangePrediction`]
+/// whose entry `i` corresponds to request `i`, using the same light-time
+/// iteration and Sagnac transport as the scalar predictor.
+///
+/// Raises `ValueError` on a malformed request input and `SolveError` on a
+/// structured ephemeris failure (a missing or out-of-coverage satellite/epoch),
+/// which aborts the batch on the first failing request.
+#[pyfunction(name = "predict_ranges")]
+#[pyo3(signature = (source, requests, *, light_time=true, sagnac=true))]
+fn predict_ranges_py(
+    py: Python<'_>,
+    source: &Bound<'_, PyAny>,
+    requests: Vec<Py<PyRangePredictionRequest>>,
+    light_time: bool,
+    sagnac: bool,
+) -> PyResult<Vec<PyRangePrediction>> {
+    let requests: Vec<RangePredictionRequest> =
+        requests.iter().map(|r| r.borrow(py).inner).collect();
+    let options = PredictOptions {
+        light_time,
+        sagnac,
+        ..PredictOptions::default()
+    };
+    let mut out = vec![
+        RangePrediction {
+            geometric_range_m: 0.0,
+            sat_clock_s: None,
+            transmit_time_j2000_s: 0.0,
+            sat_pos_ecef_m: [0.0; 3],
+        };
+        requests.len()
+    ];
+
+    // Decode and own the selected source under the GIL: the borrow from the
+    // PyRef must not cross the `allow_threads` boundary, so clone the underlying
+    // core source into an owned value the compute can hold with the GIL
+    // released. The source-polymorphism (Sp3 | PreciseEphemerisSamples,
+    // anything else -> TypeError) is unchanged.
+    let source: OwnedRangeSource = if let Ok(sp3) = source.downcast::<PySp3>() {
+        OwnedRangeSource::Sp3(sp3.borrow().inner.clone())
+    } else if let Ok(samples) = source.downcast::<PyPreciseEphemerisSamples>() {
+        OwnedRangeSource::Samples(samples.borrow().inner.clone())
+    } else {
+        return Err(PyTypeError::new_err(
+            "source must be an Sp3 or a PreciseEphemerisSamples",
+        ));
+    };
+
+    // The source, requests, and output buffer are all fully owned, so the
+    // pure-Rust batch runs with the GIL released and reacquires it only to build
+    // the Python result list. Releasing the GIL does not change results.
+    py.allow_threads(|| core_predict_ranges(source.as_source(), &requests, options, &mut out))
+        .map_err(observables_error)?;
+
+    Ok(out.into_iter().map(PyRangePrediction::from).collect())
+}
+
 /// Predict geometric observables for many `(satellite, receiver, epoch)` requests
 /// from an SP3 precise product, in one call.
 ///
@@ -2493,6 +2675,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(observe, m)?)?;
     m.add_function(wrap_pyfunction!(observe_broadcast, m)?)?;
     m.add_function(wrap_pyfunction!(observe_batch, m)?)?;
+    m.add_class::<PyRangePredictionRequest>()?;
+    m.add_class::<PyRangePrediction>()?;
+    m.add_function(wrap_pyfunction!(predict_ranges_py, m)?)?;
     m.add_function(wrap_pyfunction!(ca_code_py, m)?)?;
     m.add_function(wrap_pyfunction!(ca_chip_py, m)?)?;
     m.add_function(wrap_pyfunction!(autocorrelation, m)?)?;

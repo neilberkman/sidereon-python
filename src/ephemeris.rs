@@ -17,17 +17,22 @@ use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyBytes, PyModule};
 
 use sidereon_core::astro::time::civil::seconds_between_splits;
-use sidereon_core::astro::time::{Instant, InstantRepr};
+use sidereon_core::astro::time::{Instant, InstantRepr, JulianDateSplit};
 use sidereon_core::constants::J2000_JD;
 use sidereon_core::ephemeris::{
     align_clock_reference as core_align_clock_reference,
-    clock_reference_offset as core_clock_reference_offset, ClockReferenceOffset, Sp3,
+    clock_reference_offset as core_clock_reference_offset, ClockReferenceOffset,
+    PreciseEphemerisSample, PreciseEphemerisSamples, Sp3,
 };
 use sidereon_core::Error as CoreError;
 use sidereon_core::GnssSatelliteId;
 
+use crate::frames::PyTimeScale;
 use crate::marshal::rows3_to_array;
 use crate::{np_array, to_solve_err, to_sp3_err};
+
+/// Seconds in one day, for the J2000-second <-> split-Julian-date reconstruction.
+const SECONDS_PER_DAY: f64 = 86_400.0;
 
 /// A parsed SP3 precise-ephemeris product.
 ///
@@ -165,6 +170,22 @@ impl PySp3 {
     /// epochs, satellites, positions, and clocks.
     fn to_sp3_string(&self) -> String {
         self.inner.to_sp3_string()
+    }
+
+    /// Extract this product as the canonical precise-ephemeris samples, in SI
+    /// units, one per parsed position record in ascending epoch order.
+    ///
+    /// Round-tripping the result through
+    /// [`PreciseEphemerisSamples.from_samples`] rebuilds the same interpolatable
+    /// source (byte-identical for samples whose metres are the faithful image of
+    /// the fitted kilometres, sub-micron otherwise; see
+    /// [`PreciseEphemerisSamples`]).
+    fn precise_ephemeris_samples(&self) -> Vec<PyPreciseEphemerisSample> {
+        self.inner
+            .precise_ephemeris_samples()
+            .into_iter()
+            .map(PyPreciseEphemerisSample::from)
+            .collect()
     }
 
     fn __repr__(&self) -> String {
@@ -349,6 +370,188 @@ impl PySp3State {
     }
 }
 
+/// One precise-ephemeris sample: a satellite's ECEF position (and optional
+/// clock) at one epoch, in SI units.
+///
+/// This is the canonical serialization-independent element behind
+/// [`PreciseEphemerisSamples`]. `position_ecef_m` is the ITRF/IGS ECEF position
+/// in metres; `clock_s` is the satellite clock offset in seconds, `None` when
+/// the source carried no clock estimate. `clock_event` mirrors the SP3 `E`
+/// clock-event flag: `True` marks a clock discontinuity, splitting the
+/// interpolated clock arc there. The epoch is carried as seconds since J2000 in
+/// the sample's own `time_scale`.
+#[pyclass(module = "sidereon._sidereon", name = "PreciseEphemerisSample")]
+#[derive(Clone)]
+pub struct PyPreciseEphemerisSample {
+    inner: PreciseEphemerisSample,
+}
+
+impl From<PreciseEphemerisSample> for PyPreciseEphemerisSample {
+    fn from(inner: PreciseEphemerisSample) -> Self {
+        Self { inner }
+    }
+}
+
+impl PyPreciseEphemerisSample {
+    fn to_core(&self) -> PreciseEphemerisSample {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyPreciseEphemerisSample {
+    /// Build one precise-ephemeris sample.
+    ///
+    /// `satellite` is a canonical token such as `"G01"`, `epoch_j2000_seconds`
+    /// is the sample epoch in `time_scale`, `position_ecef_m` is a length-3 ECEF
+    /// position in metres, and `clock_s` is the optional clock offset in seconds.
+    /// Set `clock_event=True` to reconstruct an epoch that carries the SP3 `E`
+    /// clock reset.
+    #[new]
+    #[pyo3(signature = (
+        satellite,
+        epoch_j2000_seconds,
+        position_ecef_m,
+        clock_s=None,
+        *,
+        time_scale=PyTimeScale::GPST,
+        clock_event=false,
+    ))]
+    fn new(
+        satellite: &str,
+        epoch_j2000_seconds: f64,
+        position_ecef_m: [f64; 3],
+        clock_s: Option<f64>,
+        time_scale: PyTimeScale,
+        clock_event: bool,
+    ) -> PyResult<Self> {
+        let sat = parse_sat(satellite)?;
+        let epoch = instant_from_j2000_seconds(epoch_j2000_seconds, time_scale.into())?;
+        let mut inner = PreciseEphemerisSample::new(sat, epoch, position_ecef_m, clock_s);
+        inner.clock_event = clock_event;
+        Ok(Self { inner })
+    }
+
+    /// Satellite token, e.g. `"G01"`.
+    #[getter]
+    fn satellite(&self) -> String {
+        self.inner.sat.to_string()
+    }
+
+    /// Sample epoch as seconds since J2000, in `time_scale`.
+    #[getter]
+    fn epoch_j2000_seconds(&self) -> f64 {
+        instant_to_j2000_seconds(&self.inner.epoch).unwrap_or(f64::NAN)
+    }
+
+    /// Time scale the epoch is expressed in.
+    #[getter]
+    fn time_scale(&self) -> PyTimeScale {
+        self.inner.epoch.scale.into()
+    }
+
+    /// ECEF position as a numpy `(3,)` array, metres.
+    #[getter]
+    fn position_ecef_m<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.position_ecef_m)
+    }
+
+    /// Clock offset in seconds, or `None` when the source carried no estimate.
+    #[getter]
+    fn clock_s(&self) -> Option<f64> {
+        self.inner.clock_s
+    }
+
+    /// Whether this epoch carries the SP3 `E` clock-event flag.
+    #[getter]
+    fn clock_event(&self) -> bool {
+        self.inner.clock_event
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PreciseEphemerisSample(satellite={:?}, epoch_j2000_seconds={}, clock_s={:?}, clock_event={})",
+            self.inner.sat.to_string(),
+            self.epoch_j2000_seconds(),
+            self.inner.clock_s,
+            self.inner.clock_event
+        )
+    }
+}
+
+/// A precise-ephemeris source built from samples rather than parsed SP3 text.
+///
+/// Construct with [`PreciseEphemerisSamples.from_samples`]. It drives the same
+/// interpolation substrate the SP3-parsed product uses, so it can be passed to
+/// [`predict_ranges`](crate) as an ephemeris source and yields interpolated
+/// states / predicted ranges that match the SP3 path byte-for-byte for samples
+/// that are the faithful image of the fitted nodes (the round-trip case), and to
+/// within sub-micron precision otherwise.
+#[pyclass(module = "sidereon._sidereon", name = "PreciseEphemerisSamples")]
+pub struct PyPreciseEphemerisSamples {
+    pub(crate) inner: PreciseEphemerisSamples,
+}
+
+#[pymethods]
+impl PyPreciseEphemerisSamples {
+    /// Build a source from a sequence of [`PreciseEphemerisSample`].
+    ///
+    /// Samples are grouped by satellite in supplied order and validated. Raises
+    /// `ValueError` if the set is empty, a satellite has a single sample, a
+    /// satellite's epochs are not strictly increasing, the samples mix time
+    /// scales, a sample is non-finite, or an epoch is not representable as J2000
+    /// seconds.
+    #[staticmethod]
+    fn from_samples(py: Python<'_>, samples: Vec<Py<PyPreciseEphemerisSample>>) -> PyResult<Self> {
+        let samples = samples.iter().map(|s| s.borrow(py).to_core());
+        let inner = PreciseEphemerisSamples::from_samples(samples)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    /// Time scale every sample epoch is expressed in.
+    #[getter]
+    fn time_scale(&self) -> PyTimeScale {
+        self.inner.time_scale().into()
+    }
+
+    /// Satellite tokens this source can interpolate, ascending.
+    #[getter]
+    fn satellites(&self) -> Vec<String> {
+        self.inner.satellites().map(|sat| sat.to_string()).collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PreciseEphemerisSamples(satellites={})",
+            self.inner.satellites().count()
+        )
+    }
+}
+
+/// Build a split-Julian-date [`Instant`] from J2000 seconds in a time scale.
+///
+/// The residual day fraction is split off `jd_whole` so it stays within one day,
+/// matching the SP3 parser's node axis after the shared floor.
+fn instant_from_j2000_seconds(
+    seconds: f64,
+    scale: sidereon_core::astro::time::TimeScale,
+) -> PyResult<Instant> {
+    if !seconds.is_finite() {
+        return Err(PyValueError::new_err(
+            "epoch_j2000_seconds must be finite",
+        ));
+    }
+    let days = seconds / SECONDS_PER_DAY;
+    let whole_days = days.floor();
+    let split = JulianDateSplit::new(J2000_JD + whole_days, days - whole_days)
+        .map_err(|e| PyValueError::new_err(format!("invalid epoch: {e}")))?;
+    Ok(Instant {
+        scale,
+        repr: InstantRepr::JulianDate(split),
+    })
+}
+
 /// Parse an SP3-c or SP3-d product from in-memory bytes or a file path.
 ///
 /// `source` may be:
@@ -422,6 +625,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySp3Interpolation>()?;
     m.add_class::<PySp3ClockReferenceOffset>()?;
     m.add_class::<PySp3State>()?;
+    m.add_class::<PyPreciseEphemerisSample>()?;
+    m.add_class::<PyPreciseEphemerisSamples>()?;
     m.add_function(wrap_pyfunction!(load_sp3, m)?)?;
     m.add_function(wrap_pyfunction!(sp3_clock_reference_offset, m)?)?;
     m.add_function(wrap_pyfunction!(align_sp3_clock_reference, m)?)?;
