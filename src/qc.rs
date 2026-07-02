@@ -24,7 +24,7 @@ use sidereon_core::quality::{
     DEFAULT_P_FA,
 };
 
-use crate::spp::PySppConfig;
+use crate::spp::{PySppConfig, PySppRobustConfig};
 use crate::{np_array, PySp3, SolveError};
 
 fn raim_weights(weights: Option<BTreeMap<String, f64>>) -> RaimWeights {
@@ -235,6 +235,55 @@ fn qc_fde(
     };
 
     match fde_spp(&sp3.inner, &inputs, with_geodetic, &options) {
+        Ok(result) => Ok(PyFdeResult {
+            solution: result.solution,
+            excluded: result.excluded,
+            iterations: result.iterations,
+        }),
+        Err(FdeError::Solve(FdeSppError::Spp(err))) => Err(SolveError::new_err(err.to_string())),
+        Err(FdeError::Solve(FdeSppError::Validation(err))) => {
+            Err(SolveError::new_err(err.to_string()))
+        }
+        Err(FdeError::FaultUnresolved(stat)) => Err(SolveError::new_err(format!(
+            "FDE fault unresolved: test statistic {stat} still exceeds threshold after exhausting the exclusion budget"
+        ))),
+        Err(FdeError::Raim(err)) => Err(PyValueError::new_err(err.to_string())),
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (sp3, config, robust, p_fa, max_iterations, weights=None, n_systems=None, max_pdop=None))]
+#[allow(clippy::too_many_arguments)]
+fn spp_robust_fde_driver(
+    sp3: &PySp3,
+    config: &PySppConfig,
+    robust: &PySppRobustConfig,
+    p_fa: f64,
+    max_iterations: usize,
+    weights: Option<BTreeMap<String, f64>>,
+    n_systems: Option<isize>,
+    max_pdop: Option<f64>,
+) -> PyResult<PyFdeResult> {
+    let inputs = config.to_inputs();
+    let with_geodetic = config.with_geodetic_flag();
+    let options = FdeSppOptions {
+        fde: FdeOptions {
+            raim: raim_options(p_fa, weights, n_systems),
+            max_iterations,
+        },
+        validation: SolutionValidationOptions {
+            max_pdop,
+            ..Default::default()
+        },
+    };
+
+    match quality::spp_robust_fde_driver(
+        &sp3.inner,
+        &inputs,
+        with_geodetic,
+        robust.inner(),
+        &options,
+    ) {
         Ok(result) => Ok(PyFdeResult {
             solution: result.solution,
             excluded: result.excluded,
@@ -504,6 +553,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRangeFdeResult>()?;
     m.add_function(wrap_pyfunction!(qc_raim, m)?)?;
     m.add_function(wrap_pyfunction!(qc_fde, m)?)?;
+    m.add_function(wrap_pyfunction!(spp_robust_fde_driver, m)?)?;
     m.add_function(wrap_pyfunction!(qc_raim_fde_design, m)?)?;
     m.add_function(wrap_pyfunction!(chi2_inv, m)?)?;
     Ok(())

@@ -245,6 +245,12 @@ pub struct PySppRobustConfig {
     inner: RobustConfig,
 }
 
+impl PySppRobustConfig {
+    pub(crate) fn inner(&self) -> RobustConfig {
+        self.inner
+    }
+}
+
 #[pymethods]
 impl PySppRobustConfig {
     /// Create a Huber/IRLS robust reweighting config. Omitted fields take the
@@ -461,6 +467,7 @@ impl PySppConfig {
             klobuchar: self.klobuchar,
             beidou_klobuchar: None,
             galileo_nequick: None,
+            sbas_iono: None,
             glonass_channels: self.glonass_channels.clone(),
             met: self.met,
             robust: self.robust,

@@ -130,6 +130,7 @@ impl PyPppObservation {
         phase_m,
         freq1_hz=0.0,
         freq2_hz=0.0,
+        glonass_channel=None,
     ))]
     fn new(
         satellite_id: String,
@@ -138,6 +139,7 @@ impl PyPppObservation {
         phase_m: f64,
         freq1_hz: f64,
         freq2_hz: f64,
+        glonass_channel: Option<i8>,
     ) -> PyResult<Self> {
         let sat = GnssSatelliteId::from_str(&satellite_id).map_err(|_| {
             PyValueError::new_err(format!("invalid satellite token: {satellite_id}"))
@@ -151,6 +153,7 @@ impl PyPppObservation {
                 phase_m,
                 freq1_hz,
                 freq2_hz,
+                glonass_channel,
             },
         })
     }
@@ -183,6 +186,11 @@ impl PyPppObservation {
     #[getter]
     fn freq2_hz(&self) -> f64 {
         self.inner.freq2_hz
+    }
+
+    #[getter]
+    fn glonass_channel(&self) -> Option<i8> {
+        self.inner.glonass_channel
     }
 
     fn __repr__(&self) -> String {

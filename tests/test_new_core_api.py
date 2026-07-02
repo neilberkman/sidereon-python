@@ -8,12 +8,13 @@ merge agreement metrics (B2). The numbers themselves are the core's; these only
 confirm the binding marshals the new shapes through faithfully.
 """
 
+import datetime as dt
 import os
 
 import numpy as np
 import pytest
 import sidereon
-from _helpers import CORE_FIXTURES
+from _helpers import CORE_FIXTURES, hex_to_f64
 
 C_M_S = 299792458.0
 
@@ -280,7 +281,209 @@ def test_merge_sp3_agreement_metrics_for_coincident_sources():
         assert pos_rms == 0.0 and pos_max == 0.0
 
 
+# --- Phase B: astrodynamics and geometry -----------------------------------
+
+
+def test_anomaly_conversions_round_trip_and_kepler_reports_iterations():
+    mean = 0.8
+    ecc = 0.2
+    eccentric = sidereon.mean_to_eccentric(mean, ecc)
+    solution = sidereon.solve_kepler(mean, ecc)
+    assert solution.anomaly == pytest.approx(eccentric)
+    assert solution.iterations > 0
+    true = sidereon.eccentric_to_true(eccentric, ecc)
+    assert sidereon.true_to_mean(true, ecc) == pytest.approx(mean, abs=1e-14)
+
+
+def test_equinoctial_and_modified_equinoctial_round_trip_classical_elements():
+    coe = sidereon.ClassicalElements(
+        11067.79,
+        0.1,
+        np.radians(28.5),
+        np.radians(40.0),
+        np.radians(15.0),
+        np.radians(80.0),
+    )
+    eq = sidereon.coe2eq(coe)
+    back = sidereon.eq2coe(eq)
+    assert back.p == pytest.approx(coe.p, rel=1e-12)
+    assert back.ecc == pytest.approx(coe.ecc, rel=1e-12)
+
+    mee = sidereon.coe2mee(coe)
+    back2 = sidereon.mee2coe(mee)
+    assert back2.p == pytest.approx(coe.p, rel=1e-12)
+    assert back2.ecc == pytest.approx(coe.ecc, rel=1e-12)
+
+    r, v = sidereon.coe2rv(coe, 398600.4418)
+    eq_from_rv = sidereon.rv2eq(r, v, 398600.4418)
+    r2, v2 = sidereon.eq2rv(eq_from_rv, 398600.4418)
+    np.testing.assert_allclose(r2, r, rtol=1e-10, atol=1e-7)
+    np.testing.assert_allclose(v2, v, rtol=1e-10, atol=1e-10)
+
+
+def test_angles_beta_and_relative_frames_round_trip():
+    assert sidereon.angular_separation(
+        np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0])
+    ) == pytest.approx(90.0)
+    assert sidereon.position_angle(0.0, 0.0, np.pi / 2.0, 0.0) == pytest.approx(90.0)
+    beta = sidereon.beta_angle_from_state(
+        np.array([7000.0, 0.0, 0.0]),
+        np.array([0.0, 7.5, 0.0]),
+        np.array([0.0, 0.0, 1.0]),
+    )
+    assert beta == pytest.approx(90.0)
+
+    chief = sidereon.CartesianState(
+        0.0, np.array([7000.0, 0.0, 0.0]), np.array([0.0, 7.5, 0.0])
+    )
+    deputy = sidereon.CartesianState(
+        0.0, np.array([7001.0, 0.0, 0.0]), np.array([0.0, 7.501, 0.0])
+    )
+    rel = sidereon.relative_state(chief, deputy)
+    rebuilt = sidereon.absolute_from_relative(chief, rel)
+    np.testing.assert_allclose(rebuilt.position_km, deputy.position_km, atol=1e-12)
+    assert sidereon.rtn_to_inertial_rotation(chief).shape == (3, 3)
+    assert sidereon.cw_stm(sidereon.mean_motion_from_state(chief), 60.0).shape == (6, 6)
+
+
+def test_body_observe_and_almanac_events_are_exposed():
+    epoch = _unix_us(2026, 3, 20)
+    obs = sidereon.observe_body(40.0, -105.0, 1.6, epoch, sidereon.Target.sun())
+    assert np.isfinite(obs.apparent.right_ascension_deg)
+    assert np.isfinite(obs.horizontal.elevation_deg)
+
+    start = _unix_us(2026, 1, 1)
+    end = _unix_us(2026, 12, 31)
+    events = sidereon.seasons(start, end)
+    kinds = [event.kind for event in events]
+    assert sidereon.SeasonKind.MARCH_EQUINOX in kinds
+    assert sidereon.SeasonKind.JUNE_SOLSTICE in kinds
+    phases = sidereon.moon_phases(_unix_us(2026, 1, 1), _unix_us(2026, 2, 1))
+    assert phases
+
+
+# --- Phase B: drag, sampling, terrain, bias, SBAS/SSR, robust FDE ----------
+
+
+def test_drag_force_and_decay_estimate_are_callable():
+    weather = sidereon.SpaceWeather()
+    drag = sidereon.DragParameters.from_bc_factor_m2_kg(0.05, weather)
+    accel = sidereon.force_drag_acceleration(
+        drag.to_force(), 0.0, [6500.0, 0.0, 0.0], [0.0, 7.8, 0.0]
+    )
+    assert accel.shape == (3,)
+    assert np.isfinite(accel).all()
+    estimate = sidereon.estimate_decay(
+        0.0,
+        [6450.0, 0.0, 0.0],
+        [0.0, 7.8, 0.0],
+        drag,
+        max_duration_s=3600.0,
+        max_scan_samples=8,
+    )
+    assert estimate.time_to_decay_s >= 0.0
+
+
+def test_ephemeris_sample_returns_grid_rows_with_status():
+    sp3 = _load_sp3(_SP3_FILE)
+    start = float(sp3.epochs_j2000_seconds[0])
+    rows = sidereon.ephemeris_sample(sp3, ["G21"], start, start + 900.0, 900.0)
+    assert [row.status for row in rows] == [
+        sidereon.EphemerisSampleStatus.VALID,
+        sidereon.EphemerisSampleStatus.VALID,
+    ]
+    assert rows[0].position_ecef_m.shape == (3,)
+
+
+def test_dted_terrain_uses_core_tile_reader():
+    root = os.path.join(CORE_FIXTURES, "dted", "tiles")
+    terrain = sidereon.DtedTerrain(root)
+    opts = sidereon.DtedLookupOptions(sidereon.DtedInterpolation.NEAREST_POSTING)
+    lon = hex_to_f64("0xc05ac00000000000")
+    lat = hex_to_f64("0x4042000000000000")
+    assert terrain.height_m(lon, lat, opts) == pytest.approx(
+        hex_to_f64("0xc034000000000000")
+    )
+
+
+def test_bias_sinex_and_code_dcb_parsers_expose_bias_sets():
+    with open(
+        os.path.join(CORE_FIXTURES, "bias", "COD0OPSFIN_20261330000_01D_01D_OSB.BIA"),
+        "rb",
+    ) as fh:
+        bias = sidereon.parse_bias_sinex(fh.read())
+    assert bias.record_count > 0
+    assert bias.records[0].kind in {"OSB", "DSB", "ISB"}
+    opts = sidereon.PppCodeBiasOptions(
+        bias,
+        [(sidereon.GnssSystem.GPS, "C1C", "C2W")],
+    )
+    assert opts is not None
+
+    with open(os.path.join(CORE_FIXTURES, "bias", "P1C1_RINEX.DCB"), "rb") as fh:
+        dcb = sidereon.parse_code_dcb(fh.read(), None)
+    assert dcb.record_count > 0
+
+
+def test_sbas_decode_parse_store_and_mapping_helpers():
+    body_hex = "5306000000000000000000000000000000000000000000000000000040"
+    body = bytes.fromhex(body_hex)
+    block = sidereon.decode_sbas_block(body, sidereon.SbasWireForm.BODY226)
+    assert block.message_type == 1
+    assert block.kind == "prn_mask"
+    assert block.encode() == body
+
+    parsed = sidereon.parse_sbas_rtklib_lines(f"2360 259200 120 1 : {body_hex}\n")
+    assert len(parsed) == 1
+    assert parsed[0].satellite_id == "S20"
+    store = sidereon.SbasCorrectionStore()
+    store.ingest(block, "S20", 2360, 259200.0)
+    assert sidereon.sbas_prn_to_satellite_id(120) == "S20"
+    assert sidereon.satellite_id_to_sbas_prn("S20") == 120
+
+
+def test_ssr_decode_store_and_correction_queries():
+    with open(
+        os.path.join(CORE_FIXTURES, "ssr", "SSRA02IGS0_2026181234930_1060.hex")
+    ) as fh:
+        frame = bytes.fromhex(fh.read())
+    rtcm = sidereon.decode_rtcm(frame)[0]
+    assert rtcm.kind == "ssr"
+    ssr = sidereon.decode_ssr_message(rtcm.encode())
+    assert ssr.message_number == 1060
+    assert ssr.kind == sidereon.SsrKind.COMBINED_ORBIT_CLOCK
+    assert ssr.satellite_count == 2
+    store = sidereon.SsrCorrectionStore()
+    store.ingest_ssr(ssr, 2425, 344970.0)
+    assert store.orbit("G30") is not None
+    assert store.clock("G30") is not None
+
+
+def test_spp_robust_fde_driver_returns_fde_result():
+    sp3 = _load_sp3(_SP3_FILE)
+    _rx, observations, t_rx = _glonass_scenario(sp3)
+    cfg = sidereon.SppConfig(
+        observations=observations,
+        t_rx_j2000_s=t_rx,
+        t_rx_second_of_day_s=0.0,
+        day_of_year=176.0,
+        initial_guess=[6378137.0, 0.0, 0.0, 0.0],
+        corrections=sidereon.SppCorrections(ionosphere=False, troposphere=False),
+        with_geodetic=True,
+    )
+    result = sidereon.spp_robust_fde_driver(
+        sp3, cfg, sidereon.SppRobustConfig(), 0.01, 2
+    )
+    assert result.iterations >= 0
+    assert len(result.used_sats) >= 4
+
+
 # --- shared helpers --------------------------------------------------------
+
+
+def _unix_us(year, month, day):
+    stamp = dt.datetime(year, month, day, tzinfo=dt.timezone.utc)
+    return int(stamp.timestamp() * 1_000_000)
 
 
 def _load_sp3(name):

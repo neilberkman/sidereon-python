@@ -227,7 +227,7 @@ impl PySpkState {
 /// reads SPK segment Types 2, 3, and 21.
 #[pyclass(module = "sidereon._sidereon", name = "Spk")]
 pub struct PySpk {
-    inner: Spk,
+    pub(crate) inner: Spk,
 }
 
 #[pymethods]

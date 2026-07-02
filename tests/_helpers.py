@@ -60,6 +60,24 @@ def _cargo_checkout_fixtures():
     return None
 
 
+def _path_dependency_fixtures():
+    """Fixtures dir from a local sidereon-core path dependency."""
+    manifest = os.path.join(_REPO, "Cargo.toml")
+    try:
+        with open(manifest) as handle:
+            text = handle.read()
+    except OSError:
+        return None
+    match = re.search(r'sidereon-core\s*=\s*\{\s*path\s*=\s*"([^"]+)"', text)
+    if not match:
+        return None
+    path = os.path.expanduser(match.group(1))
+    if not os.path.isabs(path):
+        path = os.path.normpath(os.path.join(_REPO, path))
+    cand = os.path.join(path, "tests", "fixtures")
+    return cand if os.path.isdir(cand) else None
+
+
 def _resolve_core_fixtures():
     override = os.environ.get("SIDEREON_CORE_FIXTURES")
     if override:
@@ -72,6 +90,10 @@ def _resolve_core_fixtures():
     )
     if os.path.isdir(sibling):
         return sibling
+
+    path_dep = _path_dependency_fixtures()
+    if path_dep:
+        return path_dep
 
     checkout = _cargo_checkout_fixtures()
     if checkout:

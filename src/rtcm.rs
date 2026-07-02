@@ -1170,7 +1170,8 @@ impl PyRtcmMessage {
     }
 
     /// Stable variant tag: `"station_coordinates"`, `"antenna_descriptor"`,
-    /// `"gps_ephemeris"`, `"glonass_ephemeris"`, `"msm"`, or `"unsupported"`.
+    /// `"gps_ephemeris"`, `"glonass_ephemeris"`, `"msm"`, `"ssr"`, or
+    /// `"unsupported"`.
     #[getter]
     fn kind(&self) -> &'static str {
         match &self.inner {
@@ -1179,6 +1180,7 @@ impl PyRtcmMessage {
             Message::GpsEphemeris(_) => "gps_ephemeris",
             Message::GlonassEphemeris(_) => "glonass_ephemeris",
             Message::Msm(_) => "msm",
+            Message::Ssr(_) => "ssr",
             Message::Unsupported(_) => "unsupported",
         }
     }

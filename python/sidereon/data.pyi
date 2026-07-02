@@ -2,7 +2,7 @@
 
 import datetime as _dt
 from dataclasses import dataclass
-from typing import Optional, Sequence, Union
+from typing import Iterable, Mapping, Optional, Sequence, Union
 
 import sidereon
 
@@ -11,6 +11,9 @@ __all__: list[str]
 class DataError(Exception): ...
 class UnknownCenter(DataError): ...
 class UnsupportedProduct(DataError): ...
+class InvalidCoordinate(DataError): ...
+class InvalidTileIndex(DataError): ...
+class InvalidTileId(DataError): ...
 class OfflineCacheMiss(DataError): ...
 class FileNotFoundOnArchive(DataError): ...
 
@@ -34,6 +37,10 @@ class ChecksumMismatch(DataError):
 class DownloadSizeExceeded(DataError): ...
 class DecompressError(DataError): ...
 class CacheNotWritable(DataError): ...
+
+class NoCoverage(DataError):
+    tile_id: str
+    def __init__(self, tile_id: str) -> None: ...
 
 class IncompatibleSources(DataError):
     centers: list[str]
@@ -80,12 +87,37 @@ class MergeReport:
     merged: bool
     merge_report: Optional[sidereon.Sp3MergeReport] = ...
 
+@dataclass(frozen=True)
+class TerrainSourceEntry:
+    protocol: str
+    host: str
+    compression: str
+    root_url: str
+
+@dataclass(frozen=True)
+class TerrainFetchReport:
+    fetched: list[str]
+    cached: list[str]
+    no_coverage: list[str]
+    errors: list[tuple[str, DataError]]
+
 def default_cache_dir() -> str: ...
+def default_terrain_cache_dir() -> str: ...
 def centers() -> list[str]: ...
 def content_types() -> list[str]: ...
 def gps_week(date: _dt.date) -> int: ...
 def day_of_year(date: _dt.date) -> int: ...
 def predicted_day_offset(center: str) -> int: ...
+def skadi_source_entry() -> TerrainSourceEntry: ...
+def skadi_tile_id(lat_index: int, lon_index: int) -> str: ...
+def skadi_band(lat_index: int) -> str: ...
+def skadi_archive_url(lat_index: int, lon_index: int) -> str: ...
+def terrain_tile_index(lat_deg: float, lon_deg: float) -> tuple[int, int]: ...
+def dted_tile_filename(lat_index: int, lon_index: int) -> str: ...
+def dted_block_dir(lat_index: int, lon_index: int) -> str: ...
+def dted_cache_relpath(lat_index: int, lon_index: int) -> str: ...
+def parse_skadi_tile_id(tile_id: str) -> tuple[int, int]: ...
+def hgt_to_dted(lat_index: int, lon_index: int, hgt: bytes) -> bytes: ...
 def canonical_filename(
     center: str,
     content: str,
@@ -140,6 +172,49 @@ def fetch(
     backoff_s: float = ...,
     max_compressed_bytes: int = ...,
 ) -> str: ...
+def fetch_dted(
+    lat: float,
+    lon: float,
+    *,
+    cache_dir: Optional[str] = ...,
+    offline: bool = ...,
+    sha256: Optional[str] = ...,
+    strict: bool = ...,
+    timeout_s: float = ...,
+    retries: int = ...,
+    backoff_s: float = ...,
+    max_compressed_bytes: int = ...,
+    max_decompressed_bytes: int = ...,
+) -> Optional[str]: ...
+def prefetch_dted_bbox(
+    min_lat: float,
+    min_lon: float,
+    max_lat: float,
+    max_lon: float,
+    *,
+    cache_dir: Optional[str] = ...,
+    offline: bool = ...,
+    **opts: object,
+) -> TerrainFetchReport: ...
+def prefetch_dted_tiles(
+    tiles: Union[Iterable[tuple[int, int]], Iterable[str], str],
+    *,
+    cache_dir: Optional[str] = ...,
+    offline: bool = ...,
+    **opts: object,
+) -> TerrainFetchReport: ...
+def populate_terrain_cache(
+    region: Union[
+        Mapping[str, float],
+        tuple[float, float, float, float],
+        Iterable[tuple[int, int]],
+        Iterable[str],
+    ],
+    *,
+    cache_dir: Optional[str] = ...,
+    offline: bool = ...,
+    **opts: object,
+) -> TerrainFetchReport: ...
 def fetch_ionex(
     center: str,
     target: Union[_dt.date, _dt.datetime],

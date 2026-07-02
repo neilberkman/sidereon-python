@@ -2583,24 +2583,7 @@ fn iq_samples_from_array(
 }
 
 fn band_variant_name(band: CarrierBand) -> &'static str {
-    match PyCarrierBand::from(band) {
-        PyCarrierBand::L1 => "L1",
-        PyCarrierBand::L2 => "L2",
-        PyCarrierBand::L5 => "L5",
-        PyCarrierBand::E1 => "E1",
-        PyCarrierBand::E5A => "E5A",
-        PyCarrierBand::E5B => "E5B",
-        PyCarrierBand::E5 => "E5",
-        PyCarrierBand::E6 => "E6",
-        PyCarrierBand::B1C => "B1C",
-        PyCarrierBand::B1I => "B1I",
-        PyCarrierBand::B2A => "B2A",
-        PyCarrierBand::B2B => "B2B",
-        PyCarrierBand::B2 => "B2",
-        PyCarrierBand::B3I => "B3I",
-        PyCarrierBand::G1 => "G1",
-        PyCarrierBand::G2 => "G2",
-    }
+    band.as_str()
 }
 
 fn ionosphere_free_error(err: IonosphereFreeError) -> PyErr {

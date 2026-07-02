@@ -75,15 +75,7 @@ impl PyGnssSystem {
     /// Stable display name for the constellation.
     #[getter]
     pub fn label(&self) -> &'static str {
-        match self {
-            Self::GPS => "gps",
-            Self::GLONASS => "glonass",
-            Self::GALILEO => "galileo",
-            Self::BEIDOU => "beidou",
-            Self::QZSS => "qzss",
-            Self::NAVIC => "navic",
-            Self::SBAS => "sbas",
-        }
+        GnssSystem::from(*self).as_str()
     }
 
     fn __repr__(&self) -> &'static str {

@@ -84,8 +84,12 @@ pub struct PyClassicalElements {
 }
 
 impl PyClassicalElements {
-    fn from_inner(inner: ClassicalElements) -> Self {
+    pub(crate) fn from_inner(inner: ClassicalElements) -> Self {
         Self { inner }
+    }
+
+    pub(crate) fn inner(&self) -> &ClassicalElements {
+        &self.inner
     }
 }
 

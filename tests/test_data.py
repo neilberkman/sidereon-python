@@ -3,19 +3,21 @@
 The offline tests always run with no network: they seed a temporary cache_dir
 with real core fixtures under their canonical IGS long-names, then exercise the
 cache-first fetch, parse, and merge paths plus the typed-error taxonomy. The
-URL/filename builders are unit-tested against the exact strings the Elixir
-``Sidereon.GNSS.Data`` reference documents.
+URL/filename builders are unit-tested against the exact core-derived strings.
 
 The network tests (``@pytest.mark.network``) hit a live archive and are excluded
 by default; run them with ``pytest -m network``.
 """
 
 import datetime as dt
+import functools
+import gzip
 import hashlib
 import json
 import os
 import shutil
 
+import numpy as np
 import pytest
 import sidereon
 import sidereon.data as data
@@ -30,6 +32,10 @@ def _core_sp3(name):
 
 def _core_ionex(name):
     return os.path.join(CORE_FIXTURES, "ionex", name)
+
+
+def _core_dted_tile():
+    return os.path.join(CORE_FIXTURES, "dted", "tiles", "n36_w107_1arc_v3.dt2")
 
 
 def _seed(cache_dir, product, source_path):
@@ -53,6 +59,125 @@ def _seed_bare(cache_dir, product, source_path):
     dest = os.path.join(cache_dir, product.canonical_filename())
     shutil.copyfile(source_path, dest)
     return dest
+
+
+def _terrain_path(cache_dir, lat_index=36, lon_index=-107):
+    return os.path.join(cache_dir, data.dted_cache_relpath(lat_index, lon_index))
+
+
+def _seed_terrain(cache_dir, source_path=None, lat_index=36, lon_index=-107):
+    dest = _terrain_path(cache_dir, lat_index, lon_index)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.copyfile(source_path or _core_dted_tile(), dest)
+    with open(dest, "rb") as handle:
+        payload = handle.read()
+    digest = hashlib.sha256(payload).hexdigest()
+    with open(dest + ".provenance.json", "w") as handle:
+        json.dump(
+            {
+                "sha256_data": digest,
+                "tile_id": data.skadi_tile_id(lat_index, lon_index),
+            },
+            handle,
+        )
+    return dest
+
+
+def _seed_terrain_bare(cache_dir, lat_index=36, lon_index=-107):
+    dest = _terrain_path(cache_dir, lat_index, lon_index)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.copyfile(_core_dted_tile(), dest)
+    return dest
+
+
+class _StubResponse:
+    def __init__(self, status_code, body=b""):
+        self.status_code = status_code
+        self._body = body
+        self.closed = False
+
+    def iter_bytes(self):
+        yield self._body
+
+    def close(self):
+        self.closed = True
+
+
+class _StubStream:
+    def __init__(self, response):
+        self.response = response
+
+    def __enter__(self):
+        return self.response
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+
+def _stub_http(monkeypatch, responses):
+    calls = []
+    queue = list(responses)
+
+    def stream(method, url, follow_redirects, timeout):
+        calls.append(
+            {
+                "method": method,
+                "url": url,
+                "follow_redirects": follow_redirects,
+                "timeout": timeout,
+            }
+        )
+        if not queue:
+            raise AssertionError("unexpected HTTP request")
+        status, body = queue.pop(0)
+        return _StubStream(_StubResponse(status, body))
+
+    monkeypatch.setattr(data.httpx, "stream", stream)
+    return calls
+
+
+POSTINGS = 3601
+HGT_LEN = POSTINGS * POSTINGS * 2
+DTED_LEN = 25_981_042
+SYNTHETIC_DTED_SHA256 = (
+    "708c193f768f3d859b71da20a81059db4e6077494481c4484d0bc238af096d77"
+)
+
+
+def _synthetic_hgt_sample(row, col):
+    if (row, col) == (2366, 2345):
+        return -32768
+    if (row, col) == (3500, 200):
+        return -415
+    if (row, col) == (1600, 3000):
+        return -1
+    if (row, col) == (0, 3600):
+        return 8848
+    return ((row * 37 + col * 19) % 5000) - 1000
+
+
+def _expected_posting(lat_posting, lon_posting):
+    sample = _synthetic_hgt_sample(POSTINGS - 1 - lat_posting, lon_posting)
+    return 0 if sample == -32768 else sample
+
+
+@functools.lru_cache(maxsize=1)
+def _synthetic_hgt():
+    rows = np.arange(POSTINGS, dtype=np.int32)[:, None]
+    cols = np.arange(POSTINGS, dtype=np.int32)[None, :]
+    samples = ((rows * 37 + cols * 19) % 5000 - 1000).astype(">i2")
+    samples[2366, 2345] = -32768
+    samples[3500, 200] = -415
+    samples[1600, 3000] = -1
+    samples[0, 3600] = 8848
+    payload = samples.tobytes()
+    assert len(payload) == HGT_LEN
+    return payload
+
+
+@functools.lru_cache(maxsize=1)
+def _synthetic_hgt_gz():
+    return gzip.compress(_synthetic_hgt(), mtime=0)
 
 
 # An IONEX day whose canonical predicted name we seed; the offset is applied by
@@ -279,6 +404,228 @@ def test_fetch_offline_caller_checksum_mismatch_raises(tmp_path):
 def test_default_cache_dir_is_under_user_cache():
     d = data.default_cache_dir()
     assert d.endswith(os.path.join("sidereon", "gnss"))
+
+
+# --- terrain data layer --------------------------------------------------
+
+
+def test_terrain_derivation_comes_from_core():
+    source = data.skadi_source_entry()
+    assert source.protocol == "https"
+    assert source.host in data._ALLOWED_HOSTS
+    assert source.compression == "gzip"
+    assert data.skadi_tile_id(36, -107) == "N36W107"
+    assert data.skadi_band(36) == "N36"
+    assert data.skadi_archive_url(36, -107).endswith("/skadi/N36/N36W107.hgt.gz")
+    assert data.dted_cache_relpath(36, -107) == ("n30_w110/n36_w107_1arc_v3.dt2")
+    assert data.terrain_tile_index(90.0, 180.0) == (89, 179)
+    assert data.parse_skadi_tile_id("S01E010") == (-1, 10)
+    with pytest.raises(data.InvalidTileId):
+        data.parse_skadi_tile_id("n36w107")
+
+
+def test_fetch_dted_cache_hit_uses_zero_network(tmp_path, monkeypatch):
+    cache = str(tmp_path)
+    path = _seed_terrain(cache)
+
+    def fail_stream(*args, **kwargs):
+        raise AssertionError("cache hit must not touch network")
+
+    monkeypatch.setattr(data.httpx, "stream", fail_stream)
+    assert data.fetch_dted(36.5, -106.5, cache_dir=cache) == path
+
+
+def test_fetch_dted_offline_hit_reads_verified_cache(tmp_path, monkeypatch):
+    cache = str(tmp_path)
+    path = _seed_terrain(cache)
+
+    def fail_stream(*args, **kwargs):
+        raise AssertionError("offline hit must not touch network")
+
+    monkeypatch.setattr(data.httpx, "stream", fail_stream)
+    assert data.fetch_dted(36.5, -106.5, cache_dir=cache, offline=True) == path
+
+
+def test_fetch_dted_offline_miss_and_unverified_file_are_misses(tmp_path):
+    with pytest.raises(data.OfflineCacheMiss):
+        data.fetch_dted(36.5, -106.5, cache_dir=str(tmp_path), offline=True)
+
+    cache = str(tmp_path / "bare")
+    _seed_terrain_bare(cache)
+    with pytest.raises(data.OfflineCacheMiss):
+        data.fetch_dted(36.5, -106.5, cache_dir=cache, offline=True)
+
+
+def test_fetch_dted_checksum_failure_is_typed(tmp_path):
+    cache = str(tmp_path)
+    _seed_terrain(cache)
+
+    with pytest.raises(data.ChecksumMismatch):
+        data.fetch_dted(
+            36.5,
+            -106.5,
+            cache_dir=cache,
+            offline=True,
+            sha256="00" * 32,
+        )
+
+
+def test_fetch_dted_ocean_404_writes_negative_cache(tmp_path, monkeypatch):
+    cache = str(tmp_path)
+    calls = _stub_http(monkeypatch, [(404, b"")])
+
+    assert data.fetch_dted(0.5, -159.5, cache_dir=cache) is None
+    assert len(calls) == 1
+
+    relpath = data.dted_cache_relpath(0, -160)
+    marker_path = os.path.join(cache, relpath) + ".no_coverage.json"
+    with open(marker_path) as handle:
+        marker = json.load(handle)
+    assert marker["status"] == 404
+    assert marker["tile_id"] == "N00W160"
+    assert marker["source_url"] == data.skadi_archive_url(0, -160)
+
+    def fail_stream(*args, **kwargs):
+        raise AssertionError("offline no-coverage marker must not touch network")
+
+    monkeypatch.setattr(data.httpx, "stream", fail_stream)
+    assert data.fetch_dted(0.5, -159.5, cache_dir=cache, offline=True) is None
+    with pytest.raises(data.NoCoverage):
+        data.fetch_dted(0.5, -159.5, cache_dir=cache, offline=True, strict=True)
+    with pytest.raises(data.OfflineCacheMiss):
+        data.fetch_dted(1.5, -159.5, cache_dir=cache, offline=True)
+
+
+def test_fetch_dted_ignores_stale_no_coverage_marker_online(tmp_path, monkeypatch):
+    cache = str(tmp_path)
+    path = _terrain_path(cache, 0, -160)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".no_coverage.json", "w") as handle:
+        json.dump(
+            {
+                "source_url": "https://s3.amazonaws.com/old",
+                "protocol": "https",
+                "status": 404,
+                "tile_id": "N00W160",
+            },
+            handle,
+        )
+    calls = _stub_http(monkeypatch, [(404, b"")])
+
+    assert data.fetch_dted(0.5, -159.5, cache_dir=cache) is None
+    assert len(calls) == 1
+
+
+def test_fetch_dted_rejects_disallowed_host_before_request(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        data,
+        "skadi_archive_url",
+        lambda lat_index, lon_index: "https://example.invalid/x",
+    )
+
+    def fail_stream(*args, **kwargs):
+        raise AssertionError("disallowed host must fail before request")
+
+    monkeypatch.setattr(data.httpx, "stream", fail_stream)
+    with pytest.raises(data.NetworkError):
+        data.fetch_dted(36.5, -106.5, cache_dir=str(tmp_path))
+
+
+def test_fetch_dted_rejects_oversized_compressed_payload(tmp_path, monkeypatch):
+    _stub_http(monkeypatch, [(200, b"abcde")])
+
+    with pytest.raises(data.DownloadSizeExceeded):
+        data.fetch_dted(
+            36.5,
+            -106.5,
+            cache_dir=str(tmp_path),
+            max_compressed_bytes=4,
+        )
+
+
+def test_fetch_dted_rejects_wrong_hgt_length(tmp_path, monkeypatch):
+    _stub_http(monkeypatch, [(200, gzip.compress(b"short", mtime=0))])
+
+    with pytest.raises(data.DecompressError):
+        data.fetch_dted(36.5, -106.5, cache_dir=str(tmp_path))
+
+
+def test_fetch_dted_conversion_reference_and_terrain_reader(tmp_path, monkeypatch):
+    cache = str(tmp_path)
+    calls = _stub_http(monkeypatch, [(200, _synthetic_hgt_gz())])
+
+    path = data.fetch_dted(36.5, -106.5, cache_dir=cache)
+
+    assert len(calls) == 1
+    assert path == _terrain_path(cache)
+    with open(path, "rb") as handle:
+        dt2 = handle.read()
+    assert len(dt2) == DTED_LEN
+    assert hashlib.sha256(dt2).hexdigest() == SYNTHETIC_DTED_SHA256
+
+    with open(path + ".provenance.json") as handle:
+        provenance = json.load(handle)
+    assert provenance["sha256_data"] == SYNTHETIC_DTED_SHA256
+    assert provenance["sha256_dt2"] == SYNTHETIC_DTED_SHA256
+    assert provenance["tile_id"] == "N36W107"
+    assert provenance["size_dt2"] == DTED_LEN
+
+    terrain = sidereon.DtedTerrain(cache)
+    nearest = sidereon.DtedLookupOptions(sidereon.DtedInterpolation.NEAREST_POSTING)
+    for lat_posting, lon_posting in [
+        (0, 0),
+        (100, 200),
+        (1234, 2345),
+        (2000, 3000),
+        (3600, 3600),
+    ]:
+        lat = 36.0 + lat_posting / 3600.0
+        lon = -107.0 + lon_posting / 3600.0
+        assert terrain.height_m(lon, lat, nearest) == pytest.approx(
+            _expected_posting(lat_posting, lon_posting)
+        )
+
+
+def test_prefetch_dted_bbox_and_tiles_report_results(tmp_path, monkeypatch):
+    cache = str(tmp_path)
+    cached_path = _seed_terrain(cache)
+    calls = _stub_http(monkeypatch, [(404, b"")])
+
+    report = data.prefetch_dted_bbox(36.0, -107.0, 36.0, -106.0, cache_dir=cache)
+
+    assert report.cached == [cached_path]
+    assert report.fetched == []
+    assert report.no_coverage == ["N36W106"]
+    assert report.errors == []
+    assert len(calls) == 1
+
+    tile_report = data.prefetch_dted_tiles(
+        ["N36W107", "bad-tile"], cache_dir=cache, offline=True
+    )
+    assert tile_report.cached == [cached_path]
+    assert tile_report.fetched == []
+    assert tile_report.no_coverage == []
+    assert len(tile_report.errors) == 1
+    assert isinstance(tile_report.errors[0][1], data.InvalidTileId)
+
+
+def test_populate_terrain_cache_accepts_bbox_mapping(tmp_path, monkeypatch):
+    cache = str(tmp_path)
+    cached_path = _seed_terrain(cache)
+
+    def fail_stream(*args, **kwargs):
+        raise AssertionError("single cached bbox must not touch network")
+
+    monkeypatch.setattr(data.httpx, "stream", fail_stream)
+    report = data.populate_terrain_cache(
+        {"min_lat": 36.5, "min_lon": -106.5, "max_lat": 36.5, "max_lon": -106.5},
+        cache_dir=cache,
+        offline=True,
+    )
+    assert report.cached == [cached_path]
+    assert report.fetched == []
+    assert report.no_coverage == []
+    assert report.errors == []
 
 
 # --- network tests (excluded by default) ---------------------------------

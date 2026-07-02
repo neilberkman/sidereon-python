@@ -14,21 +14,23 @@ use std::path::PathBuf;
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1};
 use pyo3::exceptions::{PyIndexError, PyKeyError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyByteArray, PyBytes, PyModule};
+use pyo3::types::{PyAny, PyByteArray, PyBytes, PyModule};
 
 use sidereon_core::astro::time::civil::seconds_between_splits;
 use sidereon_core::astro::time::{Instant, InstantRepr, JulianDateSplit};
 use sidereon_core::constants::J2000_JD;
 use sidereon_core::ephemeris::{
     align_clock_reference as core_align_clock_reference,
-    clock_reference_offset as core_clock_reference_offset, ClockReferenceOffset,
-    PreciseEphemerisSample, PreciseEphemerisSamples, Sp3,
+    clock_reference_offset as core_clock_reference_offset, sample as core_sample,
+    ClockReferenceOffset, EphemerisSampleRow, EphemerisSampleStatus, PreciseEphemerisSample,
+    PreciseEphemerisSamples, Sp3,
 };
 use sidereon_core::Error as CoreError;
 use sidereon_core::GnssSatelliteId;
 
 use crate::frames::PyTimeScale;
 use crate::marshal::rows3_to_array;
+use crate::rinex::PyBroadcastEphemeris;
 use crate::{np_array, to_solve_err, to_sp3_err};
 
 /// Seconds in one day, for the J2000-second <-> split-Julian-date reconstruction.
@@ -233,6 +235,101 @@ impl PySp3Interpolation {
 
     fn __repr__(&self) -> String {
         format!("Sp3Interpolation(epoch_count={})", self.positions.len())
+    }
+}
+
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "EphemerisSampleStatus",
+    eq,
+    eq_int
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PyEphemerisSampleStatus {
+    VALID,
+    GAP,
+}
+
+impl From<EphemerisSampleStatus> for PyEphemerisSampleStatus {
+    fn from(value: EphemerisSampleStatus) -> Self {
+        match value {
+            EphemerisSampleStatus::Valid => Self::VALID,
+            EphemerisSampleStatus::Gap => Self::GAP,
+        }
+    }
+}
+
+#[pymethods]
+impl PyEphemerisSampleStatus {
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::VALID => "valid",
+            Self::GAP => "gap",
+        }
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::VALID => "EphemerisSampleStatus.VALID",
+            Self::GAP => "EphemerisSampleStatus.GAP",
+        }
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "EphemerisSampleRow")]
+#[derive(Clone)]
+pub struct PyEphemerisSampleRow {
+    inner: EphemerisSampleRow,
+}
+
+impl From<EphemerisSampleRow> for PyEphemerisSampleRow {
+    fn from(inner: EphemerisSampleRow) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyEphemerisSampleRow {
+    #[getter]
+    fn satellite(&self) -> String {
+        self.inner.sat.to_string()
+    }
+
+    #[getter]
+    fn epoch_j2000_s(&self) -> f64 {
+        self.inner.epoch_j2000_s
+    }
+
+    #[getter]
+    fn status(&self) -> PyEphemerisSampleStatus {
+        self.inner.status.into()
+    }
+
+    #[getter]
+    fn position_ecef_m<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray1<f64>>> {
+        self.inner
+            .position_ecef_m
+            .map(|position| np_array(py, &position))
+    }
+
+    #[getter]
+    fn clock_s(&self) -> Option<f64> {
+        self.inner.clock_s
+    }
+
+    #[getter]
+    fn is_gap(&self) -> bool {
+        self.inner.is_gap()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "EphemerisSampleRow(satellite={:?}, epoch_j2000_s={}, status={})",
+            self.inner.sat.to_string(),
+            self.inner.epoch_j2000_s,
+            PyEphemerisSampleStatus::from(self.inner.status).label()
+        )
     }
 }
 
@@ -582,6 +679,47 @@ fn load_sp3(source: &Bound<'_, PyAny>) -> PyResult<PySp3> {
     Ok(PySp3 { inner })
 }
 
+#[pyfunction]
+fn ephemeris_sample(
+    source: &Bound<'_, PyAny>,
+    satellites: Vec<String>,
+    start_j2000_s: f64,
+    stop_j2000_s: f64,
+    step_s: f64,
+) -> PyResult<Vec<PyEphemerisSampleRow>> {
+    let satellites = satellites
+        .iter()
+        .map(|token| parse_sat(token))
+        .collect::<PyResult<Vec<_>>>()?;
+
+    let rows = if let Ok(sp3) = source.extract::<PyRef<'_, PySp3>>() {
+        core_sample(&sp3.inner, &satellites, start_j2000_s, stop_j2000_s, step_s)
+    } else if let Ok(samples) = source.extract::<PyRef<'_, PyPreciseEphemerisSamples>>() {
+        core_sample(
+            &samples.inner,
+            &satellites,
+            start_j2000_s,
+            stop_j2000_s,
+            step_s,
+        )
+    } else if let Ok(broadcast) = source.extract::<PyRef<'_, PyBroadcastEphemeris>>() {
+        core_sample(
+            &broadcast.inner,
+            &satellites,
+            start_j2000_s,
+            stop_j2000_s,
+            step_s,
+        )
+    } else {
+        return Err(PyValueError::new_err(
+            "source must be Sp3, PreciseEphemerisSamples, or BroadcastEphemeris",
+        ));
+    }
+    .map_err(to_solve_err)?;
+
+    Ok(rows.into_iter().map(PyEphemerisSampleRow::from).collect())
+}
+
 /// Estimate per-epoch clock-reference offsets of `other` relative to
 /// `reference`.
 #[pyfunction]
@@ -621,11 +759,14 @@ fn instant_to_j2000_seconds(epoch: &Instant) -> Option<f64> {
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySp3>()?;
     m.add_class::<PySp3Interpolation>()?;
+    m.add_class::<PyEphemerisSampleStatus>()?;
+    m.add_class::<PyEphemerisSampleRow>()?;
     m.add_class::<PySp3ClockReferenceOffset>()?;
     m.add_class::<PySp3State>()?;
     m.add_class::<PyPreciseEphemerisSample>()?;
     m.add_class::<PyPreciseEphemerisSamples>()?;
     m.add_function(wrap_pyfunction!(load_sp3, m)?)?;
+    m.add_function(wrap_pyfunction!(ephemeris_sample, m)?)?;
     m.add_function(wrap_pyfunction!(sp3_clock_reference_offset, m)?)?;
     m.add_function(wrap_pyfunction!(align_sp3_clock_reference, m)?)?;
     Ok(())

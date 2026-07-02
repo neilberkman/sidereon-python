@@ -7,22 +7,27 @@
 //! the numbers are exactly what `sidereon-core` produces (0-ULP against the
 //! core's own reference fixture).
 
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
+use sidereon_core::bias::ClockReferenceObservables;
 use sidereon_core::ppp_corrections::{
-    build, CivilDateTime, PoleTideOptions, PppCorrectionEpoch, PppCorrectionObservation,
-    PppCorrectionsOptions, SatelliteAntenna, SatelliteAntennaFrequency, SatelliteAntennaOptions,
+    build, CivilDateTime, CodeBiasOptions, PoleTideOptions, PppCorrectionEpoch,
+    PppCorrectionObservation, PppCorrectionsOptions, SatelliteAntenna, SatelliteAntennaFrequency,
+    SatelliteAntennaOptions,
 };
 use sidereon_core::tides::OceanLoadingBlq;
-use sidereon_core::GnssSatelliteId;
+use sidereon_core::{GnssSatelliteId, GnssSystem};
 
 /// Number of BLQ ocean-loading constituents (M2 S2 N2 K2 K1 O1 P1 Q1 Mf Mm Ssa).
 const NUM_OCEAN_CONSTITUENTS: usize = 11;
 
+use crate::bias::PyBiasSet;
+use crate::marshal::PyGnssSystem;
 use crate::PySp3;
 
 type CivilTuple = (i32, u8, u8, u8, u8, f64);
@@ -50,16 +55,19 @@ pub struct PyPppCorrectionObservation {
     sat: String,
     freq1_hz: f64,
     freq2_hz: f64,
+    glonass_channel: Option<i8>,
 }
 
 #[pymethods]
 impl PyPppCorrectionObservation {
     #[new]
-    fn new(sat: String, freq1_hz: f64, freq2_hz: f64) -> Self {
+    #[pyo3(signature = (sat, freq1_hz, freq2_hz, glonass_channel=None))]
+    fn new(sat: String, freq1_hz: f64, freq2_hz: f64, glonass_channel: Option<i8>) -> Self {
         Self {
             sat,
             freq1_hz,
             freq2_hz,
+            glonass_channel,
         }
     }
 }
@@ -70,6 +78,7 @@ impl PyPppCorrectionObservation {
             sat: parse_sat(&self.sat)?,
             freq1_hz: self.freq1_hz,
             freq2_hz: self.freq2_hz,
+            glonass_channel: self.glonass_channel,
         })
     }
 }
@@ -104,6 +113,60 @@ impl PyPppCorrectionEpoch {
             t_rx_j2000_s,
             observations,
         }
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "PppCodeBiasOptions")]
+#[derive(Clone)]
+pub struct PyPppCodeBiasOptions {
+    inner: CodeBiasOptions,
+}
+
+fn system_pairs(
+    rows: Vec<(PyGnssSystem, String, String)>,
+) -> BTreeMap<GnssSystem, (String, String)> {
+    rows.into_iter()
+        .map(|(system, obs1, obs2)| (system.into(), (obs1, obs2)))
+        .collect()
+}
+
+#[pymethods]
+impl PyPppCodeBiasOptions {
+    #[new]
+    #[pyo3(signature = (bias_set, used_observables_default, used_observables_per_sat=None, clock_reference=None))]
+    fn new(
+        bias_set: &PyBiasSet,
+        used_observables_default: Vec<(PyGnssSystem, String, String)>,
+        used_observables_per_sat: Option<Vec<(String, String, String)>>,
+        clock_reference: Option<Vec<(PyGnssSystem, String, String)>>,
+    ) -> PyResult<Self> {
+        let used_observables_per_sat = used_observables_per_sat
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(sat, obs1, obs2)| Ok((parse_sat(&sat)?, (obs1, obs2))))
+            .collect::<PyResult<BTreeMap<_, _>>>()?;
+        let clock_reference = clock_reference.map(|rows| ClockReferenceObservables {
+            per_system: system_pairs(rows),
+        });
+        Ok(Self {
+            inner: CodeBiasOptions {
+                bias_set: bias_set.inner(),
+                used_observables_per_sat,
+                used_observables_default: system_pairs(used_observables_default),
+                clock_reference,
+            },
+        })
+    }
+
+    #[getter]
+    fn default_system_count(&self) -> usize {
+        self.inner.used_observables_default.len()
+    }
+}
+
+impl PyPppCodeBiasOptions {
+    fn to_core(&self) -> CodeBiasOptions {
+        self.inner.clone()
     }
 }
 
@@ -420,7 +483,7 @@ impl PyPppCorrections {
 /// or `None`) adds ocean tide loading. Returns a `PppCorrections`. Raises
 /// `ValueError` on malformed input, an invalid epoch, or a tide/coverage failure.
 #[pyfunction]
-#[pyo3(signature = (sp3, epochs, receiver_ecef_m, solid_earth_tide=false, phase_windup=false, satellite_antenna=None, pole_tide=None, ocean_loading=None))]
+#[pyo3(signature = (sp3, epochs, receiver_ecef_m, solid_earth_tide=false, phase_windup=false, satellite_antenna=None, pole_tide=None, ocean_loading=None, code_bias=None))]
 #[allow(clippy::too_many_arguments)]
 fn ppp_corrections(
     sp3: &PySp3,
@@ -431,6 +494,7 @@ fn ppp_corrections(
     satellite_antenna: Option<PySatelliteAntennaOptions>,
     pole_tide: Option<PyPoleTideOptions>,
     ocean_loading: Option<PyOceanLoadingBlq>,
+    code_bias: Option<PyPppCodeBiasOptions>,
 ) -> PyResult<PyPppCorrections> {
     let core_epochs: Vec<PppCorrectionEpoch> = epochs
         .iter()
@@ -445,6 +509,7 @@ fn ppp_corrections(
             .as_ref()
             .map(PySatelliteAntennaOptions::to_core)
             .transpose()?,
+        code_bias: code_bias.as_ref().map(PyPppCodeBiasOptions::to_core),
     };
     let inner = build(&sp3.inner, &core_epochs, receiver_ecef_m, &options)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -454,6 +519,7 @@ fn ppp_corrections(
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPppCorrectionObservation>()?;
     m.add_class::<PyPppCorrectionEpoch>()?;
+    m.add_class::<PyPppCodeBiasOptions>()?;
     m.add_class::<PySatelliteAntennaFrequency>()?;
     m.add_class::<PySatelliteAntenna>()?;
     m.add_class::<PySatelliteAntennaOptions>()?;

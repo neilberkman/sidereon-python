@@ -13,6 +13,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyModule};
 
+use sidereon::geometry::visible_at_elevation_mask;
 use sidereon::passes::{
     find_passes_for_satellite, ground_track as core_ground_track, look_angle_arc,
     look_angle_batch_parallel, look_angle_batch_serial, propagate_teme_arc,
@@ -30,6 +31,7 @@ use sidereon::tle::{
 };
 
 use crate::events::PyWgs84Geodetic;
+use crate::forces::PyDragParameters;
 use crate::marshal::{
     fixed_array, instants_from_unix_micros, rows3_to_array, rows6_to_array, scalar_rows_to_array2,
     vec3_rows_to_array3, EmptyPolicy, FinitePolicy,
@@ -767,7 +769,7 @@ impl PyTle {
             range_km: looks.iter().map(|l| l.range_km).collect(),
             visible: looks
                 .iter()
-                .map(|l| l.elevation_deg >= elevation_mask_deg)
+                .map(|l| visible_at_elevation_mask(l.elevation_deg, elevation_mask_deg))
                 .collect(),
             passes: passes.iter().map(to_py_pass).collect(),
         })
@@ -1147,9 +1149,11 @@ impl PyEphemeris {
     max_step_s = 3600.0,
     max_steps = 1_000_000,
     mu_km3_s2 = None,
+    drag = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn propagate_state(
+    py: Python<'_>,
     epoch_s: f64,
     position_km: PyReadonlyArray1<'_, f64>,
     velocity_km_s: PyReadonlyArray1<'_, f64>,
@@ -1163,6 +1167,7 @@ fn propagate_state(
     max_step_s: f64,
     max_steps: u32,
     mu_km3_s2: Option<f64>,
+    drag: Option<Py<PyDragParameters>>,
 ) -> PyResult<PyEphemeris> {
     let position = fixed_array::<3>("position_km", &position_km, FinitePolicy::AllowNonFinite)?;
     let velocity = fixed_array::<3>(
@@ -1173,9 +1178,11 @@ fn propagate_state(
     let times = times_s
         .as_slice()
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let times_vec = times.to_vec();
     if initial_step_s <= 0.0 {
         return Err(PyValueError::new_err("initial_step_s must be positive"));
     }
+    let drag = drag.map(|value| value.borrow(py).inner());
 
     let config = PropagationConfig {
         force_model: force_model.to_core(),
@@ -1190,12 +1197,16 @@ fn propagate_state(
             max_steps,
             dense_output: false,
         },
+        drag,
         ..PropagationConfig::new(epoch_s, position, velocity)
     };
 
-    let states = propagate_states(&config, times).map_err(to_solve_err)?;
+    let output_times = times_vec.clone();
+    let states = py
+        .allow_threads(move || propagate_states(&config, &times_vec))
+        .map_err(to_solve_err)?;
     Ok(PyEphemeris {
-        times_s: times.to_vec(),
+        times_s: output_times,
         positions_km: states.iter().map(|s| s.position_array()).collect(),
         velocities_km_s: states.iter().map(|s| s.velocity_array()).collect(),
     })

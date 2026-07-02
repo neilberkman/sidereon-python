@@ -1,15 +1,15 @@
-"""Optional fetch-and-cache layer for GNSS products (IONEX, SP3).
+"""Optional fetch-and-cache layer for GNSS products and terrain.
 
 ``sidereon.data`` downloads, decompresses, checksums, and records provenance for
-precise- and ionosphere-product files, then hands back a local file path (or a
-parsed handle). It is one-directional: the numerical layers never call into this
-module, so a solve never depends on network availability. You fetch once, then
-point the solver at the cached file.
+precise-orbit, ionosphere, and terrain products, then hands back a local file
+path or parsed handle. It is one-directional: numerical layers never call into
+this module, so a solve or terrain lookup never depends on network availability.
+Fetch once, then point the solver or terrain reader at the cached data.
 
-This is the Python counterpart of the Elixir ``Sidereon.GNSS.Data`` module,
-scoped to the IONEX (CODE rapid + predicted) and merged-SP3 capabilities. The
-product tokens, archive URLs, filename convention, cache layout, and offline
-semantics are taken verbatim from that reference.
+Catalog tokens, archive URLs, filenames, terrain tile paths, and HGT-to-DTED
+conversion come from the core catalog and converter. This module owns Python
+transport, cache IO, checksum verification, provenance, offline behavior, and
+typed errors.
 
 Quick start::
 
@@ -21,12 +21,27 @@ Quick start::
     # Merged current-day SP3 from several centers + the merge audit report:
     sp3, report = data.fetch_merged_sp3(date.today(), ["igs_ult", "gfz_ult"])
 
+    # Fetch a terrain tile, then read the terrain cache with the core reader:
+    terrain_root = data.default_terrain_cache_dir()
+    path = data.fetch_dted(36.5, -106.5, cache_dir=terrain_root)
+    if path is not None:
+        terrain = sidereon.DtedTerrain(terrain_root)
+        height_m = terrain.height_m(-106.5, 36.5)
+
+Bulk terrain workflow::
+
+    report = data.prefetch_dted_bbox(36.0, -107.0, 37.0, -106.0)
+    offline_report = data.prefetch_dted_tiles(
+        ["N36W107", "N37W107"], offline=True
+    )
+
 Cache-first ``fetch`` returns a local file path; a verified cache hit returns
 with no network. Pass ``offline=True`` to forbid all network access (a verified
 cache hit is returned, a miss raises :class:`OfflineCacheMiss`).
 
 Failures raise a typed exception from the :class:`DataError` hierarchy rather
-than returning sentinels.
+than returning sentinels, except that terrain no-coverage returns ``None`` by
+default because the terrain reader treats an absent ocean tile as sea level.
 """
 
 from __future__ import annotations
@@ -38,18 +53,90 @@ import json as _json
 import os as _os
 import zlib as _zlib
 from dataclasses import dataclass, field
-from typing import Optional, Sequence, Union
+from typing import Iterable, Mapping, Optional, Sequence, Union
 from urllib.parse import urlsplit
 
 import httpx
 import platformdirs
 
 import sidereon
+from sidereon._sidereon import (
+    data_allowed_hosts as _core_data_allowed_hosts,
+)
+from sidereon._sidereon import (
+    data_archive_compression as _core_data_archive_compression,
+)
+from sidereon._sidereon import (
+    data_archive_url as _core_data_archive_url,
+)
+from sidereon._sidereon import (
+    data_canonical_filename as _core_data_canonical_filename,
+)
+from sidereon._sidereon import (
+    data_center_entry as _core_data_center_entry,
+)
+from sidereon._sidereon import (
+    data_centers as _core_data_centers,
+)
+from sidereon._sidereon import (
+    data_content_types as _core_data_content_types,
+)
+from sidereon._sidereon import (
+    data_day_of_year as _core_data_day_of_year,
+)
+from sidereon._sidereon import (
+    data_default_sample as _core_data_default_sample,
+)
+from sidereon._sidereon import (
+    data_dted_block_dir as _core_data_dted_block_dir,
+)
+from sidereon._sidereon import (
+    data_dted_cache_relpath as _core_data_dted_cache_relpath,
+)
+from sidereon._sidereon import (
+    data_dted_tile_filename as _core_data_dted_tile_filename,
+)
+from sidereon._sidereon import (
+    data_gim_date_candidates as _core_data_gim_date_candidates,
+)
+from sidereon._sidereon import (
+    data_gps_week as _core_data_gps_week,
+)
+from sidereon._sidereon import (
+    data_hgt_to_dted as _core_data_hgt_to_dted,
+)
+from sidereon._sidereon import (
+    data_parse_skadi_tile_id as _core_data_parse_skadi_tile_id,
+)
+from sidereon._sidereon import (
+    data_predicted_day_offset as _core_data_predicted_day_offset,
+)
+from sidereon._sidereon import (
+    data_skadi_archive_url as _core_data_skadi_archive_url,
+)
+from sidereon._sidereon import (
+    data_skadi_band as _core_data_skadi_band,
+)
+from sidereon._sidereon import (
+    data_skadi_source_entry as _core_data_skadi_source_entry,
+)
+from sidereon._sidereon import (
+    data_skadi_tile_id as _core_data_skadi_tile_id,
+)
+from sidereon._sidereon import (
+    data_terrain_tile_index as _core_data_terrain_tile_index,
+)
+from sidereon._sidereon import (
+    data_ultra_issue_candidates as _core_data_ultra_issue_candidates,
+)
 
 __all__ = [
     "DataError",
     "UnknownCenter",
     "UnsupportedProduct",
+    "InvalidCoordinate",
+    "InvalidTileIndex",
+    "InvalidTileId",
     "OfflineCacheMiss",
     "FileNotFoundOnArchive",
     "HttpStatusError",
@@ -61,9 +148,13 @@ __all__ = [
     "CacheNotWritable",
     "IncompatibleSources",
     "NoProducts",
+    "NoCoverage",
     "Product",
     "MergeReport",
+    "TerrainSourceEntry",
+    "TerrainFetchReport",
     "default_cache_dir",
+    "default_terrain_cache_dir",
     "centers",
     "content_types",
     "gps_week",
@@ -76,7 +167,21 @@ __all__ = [
     "ops_ultra_sp3",
     "mgex_sp3",
     "product",
+    "skadi_source_entry",
+    "skadi_tile_id",
+    "skadi_band",
+    "skadi_archive_url",
+    "terrain_tile_index",
+    "dted_tile_filename",
+    "dted_block_dir",
+    "dted_cache_relpath",
+    "parse_skadi_tile_id",
+    "hgt_to_dted",
     "fetch",
+    "fetch_dted",
+    "prefetch_dted_bbox",
+    "prefetch_dted_tiles",
+    "populate_terrain_cache",
     "fetch_ionex",
     "fetch_merged_sp3",
     "fetch_merged_sp3_file",
@@ -97,6 +202,18 @@ class UnknownCenter(DataError):
 
 class UnsupportedProduct(DataError):
     """The requested center/content/sample combination is not buildable."""
+
+
+class InvalidCoordinate(DataError):
+    """A terrain coordinate is non-finite or outside the supported range."""
+
+
+class InvalidTileIndex(DataError):
+    """A terrain tile index is outside the supported one-degree cell range."""
+
+
+class InvalidTileId(DataError):
+    """A Skadi terrain tile id is malformed."""
 
 
 class OfflineCacheMiss(DataError):
@@ -130,7 +247,7 @@ class NetworkError(DataError):
 
 
 class ChecksumMismatch(DataError):
-    """A decompressed file failed SHA-256 verification."""
+    """A cached data file failed SHA-256 verification."""
 
     def __init__(self, expected: str, got: str) -> None:
         self.expected = expected
@@ -168,118 +285,17 @@ class NoProducts(DataError):
         super().__init__(f"no SP3 products available ({detail})")
 
 
+class NoCoverage(DataError):
+    """The terrain archive has no tile for a valid ocean/no-data cell."""
+
+    def __init__(self, tile_id: str) -> None:
+        self.tile_id = tile_id
+        super().__init__(f"no terrain coverage for {tile_id}")
+
+
 # --- catalog -------------------------------------------------------------
 
-# Mirrors Sidereon.GNSS.Data.Catalog @centers for the scoped centers. Each entry
-# carries the archive protocol, host, root URL, per-content product token,
-# directory layout, default sampling, and (for the AIUB recent-products root)
-# the uncompressed flag where the archive serves plain files.
-_CENTERS: dict[str, dict] = {
-    # IONEX low-latency CODE maps on the AIUB /CODE recent-products root.
-    "cod_rap": {
-        "protocol": "http",
-        "host": "ftp.aiub.unibe.ch",
-        "root": "http://ftp.aiub.unibe.ch",
-        "tokens": {"ionex": "COD0OPSRAP"},
-        "layouts": {"ionex": "aiub_code_root"},
-        "spans": {"ionex": "01D"},
-        "samples": {"ionex": "01H"},
-    },
-    "cod_prd1": {
-        "protocol": "http",
-        "host": "ftp.aiub.unibe.ch",
-        "root": "http://ftp.aiub.unibe.ch",
-        "tokens": {"ionex": "COD0OPSPRD"},
-        "layouts": {"ionex": "aiub_code_root"},
-        "spans": {"ionex": "01D"},
-        "samples": {"ionex": "01H"},
-    },
-    "cod_prd2": {
-        "protocol": "http",
-        "host": "ftp.aiub.unibe.ch",
-        "root": "http://ftp.aiub.unibe.ch",
-        "tokens": {"ionex": "COD0OPSPRD"},
-        "layouts": {"ionex": "aiub_code_root"},
-        "spans": {"ionex": "01D"},
-        "samples": {"ionex": "01H"},
-    },
-    "esa": {
-        "protocol": "https",
-        "host": "navigation-office.esa.int",
-        "root": "https://navigation-office.esa.int/products/gnss-products",
-        "tokens": {"sp3": "ESA0MGNFIN", "ionex": "ESA0OPSFIN"},
-        "layouts": {"sp3": "gps_week", "ionex": "gps_week"},
-        "samples": {"sp3": "05M", "ionex": "02H"},
-    },
-    "cod": {
-        "protocol": "http",
-        "host": "ftp.aiub.unibe.ch",
-        "root": "http://ftp.aiub.unibe.ch",
-        "tokens": {"sp3": "COD0MGXFIN", "ionex": "COD0OPSFIN"},
-        "layouts": {"sp3": "aiub_code_mgex_year", "ionex": "aiub_code_year"},
-        "samples": {"sp3": "05M", "ionex": "01H"},
-    },
-    "gfz": {
-        "protocol": "https",
-        "host": "isdc-data.gfz.de",
-        "root": "https://isdc-data.gfz.de/gnss/products",
-        "tokens": {"sp3": "GFZ0OPSRAP"},
-        "layouts": {"sp3": "gfz_rapid_week"},
-        "samples": {"sp3": "15M"},
-    },
-    # Ultra-rapid SP3 centers (02D span, sub-daily issue times).
-    "igs_ult": {
-        "protocol": "https",
-        "host": "igs.bkg.bund.de",
-        "root": "https://igs.bkg.bund.de/root_ftp/IGS",
-        "tokens": {"sp3": "IGS0OPSULT"},
-        "layouts": {"sp3": "bkg_products_week"},
-        "spans": {"sp3": "02D"},
-        "samples": {"sp3": "15M"},
-        "issues": ("0000", "0600", "1200", "1800"),
-    },
-    "cod_ult": {
-        "protocol": "http",
-        "host": "ftp.aiub.unibe.ch",
-        "root": "http://ftp.aiub.unibe.ch",
-        "tokens": {"sp3": "COD0OPSULT"},
-        "layouts": {"sp3": "aiub_code_root"},
-        "spans": {"sp3": "01D"},
-        "samples": {"sp3": "05M"},
-        "issues": ("0000",),
-        "compression": {"sp3": "none"},
-    },
-    "esa_ult": {
-        "protocol": "https",
-        "host": "navigation-office.esa.int",
-        "root": "https://navigation-office.esa.int/products/gnss-products",
-        "tokens": {"sp3": "ESA0OPSULT"},
-        "layouts": {"sp3": "gps_week"},
-        "spans": {"sp3": "02D"},
-        "samples": {"sp3": "15M"},
-        "issues": ("0000", "0600", "1200", "1800"),
-    },
-    "gfz_ult": {
-        "protocol": "https",
-        "host": "isdc-data.gfz.de",
-        "root": "https://isdc-data.gfz.de/gnss/products",
-        "tokens": {"sp3": "GFZ0OPSULT"},
-        "layouts": {"sp3": "gfz_ultra_week"},
-        "spans": {"sp3": "02D"},
-        "samples": {"sp3": "05M"},
-        "issues": ("0000", "0600", "1200", "1800"),
-    },
-}
-
-# Content type -> filename form.
-#   code: the content code; ext: the file extension (case as published);
-#   kind: "sampled" (AAAVPPPTTT_DATE_LEN_SMP_CNT.EXT).
-_CONTENT: dict[str, dict] = {
-    "sp3": {"code": "ORB", "ext": "SP3", "kind": "sampled"},
-    "ionex": {"code": "GIM", "ext": "INX", "kind": "sampled"},
-}
-
-_ALLOWED_HOSTS = frozenset(c["host"] for c in _CENTERS.values())
+_ALLOWED_HOSTS = frozenset(_core_data_allowed_hosts())
 
 _DEFAULT_MAX_DECOMPRESSED_BYTES = 500 * 1024 * 1024
 _DEFAULT_MAX_COMPRESSED_BYTES = 64 * 1024 * 1024
@@ -287,48 +303,171 @@ _DEFAULT_TIMEOUT_S = 30.0
 _DEFAULT_RETRIES = 3
 _DEFAULT_BACKOFF_S = 0.5
 
-_OPSULT_ISSUES = ("0000", "0600", "1200", "1800")
 
-# datetime.date.toordinal() of 1980-01-06, the GPS epoch.
-_GPS_EPOCH_ORDINAL = _dt.date(1980, 1, 6).toordinal()
+@dataclass(frozen=True)
+class TerrainSourceEntry:
+    """Catalog facts for the terrain archive source."""
+
+    protocol: str
+    host: str
+    compression: str
+    root_url: str
+
+
+@dataclass(frozen=True)
+class TerrainFetchReport:
+    """Partitioned result from a terrain region or bulk cache population."""
+
+    fetched: list[str]
+    cached: list[str]
+    no_coverage: list[str]
+    errors: list[tuple[str, DataError]]
 
 
 def centers() -> list[str]:
     """All supported analysis-center codes."""
-    return list(_CENTERS.keys())
+    return list(_core_data_centers())
 
 
 def content_types() -> list[str]:
     """All supported content-type codes."""
-    return list(_CONTENT.keys())
+    return list(_core_data_content_types())
+
+
+def _catalog_error(exc: ValueError) -> DataError:
+    message = str(exc)
+    if message.startswith("unknown analysis center"):
+        return UnknownCenter(message)
+    return UnsupportedProduct(message)
+
+
+def _terrain_catalog_error(exc: ValueError) -> DataError:
+    message = str(exc)
+    if message.startswith("invalid terrain coordinate"):
+        return InvalidCoordinate(message)
+    if message.startswith("invalid terrain tile index"):
+        return InvalidTileIndex(message)
+    if message.startswith("invalid skadi tile id"):
+        return InvalidTileId(message)
+    return UnsupportedProduct(message)
+
+
+def _hgt_conversion_error(exc: ValueError) -> DataError:
+    message = str(exc)
+    if message.startswith("invalid terrain tile index"):
+        return InvalidTileIndex(message)
+    return DecompressError(message)
 
 
 def _center_def(code: str) -> dict:
     if not isinstance(code, str):
         raise UnknownCenter(f"unknown center: {code!r}")
     try:
-        return _CENTERS[code]
-    except KeyError:
-        raise UnknownCenter(f"unknown center: {code!r}") from None
+        protocol, host, products, issues = _core_data_center_entry(code)
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
+    return {
+        "protocol": protocol,
+        "host": host,
+        "products": set(products),
+        "issues": tuple(issues),
+    }
 
 
 def gps_week(date: _dt.date) -> int:
     """The GPS week number for a calendar date (week 0 began 1980-01-06)."""
-    return (date.toordinal() - _GPS_EPOCH_ORDINAL) // 7
+    try:
+        return int(_core_data_gps_week(date.year, date.month, date.day))
+    except ValueError as exc:
+        raise UnsupportedProduct(str(exc)) from None
 
 
 def day_of_year(date: _dt.date) -> int:
     """The day-of-year (1-366) for a calendar date."""
-    return date.timetuple().tm_yday
+    try:
+        return int(_core_data_day_of_year(date.year, date.month, date.day))
+    except ValueError as exc:
+        raise UnsupportedProduct(str(exc)) from None
 
 
-def _pad3(n: int) -> str:
-    return f"{n:03d}"
+def skadi_source_entry() -> TerrainSourceEntry:
+    """Catalog facts for the Skadi SRTM source."""
+    protocol, host, compression, root_url = _core_data_skadi_source_entry()
+    return TerrainSourceEntry(protocol, host, compression, root_url)
 
 
-def _date_block(date: _dt.date, issue: Optional[str]) -> str:
-    iss = issue if issue is not None else "0000"
-    return f"{date.year}{_pad3(day_of_year(date))}{iss}"
+def skadi_tile_id(lat_index: int, lon_index: int) -> str:
+    """Core-derived Skadi tile id, for example ``N36W107``."""
+    try:
+        return _core_data_skadi_tile_id(lat_index, lon_index)
+    except ValueError as exc:
+        raise _terrain_catalog_error(exc) from None
+
+
+def skadi_band(lat_index: int) -> str:
+    """Core-derived Skadi latitude band, for example ``N36``."""
+    try:
+        return _core_data_skadi_band(lat_index)
+    except ValueError as exc:
+        raise _terrain_catalog_error(exc) from None
+
+
+def skadi_archive_url(lat_index: int, lon_index: int) -> str:
+    """Core-derived terrain source URL for one tile."""
+    try:
+        return _core_data_skadi_archive_url(lat_index, lon_index)
+    except ValueError as exc:
+        raise _terrain_catalog_error(exc) from None
+
+
+def terrain_tile_index(lat_deg: float, lon_deg: float) -> tuple[int, int]:
+    """Core-derived tile index covering a latitude/longitude coordinate."""
+    try:
+        lat_index, lon_index = _core_data_terrain_tile_index(lat_deg, lon_deg)
+    except ValueError as exc:
+        raise _terrain_catalog_error(exc) from None
+    return int(lat_index), int(lon_index)
+
+
+def dted_tile_filename(lat_index: int, lon_index: int) -> str:
+    """Core-derived DTED tile filename read by :class:`sidereon.DtedTerrain`."""
+    try:
+        return _core_data_dted_tile_filename(lat_index, lon_index)
+    except ValueError as exc:
+        raise _terrain_catalog_error(exc) from None
+
+
+def dted_block_dir(lat_index: int, lon_index: int) -> str:
+    """Core-derived DTED ten-degree cache block directory."""
+    try:
+        return _core_data_dted_block_dir(lat_index, lon_index)
+    except ValueError as exc:
+        raise _terrain_catalog_error(exc) from None
+
+
+def dted_cache_relpath(lat_index: int, lon_index: int) -> str:
+    """Core-derived DTED cache path below a terrain root."""
+    try:
+        return _core_data_dted_cache_relpath(lat_index, lon_index)
+    except ValueError as exc:
+        raise _terrain_catalog_error(exc) from None
+
+
+def parse_skadi_tile_id(tile_id: str) -> tuple[int, int]:
+    """Parse a Skadi tile id through core validation."""
+    try:
+        lat_index, lon_index = _core_data_parse_skadi_tile_id(tile_id)
+    except ValueError as exc:
+        raise _terrain_catalog_error(exc) from None
+    return int(lat_index), int(lon_index)
+
+
+def hgt_to_dted(lat_index: int, lon_index: int, hgt: bytes) -> bytes:
+    """Convert decompressed SRTM1 HGT bytes to deterministic DTED bytes."""
+    try:
+        return bytes(_core_data_hgt_to_dted(lat_index, lon_index, hgt))
+    except ValueError as exc:
+        raise _hgt_conversion_error(exc) from None
 
 
 def predicted_day_offset(center: str) -> int:
@@ -337,11 +476,10 @@ def predicted_day_offset(center: str) -> int:
     ``cod_prd1`` is the current/near-future day (offset 0); ``cod_prd2`` is the
     day after (offset +1). Every other center returns 0.
     """
-    if center == "cod_prd1":
-        return 0
-    if center == "cod_prd2":
-        return 1
-    return 0
+    try:
+        return int(_core_data_predicted_day_offset(center))
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
 
 
 def _as_date(target: Union[_dt.date, _dt.datetime]) -> _dt.date:
@@ -379,11 +517,10 @@ def _validate_issue(issue: str) -> None:
 
 
 def _default_sample(center: str, content: str) -> str:
-    cdef = _center_def(center)
-    samples = cdef.get("samples", {})
-    if content not in samples:
-        raise UnsupportedProduct(f"no default sample for {center}/{content}")
-    return samples[content]
+    try:
+        return _core_data_default_sample(center, content)
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
 
 
 # --- product -------------------------------------------------------------
@@ -407,13 +544,13 @@ class Product:
 
     def __post_init__(self) -> None:
         cdef = _center_def(self.center)
-        if self.content not in _CONTENT:
+        if self.content not in content_types():
             raise UnsupportedProduct(f"unknown content type: {self.content!r}")
-        if self.content not in cdef.get("tokens", {}):
+        if self.content not in cdef["products"]:
             raise UnsupportedProduct(f"{self.center} does not serve {self.content}")
         _validate_sample(self.sample)
-        issues = cdef.get("issues")
-        if issues is not None:
+        issues = cdef["issues"]
+        if issues:
             if self.issue is None:
                 raise UnsupportedProduct(f"{self.center} requires an issue time")
             _validate_issue(self.issue)
@@ -423,6 +560,7 @@ class Product:
                 )
         elif self.issue is not None:
             raise UnsupportedProduct(f"{self.center} does not take an issue time")
+        self.canonical_filename()
 
     @property
     def gps_week(self) -> int:
@@ -434,49 +572,42 @@ class Product:
 
     def canonical_filename(self) -> str:
         """The canonical IGS long-name filename (no ``.gz`` suffix)."""
-        cdef = _center_def(self.center)
-        descriptor = _CONTENT[self.content]
-        token = cdef["tokens"][self.content]
-        span = cdef.get("spans", {}).get(self.content, "01D")
-        block = _date_block(self.date, self.issue)
-        return (
-            f"{token}_{block}_{span}_{self.sample}_"
-            f"{descriptor['code']}.{descriptor['ext']}"
-        )
+        try:
+            return _core_data_canonical_filename(
+                self.center,
+                self.content,
+                self.date.year,
+                self.date.month,
+                self.date.day,
+                self.sample,
+                self.issue,
+            )
+        except ValueError as exc:
+            raise _catalog_error(exc) from None
 
     def _compression(self) -> str:
-        cdef = _center_def(self.center)
-        return cdef.get("compression", {}).get(self.content, "gzip")
+        try:
+            return _core_data_archive_compression(self.center, self.content)
+        except ValueError as exc:
+            raise _catalog_error(exc) from None
 
     def _protocol(self) -> str:
         return _center_def(self.center)["protocol"]
 
-    def _dir_path(self) -> str:
-        cdef = _center_def(self.center)
-        layout = cdef["layouts"][self.content]
-        date = self.date
-        if layout == "gfz_rapid_week":
-            return f"rapid/w{gps_week(date)}"
-        if layout == "gfz_ultra_week":
-            return f"ultra/w{gps_week(date)}"
-        if layout == "gps_week":
-            return f"{gps_week(date)}"
-        if layout == "bkg_products_week":
-            return f"products/{gps_week(date)}"
-        if layout == "aiub_code_mgex_year":
-            return f"CODE_MGEX/CODE/{date.year}"
-        if layout == "aiub_code_year":
-            return f"CODE/{date.year}"
-        if layout == "aiub_code_root":
-            return "CODE"
-        raise UnsupportedProduct(f"unknown layout: {layout!r}")
-
     def archive_url(self) -> str:
         """The full, compressed (``.gz`` where gzipped) archive URL."""
-        cdef = _center_def(self.center)
-        filename = self.canonical_filename()
-        suffix = ".gz" if self._compression() == "gzip" else ""
-        return f"{cdef['root']}/{self._dir_path()}/{filename}{suffix}"
+        try:
+            return _core_data_archive_url(
+                self.center,
+                self.content,
+                self.date.year,
+                self.date.month,
+                self.date.day,
+                self.sample,
+                self.issue,
+            )
+        except ValueError as exc:
+            raise _catalog_error(exc) from None
 
 
 # --- product builders ----------------------------------------------------
@@ -546,7 +677,7 @@ def ops_ultra_sp3(
     present in that list.
     """
     cdef = _center_def(center)
-    if "issues" not in cdef or "sp3" not in cdef.get("tokens", {}):
+    if not cdef["issues"] or "sp3" not in cdef["products"]:
         raise UnsupportedProduct(f"{center} is not an ultra-rapid SP3 center")
     if sample is None:
         sample = _default_sample(center, "sp3")
@@ -571,19 +702,19 @@ def _ultra_issue_candidates(
     center: str, target: _dt.datetime
 ) -> list[tuple[_dt.date, str]]:
     """Candidate ultra issues at or before ``target``, newest first."""
-    cdef = _center_def(center)
-    issues = cdef.get("issues")
-    if issues is None:
-        raise UnsupportedProduct(f"{center} is not an ultra-rapid SP3 center")
-    target_date = target.date()
-    candidates: list[tuple[_dt.datetime, _dt.date, str]] = []
-    for date in (target_date, target_date - _dt.timedelta(days=1)):
-        for issue in issues:
-            epoch = _issue_epoch(date, issue)
-            if epoch <= target:
-                candidates.append((epoch, date, issue))
-    candidates.sort(key=lambda c: c[0], reverse=True)
-    return [(date, issue) for (_epoch, date, issue) in candidates]
+    try:
+        rows = _core_data_ultra_issue_candidates(
+            center,
+            target.year,
+            target.month,
+            target.day,
+            target.hour,
+            target.minute,
+            target.second,
+        )
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
+    return [(_dt.date(year, month, day), issue) for (year, month, day, issue) in rows]
 
 
 def _latest_ultra_issue(
@@ -633,11 +764,14 @@ def archive_url(
 def _gim_date_candidates(
     center: str, target: Union[_dt.date, _dt.datetime], lookback: int
 ) -> list[_dt.date]:
-    cdef = _center_def(center)
-    if "ionex" not in cdef.get("tokens", {}):
-        raise UnsupportedProduct(f"{center} does not serve ionex")
-    base = _as_date(target) + _dt.timedelta(days=predicted_day_offset(center))
-    return [base - _dt.timedelta(days=back) for back in range(lookback + 1)]
+    date = _as_date(target)
+    try:
+        rows = _core_data_gim_date_candidates(
+            center, date.year, date.month, date.day, lookback
+        )
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
+    return [_dt.date(year, month, day) for (year, month, day) in rows]
 
 
 # --- cache ---------------------------------------------------------------
@@ -648,24 +782,37 @@ def default_cache_dir() -> str:
     return _os.path.join(platformdirs.user_cache_dir("sidereon"), "gnss")
 
 
+def default_terrain_cache_dir() -> str:
+    """The default terrain cache root, ``user_cache_dir("sidereon")/terrain``."""
+    return _os.path.join(platformdirs.user_cache_dir("sidereon"), "terrain")
+
+
 def _resolve_cache_dir(cache_dir: Optional[str]) -> str:
     return cache_dir if cache_dir is not None else default_cache_dir()
+
+
+def _resolve_terrain_cache_dir(cache_dir: Optional[str]) -> str:
+    return cache_dir if cache_dir is not None else default_terrain_cache_dir()
 
 
 def _sha256(data: bytes) -> str:
     return _hashlib.sha256(data).hexdigest()
 
 
-def _validate_cache_name(filename: str) -> None:
+def _validate_cache_component(component: str) -> None:
     if (
-        filename in ("", ".", "..")
-        or "/" in filename
-        or "\\" in filename
-        or "\x00" in filename
-        or ".." in filename
-        or _os.path.isabs(filename)
+        component in ("", ".", "..")
+        or "/" in component
+        or "\\" in component
+        or "\x00" in component
+        or ".." in component
+        or _os.path.isabs(component)
     ):
-        raise CacheNotWritable(f"unsafe cache name: {filename!r}")
+        raise CacheNotWritable(f"unsafe cache path component: {component!r}")
+
+
+def _validate_cache_name(filename: str) -> None:
+    _validate_cache_component(filename)
 
 
 def _cache_path(cache_dir: str, filename: str) -> str:
@@ -673,8 +820,21 @@ def _cache_path(cache_dir: str, filename: str) -> str:
     return _os.path.join(cache_dir, filename)
 
 
+def _terrain_cache_path(cache_dir: str, relpath: str) -> str:
+    parts = relpath.split("/")
+    if len(parts) != 2:
+        raise CacheNotWritable(f"unsafe terrain cache path: {relpath!r}")
+    for part in parts:
+        _validate_cache_component(part)
+    return _os.path.join(cache_dir, parts[0], parts[1])
+
+
 def _provenance_path(path: str) -> str:
     return path + ".provenance.json"
+
+
+def _no_coverage_path(path: str) -> str:
+    return path + ".no_coverage.json"
 
 
 def _read_provenance(path: str) -> Optional[dict]:
@@ -702,8 +862,10 @@ def _classify(path: str, expected_sha256: Optional[str]) -> tuple[str, object]:
         return ("stale", ChecksumMismatch(expected_sha256.lower(), got))
 
     prov = _read_provenance(path)
-    if prov and isinstance(prov.get("sha256_decompressed"), str):
-        recorded = prov["sha256_decompressed"].lower()
+    if prov and isinstance(
+        prov.get("sha256_data", prov.get("sha256_decompressed")), str
+    ):
+        recorded = prov.get("sha256_data", prov.get("sha256_decompressed")).lower()
         if got == recorded:
             return ("hit", path)
         return ("stale", ChecksumMismatch(recorded, got))
@@ -797,6 +959,53 @@ def _commit(path: str, decompressed: bytes, provenance: dict) -> str:
     return path
 
 
+def _commit_json_sidecar(path: str, payload: dict) -> str:
+    directory = _os.path.dirname(path)
+    _ensure_dir(directory)
+    json_bytes = _json.dumps(payload, indent=2).encode("utf-8")
+    tmp = _write_temp(directory, json_bytes)
+    try:
+        _os.replace(tmp, path)
+    except OSError as exc:
+        _silent_remove(tmp)
+        raise CacheNotWritable(f"cannot commit {path}: {exc}") from exc
+    return path
+
+
+def _commit_no_coverage_marker(path: str, tile_id: str, url: str, protocol: str) -> str:
+    return _commit_json_sidecar(
+        _no_coverage_path(path),
+        {
+            "source_url": url,
+            "protocol": protocol,
+            "status": 404,
+            "tile_id": tile_id,
+            "fetched_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        },
+    )
+
+
+def _read_no_coverage_marker(path: str, tile_id: str, url: str, protocol: str) -> bool:
+    try:
+        with open(_no_coverage_path(path), "rb") as handle:
+            marker = _json.loads(handle.read())
+    except FileNotFoundError:
+        return False
+    except (ValueError, OSError):
+        return False
+    return (
+        isinstance(marker, dict)
+        and marker.get("status") == 404
+        and marker.get("tile_id") == tile_id
+        and marker.get("source_url") == url
+        and marker.get("protocol") == protocol
+    )
+
+
+def _delete_no_coverage_marker(path: str) -> None:
+    _silent_remove(_no_coverage_path(path))
+
+
 def _silent_remove(path: str) -> None:
     try:
         _os.remove(path)
@@ -880,13 +1089,16 @@ def _download_once(url: str, timeout: float, max_bytes: int) -> bytes:
 def _provenance(
     url: str, protocol: str, compression: str, downloaded: bytes, decompressed: bytes
 ) -> dict:
+    data_digest = _sha256(decompressed)
     return {
         "source_url": url,
         "protocol": protocol,
         "compression": compression,
+        "sha256_data": data_digest,
+        "size_data": len(decompressed),
         "sha256_downloaded": _sha256(downloaded),
         "sha256_compressed": _sha256(downloaded),
-        "sha256_decompressed": _sha256(decompressed),
+        "sha256_decompressed": data_digest,
         "size_downloaded": len(downloaded),
         "size_compressed": len(downloaded),
         "size_decompressed": len(decompressed),
@@ -997,6 +1209,344 @@ def _download_and_cache(
     return _commit(path, decompressed, provenance)
 
 
+# --- terrain -------------------------------------------------------------
+
+
+def fetch_dted(
+    lat: float,
+    lon: float,
+    *,
+    cache_dir: Optional[str] = None,
+    offline: bool = False,
+    sha256: Optional[str] = None,
+    strict: bool = False,
+    timeout_s: float = _DEFAULT_TIMEOUT_S,
+    retries: int = _DEFAULT_RETRIES,
+    backoff_s: float = _DEFAULT_BACKOFF_S,
+    max_compressed_bytes: int = _DEFAULT_MAX_COMPRESSED_BYTES,
+    max_decompressed_bytes: int = _DEFAULT_MAX_DECOMPRESSED_BYTES,
+) -> Optional[str]:
+    """Fetch the DTED tile covering ``lat``/``lon`` and return its local path.
+
+    A verified cache hit returns without a request. A known ocean/no-coverage
+    tile returns ``None`` by default, or raises :class:`NoCoverage` when
+    ``strict=True``. The returned file is written below the terrain cache root
+    in the block-directory layout read by :class:`sidereon.DtedTerrain`.
+    """
+    lat_index, lon_index = terrain_tile_index(lat, lon)
+    state, value = _fetch_dted_tile(
+        lat_index,
+        lon_index,
+        cache_dir=cache_dir,
+        offline=offline,
+        sha256=sha256,
+        strict=strict,
+        timeout_s=timeout_s,
+        retries=retries,
+        backoff_s=backoff_s,
+        max_compressed_bytes=max_compressed_bytes,
+        max_decompressed_bytes=max_decompressed_bytes,
+    )
+    if state == "no_coverage":
+        return None
+    return str(value)
+
+
+def _fetch_dted_tile(
+    lat_index: int,
+    lon_index: int,
+    *,
+    cache_dir: Optional[str],
+    offline: bool,
+    sha256: Optional[str],
+    strict: bool,
+    timeout_s: float,
+    retries: int,
+    backoff_s: float,
+    max_compressed_bytes: int,
+    max_decompressed_bytes: int,
+) -> tuple[str, object]:
+    tile_id = skadi_tile_id(lat_index, lon_index)
+    url = skadi_archive_url(lat_index, lon_index)
+    relpath = dted_cache_relpath(lat_index, lon_index)
+    source = skadi_source_entry()
+    root = _resolve_terrain_cache_dir(cache_dir)
+    path = _terrain_cache_path(root, relpath)
+
+    state, detail = _classify(path, sha256)
+    if state == "hit":
+        return ("cached", path)
+    if state == "absent":
+        if _read_no_coverage_marker(path, tile_id, url, source.protocol):
+            if strict:
+                raise NoCoverage(tile_id)
+            return ("no_coverage", tile_id)
+        if offline:
+            raise OfflineCacheMiss(f"not cached: {tile_id}")
+    elif state == "unverified":
+        if offline:
+            raise OfflineCacheMiss(
+                f"cached but unverifiable (no provenance sidecar): {tile_id}"
+            )
+    elif offline:
+        raise detail
+
+    try:
+        downloaded = _download(
+            url,
+            source.protocol,
+            dict(
+                timeout_s=timeout_s,
+                retries=retries,
+                backoff_s=backoff_s,
+                max_compressed_bytes=max_compressed_bytes,
+            ),
+        )
+    except FileNotFoundOnArchive:
+        _commit_no_coverage_marker(path, tile_id, url, source.protocol)
+        if strict:
+            raise NoCoverage(tile_id) from None
+        return ("no_coverage", tile_id)
+
+    if source.compression == "gzip":
+        hgt = _gunzip(downloaded, max_decompressed_bytes)
+    elif source.compression == "none":
+        hgt = downloaded
+    else:
+        raise UnsupportedProduct(
+            f"unsupported terrain compression: {source.compression}"
+        )
+
+    dt2 = hgt_to_dted(lat_index, lon_index, hgt)
+    got = _sha256(dt2)
+    if sha256 is not None and got != sha256.lower():
+        raise ChecksumMismatch(sha256.lower(), got)
+
+    provenance = _terrain_provenance(
+        url=url,
+        source=source,
+        downloaded=downloaded,
+        hgt=hgt,
+        dt2=dt2,
+        tile_id=tile_id,
+        lat_index=lat_index,
+        lon_index=lon_index,
+    )
+    committed = _commit(path, dt2, provenance)
+    _delete_no_coverage_marker(path)
+    return ("fetched", committed)
+
+
+def _terrain_provenance(
+    *,
+    url: str,
+    source: TerrainSourceEntry,
+    downloaded: bytes,
+    hgt: bytes,
+    dt2: bytes,
+    tile_id: str,
+    lat_index: int,
+    lon_index: int,
+) -> dict:
+    hgt_gz_digest = _sha256(downloaded)
+    hgt_digest = _sha256(hgt)
+    dt2_digest = _sha256(dt2)
+    return {
+        "source_url": url,
+        "protocol": source.protocol,
+        "compression": source.compression,
+        "sha256_data": dt2_digest,
+        "size_data": len(dt2),
+        "sha256_downloaded": hgt_gz_digest,
+        "sha256_compressed": hgt_gz_digest,
+        "sha256_decompressed": hgt_digest,
+        "size_downloaded": len(downloaded),
+        "size_compressed": len(downloaded),
+        "size_decompressed": len(hgt),
+        "sha256_hgt_gz": hgt_gz_digest,
+        "sha256_hgt": hgt_digest,
+        "sha256_dt2": dt2_digest,
+        "size_dt2": len(dt2),
+        "converter": "sidereon-core hgt_to_dted v1",
+        "tile_id": tile_id,
+        "lat_index": lat_index,
+        "lon_index": lon_index,
+        "fetched_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "fetcher": "sidereon.data",
+    }
+
+
+def prefetch_dted_bbox(
+    min_lat: float,
+    min_lon: float,
+    max_lat: float,
+    max_lon: float,
+    *,
+    cache_dir: Optional[str] = None,
+    offline: bool = False,
+    **opts,
+) -> TerrainFetchReport:
+    """Fetch every DTED tile intersecting an inclusive bounding box."""
+    if max_lat < min_lat:
+        raise ValueError("max_lat must be greater than or equal to min_lat")
+    if max_lon < min_lon:
+        raise ValueError("max_lon must be greater than or equal to min_lon")
+    lat_min, lon_min = terrain_tile_index(min_lat, min_lon)
+    lat_max, lon_max = terrain_tile_index(max_lat, max_lon)
+    tiles = [
+        (lat_index, lon_index)
+        for lat_index in range(min(lat_min, lat_max), max(lat_min, lat_max) + 1)
+        for lon_index in range(min(lon_min, lon_max), max(lon_min, lon_max) + 1)
+    ]
+    return _prefetch_dted_tile_indices(
+        tiles, cache_dir=cache_dir, offline=offline, **opts
+    )
+
+
+def prefetch_dted_tiles(
+    tiles: Union[Iterable[tuple[int, int]], Iterable[str], str],
+    *,
+    cache_dir: Optional[str] = None,
+    offline: bool = False,
+    **opts,
+) -> TerrainFetchReport:
+    """Fetch an iterable of ``(lat_index, lon_index)`` pairs or tile-id strings."""
+    entries = [tiles] if isinstance(tiles, str) else list(tiles)
+    fetched: list[str] = []
+    cached: list[str] = []
+    no_coverage: list[str] = []
+    errors: list[tuple[str, DataError]] = []
+    valid_tiles: list[tuple[int, int]] = []
+
+    for entry in entries:
+        try:
+            lat_index, lon_index = _coerce_tile_entry(entry)
+            valid_tiles.append((lat_index, lon_index))
+        except DataError as exc:
+            errors.append((str(entry), exc))
+
+    report = _prefetch_dted_tile_indices(
+        valid_tiles, cache_dir=cache_dir, offline=offline, **opts
+    )
+    fetched.extend(report.fetched)
+    cached.extend(report.cached)
+    no_coverage.extend(report.no_coverage)
+    errors.extend(report.errors)
+    return TerrainFetchReport(fetched, cached, no_coverage, errors)
+
+
+def populate_terrain_cache(
+    region: object,
+    *,
+    cache_dir: Optional[str] = None,
+    offline: bool = False,
+    **opts,
+) -> TerrainFetchReport:
+    """Populate the terrain cache for a bounding box or explicit tile iterable."""
+    if isinstance(region, Mapping):
+        return prefetch_dted_bbox(
+            region["min_lat"],
+            region["min_lon"],
+            region["max_lat"],
+            region["max_lon"],
+            cache_dir=cache_dir,
+            offline=offline,
+            **opts,
+        )
+    if (
+        isinstance(region, (list, tuple))
+        and len(region) == 4
+        and all(isinstance(value, (int, float)) for value in region)
+    ):
+        min_lat, min_lon, max_lat, max_lon = region
+        return prefetch_dted_bbox(
+            float(min_lat),
+            float(min_lon),
+            float(max_lat),
+            float(max_lon),
+            cache_dir=cache_dir,
+            offline=offline,
+            **opts,
+        )
+    return prefetch_dted_tiles(region, cache_dir=cache_dir, offline=offline, **opts)
+
+
+def _prefetch_dted_tile_indices(
+    tiles: Iterable[tuple[int, int]],
+    *,
+    cache_dir: Optional[str],
+    offline: bool,
+    **opts,
+) -> TerrainFetchReport:
+    fetched: list[str] = []
+    cached: list[str] = []
+    no_coverage: list[str] = []
+    errors: list[tuple[str, DataError]] = []
+    seen: set[tuple[int, int]] = set()
+    strict = bool(opts.pop("strict", False))
+
+    for lat_index, lon_index in tiles:
+        if (lat_index, lon_index) in seen:
+            continue
+        seen.add((lat_index, lon_index))
+        try:
+            tile_id = skadi_tile_id(lat_index, lon_index)
+            state, value = _fetch_dted_tile(
+                lat_index,
+                lon_index,
+                cache_dir=cache_dir,
+                offline=offline,
+                sha256=opts.get("sha256"),
+                strict=strict,
+                timeout_s=opts.get("timeout_s", _DEFAULT_TIMEOUT_S),
+                retries=opts.get("retries", _DEFAULT_RETRIES),
+                backoff_s=opts.get("backoff_s", _DEFAULT_BACKOFF_S),
+                max_compressed_bytes=opts.get(
+                    "max_compressed_bytes", _DEFAULT_MAX_COMPRESSED_BYTES
+                ),
+                max_decompressed_bytes=opts.get(
+                    "max_decompressed_bytes", _DEFAULT_MAX_DECOMPRESSED_BYTES
+                ),
+            )
+        except NoCoverage as exc:
+            no_coverage.append(exc.tile_id)
+        except DataError as exc:
+            key = _tile_error_key(lat_index, lon_index)
+            errors.append((key, exc))
+            continue
+        if state == "fetched":
+            fetched.append(str(value))
+        elif state == "cached":
+            cached.append(str(value))
+        elif state == "no_coverage":
+            no_coverage.append(str(value))
+        else:
+            errors.append((tile_id, UnsupportedProduct(f"unexpected state: {state}")))
+
+    return TerrainFetchReport(fetched, cached, no_coverage, errors)
+
+
+def _coerce_tile_entry(entry: object) -> tuple[int, int]:
+    if isinstance(entry, str):
+        return parse_skadi_tile_id(entry)
+    if isinstance(entry, (list, tuple)) and len(entry) == 2:
+        try:
+            lat_index = int(entry[0])
+            lon_index = int(entry[1])
+        except (TypeError, ValueError) as exc:
+            raise InvalidTileIndex(f"invalid terrain tile entry: {entry!r}") from exc
+        skadi_tile_id(lat_index, lon_index)
+        return lat_index, lon_index
+    raise InvalidTileIndex(f"invalid terrain tile entry: {entry!r}")
+
+
+def _tile_error_key(lat_index: int, lon_index: int) -> str:
+    try:
+        return skadi_tile_id(lat_index, lon_index)
+    except DataError:
+        return f"{lat_index},{lon_index}"
+
+
 def fetch_ionex(
     center: str,
     target: Union[_dt.date, _dt.datetime],
@@ -1071,7 +1621,7 @@ class MergeReport:
 
 
 def _ultra_center(center: str) -> bool:
-    return "issues" in _CENTERS.get(center, {})
+    return bool(_center_def(center)["issues"])
 
 
 def _sp3_candidates(
@@ -1080,7 +1630,7 @@ def _sp3_candidates(
     sample: Optional[str],
 ) -> list[Product]:
     cdef = _center_def(center)
-    if "sp3" not in cdef.get("tokens", {}):
+    if "sp3" not in cdef["products"]:
         raise UnsupportedProduct(f"{center} does not serve sp3")
     eff_sample = sample if sample is not None else _default_sample(center, "sp3")
 
