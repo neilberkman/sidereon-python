@@ -9,6 +9,10 @@
 //! surface (keyword arguments, numpy arrays, dataclass-like repr) lives in
 //! `python/sidereon/__init__.py`, which wraps the symbols defined here.
 
+// Python enum members are UPPER_CASE by idiom (e.g. MoonPhase.NEW, SsrKind.URA);
+// the Rust-centric acronym-casing lint does not apply to this binding surface.
+#![allow(clippy::upper_case_acronyms)]
+
 use numpy::PyArray1;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
