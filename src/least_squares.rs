@@ -223,11 +223,7 @@ impl PyLeastSquaresResult {
     /// Jacobian at the solution, numpy `(m, n)` float64.
     #[getter]
     fn jac<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let m = if self.n == 0 {
-            0
-        } else {
-            self.jac.len() / self.n
-        };
+        let m = self.jac.len().checked_div(self.n).unwrap_or(0);
         let array = Array2::from_shape_vec((m, self.n), self.jac.clone())
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(array.to_pyarray(py))

@@ -30,6 +30,7 @@ filterwarnings = ["error"]
 [tool.ruff]
 line-length = 88
 target-version = "py39"
+extend-exclude = [".core-checkout"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B"]
