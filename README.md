@@ -81,21 +81,38 @@ print(solution.rx_clock_s)   # receiver clock bias, seconds
 
 The Python package mirrors the full breadth of the engine.
 
-- **Orbit propagation:** SGP4/SDP4 from TLE/OMM, numerical propagation, batch
-  and constellation arcs, pass prediction, look angles, and coverage analysis.
+- **Orbit propagation:** SGP4/SDP4 from TLE/OMM, numerical propagation with
+  atmospheric drag and orbital-decay estimation, batch and constellation arcs,
+  pass prediction, look angles, and coverage analysis.
+- **Orbital mechanics:** classical, equinoctial, and modified equinoctial
+  elements, anomaly conversions and Kepler propagation, Lambert transfers,
+  initial orbit determination (IOD), and relative motion in RIC/RTN/LVLH
+  frames with Clohessy-Wiltshire propagation.
 - **GNSS positioning:** single-point positioning (SPP), RTK (float and fixed),
-  PPP (float and fixed), DGNSS, RAIM fault detection, and DOP.
+  PPP (float and fixed), DGNSS, a robust solve driver with RAIM fault
+  detection and exclusion (FDE), and DOP.
+- **GNSS corrections and products:** SBAS and RTCM SSR corrections applied to
+  broadcast ephemeris, Bias-SINEX code and phase biases (DCB/OSB), Klobuchar
+  and NeQuick-G ionosphere, IONEX maps, and troposphere models.
 - **Ephemeris and time:** broadcast ephemeris and precise SP3 products, JPL SPK
-  (DAF/.bsp) kernels, scale-aware time (UTC/TT/TDB/UT1/GPS), and Earth
+  (DAF/.bsp) kernels, uniform satellite-state sampling across broadcast and
+  precise sources, scale-aware time (UTC/TT/TDB/UT1/GPS), and Earth
   orientation parameters (EOP).
-- **Geometry and events:** reference frames, geodetic and ECEF conversions, look
-  angles, eclipse, conjunction screening with collision probability, initial
-  orbit determination (IOD), and orbital elements.
-- **Atmosphere:** Klobuchar and NeQuick-G ionosphere, IONEX maps, and
-  troposphere models.
+- **Geometry and events:** reference frames, geodetic and ECEF conversions,
+  look angles, eclipse, conjunction screening with collision probability, and
+  angular geometry (separation, position angle, phase angle, beta angle).
+- **Observation and almanac:** apparent places for the Sun, Moon, and any SPK
+  body (astrometric and apparent RA/Dec plus az/el, with refraction and polar
+  motion), sub-solar and sub-observer points, the terminator, parallactic
+  angle, satellite visual magnitude, moonrise/moonset, seasons, moon phases,
+  planetary events, meridian transits, and lunar and solar eclipses.
+- **Terrain:** DTED elevation lookup and geoid (EGM96) height conversion.
 - **RF:** link budget (FSPL, EIRP, C/N0, antenna gain).
 - **Formats:** parse and serialize TLE/OMM, CCSDS OEM/OPM/CDM, RINEX, CRINEX,
-  SP3, IONEX, ANTEX, and RTCM.
+  SP3, IONEX, ANTEX, Bias-SINEX, SBAS logs, and RTCM.
+- **Data acquisition:** the `sidereon.data` module downloads and caches GNSS
+  products (SP3 and IONEX from IGS/MGEX analysis centers, including merged
+  multi-center SP3) and DTED terrain tiles.
 
 The binding adds no modeling of its own: every result is exactly what the engine
 computes, returned as numpy arrays, typed objects, and real Python exceptions

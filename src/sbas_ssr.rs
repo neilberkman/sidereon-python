@@ -21,7 +21,7 @@ use sidereon_core::sbas::{
 use sidereon_core::ssr::{
     MissingCorrectionAction, OrbitReferencePoint, RegionalPolicy, SsrClockCorrection,
     SsrCorrectedEphemeris, SsrCorrectionStore, SsrFallbackPolicy, SsrHighRateClock,
-    SsrOrbitCorrection,
+    SsrOrbitCorrection, SsrSolution, SsrSource,
 };
 use sidereon_core::GnssSatelliteId;
 
@@ -90,6 +90,7 @@ fn py_satellite(sat: GnssSatelliteId) -> String {
 #[pyclass(module = "sidereon._sidereon", name = "SbasWireForm", eq, eq_int)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
+/// Wire encoding for an SBAS message block.
 pub enum PySbasWireForm {
     FRAMED250,
     BODY226,
@@ -131,6 +132,7 @@ impl PySbasWireForm {
 #[pyclass(module = "sidereon._sidereon", name = "SbasSolveMode", eq, eq_int)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
+/// Mode used when applying SBAS corrections to broadcast ephemeris.
 pub enum PySbasSolveMode {
     MIXED_AUGMENTATION,
     SBAS_ONLY,
@@ -163,8 +165,87 @@ impl PySbasSolveMode {
     }
 }
 
+#[pyclass(module = "sidereon._sidereon", name = "SbasMessageKind", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+/// Decoded SBAS message family.
+pub enum PySbasMessageKind {
+    DO_NOT_USE,
+    PRN_MASK,
+    FAST_CORRECTIONS,
+    INTEGRITY,
+    FAST_DEGRADATION,
+    GEO_NAV,
+    NETWORK_TIME,
+    GEO_ALMANAC,
+    IGP_MASK,
+    MIXED_CORRECTIONS,
+    LONG_TERM_CORRECTIONS,
+    IONO_DELAYS,
+    UNSUPPORTED,
+}
+
+fn sbas_message_kind(message: &SbasMessage) -> PySbasMessageKind {
+    match message {
+        SbasMessage::DoNotUse(_) => PySbasMessageKind::DO_NOT_USE,
+        SbasMessage::PrnMask(_) => PySbasMessageKind::PRN_MASK,
+        SbasMessage::FastCorrections(_) => PySbasMessageKind::FAST_CORRECTIONS,
+        SbasMessage::Integrity(_) => PySbasMessageKind::INTEGRITY,
+        SbasMessage::FastDegradation(_) => PySbasMessageKind::FAST_DEGRADATION,
+        SbasMessage::GeoNav(_) => PySbasMessageKind::GEO_NAV,
+        SbasMessage::NetworkTime(_) => PySbasMessageKind::NETWORK_TIME,
+        SbasMessage::GeoAlmanac(_) => PySbasMessageKind::GEO_ALMANAC,
+        SbasMessage::IgpMask(_) => PySbasMessageKind::IGP_MASK,
+        SbasMessage::MixedCorrections(_) => PySbasMessageKind::MIXED_CORRECTIONS,
+        SbasMessage::LongTermCorrections(_) => PySbasMessageKind::LONG_TERM_CORRECTIONS,
+        SbasMessage::IonoDelays(_) => PySbasMessageKind::IONO_DELAYS,
+        SbasMessage::Unsupported(_) => PySbasMessageKind::UNSUPPORTED,
+    }
+}
+
+#[pymethods]
+impl PySbasMessageKind {
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::DO_NOT_USE => "do_not_use",
+            Self::PRN_MASK => "prn_mask",
+            Self::FAST_CORRECTIONS => "fast_corrections",
+            Self::INTEGRITY => "integrity",
+            Self::FAST_DEGRADATION => "fast_degradation",
+            Self::GEO_NAV => "geo_nav",
+            Self::NETWORK_TIME => "network_time",
+            Self::GEO_ALMANAC => "geo_almanac",
+            Self::IGP_MASK => "igp_mask",
+            Self::MIXED_CORRECTIONS => "mixed_corrections",
+            Self::LONG_TERM_CORRECTIONS => "long_term_corrections",
+            Self::IONO_DELAYS => "iono_delays",
+            Self::UNSUPPORTED => "unsupported",
+        }
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::DO_NOT_USE => "SbasMessageKind.DO_NOT_USE",
+            Self::PRN_MASK => "SbasMessageKind.PRN_MASK",
+            Self::FAST_CORRECTIONS => "SbasMessageKind.FAST_CORRECTIONS",
+            Self::INTEGRITY => "SbasMessageKind.INTEGRITY",
+            Self::FAST_DEGRADATION => "SbasMessageKind.FAST_DEGRADATION",
+            Self::GEO_NAV => "SbasMessageKind.GEO_NAV",
+            Self::NETWORK_TIME => "SbasMessageKind.NETWORK_TIME",
+            Self::GEO_ALMANAC => "SbasMessageKind.GEO_ALMANAC",
+            Self::IGP_MASK => "SbasMessageKind.IGP_MASK",
+            Self::MIXED_CORRECTIONS => "SbasMessageKind.MIXED_CORRECTIONS",
+            Self::LONG_TERM_CORRECTIONS => "SbasMessageKind.LONG_TERM_CORRECTIONS",
+            Self::IONO_DELAYS => "SbasMessageKind.IONO_DELAYS",
+            Self::UNSUPPORTED => "SbasMessageKind.UNSUPPORTED",
+        }
+    }
+}
+
 #[pyclass(module = "sidereon._sidereon", name = "SbasBlock")]
 #[derive(Clone)]
+/// Decoded SBAS message block.
 pub struct PySbasBlock {
     inner: SbasBlock,
 }
@@ -182,17 +263,23 @@ impl PySbasBlock {
     }
 
     #[getter]
-    fn kind(&self) -> &'static str {
+    fn kind(&self) -> PySbasMessageKind {
+        sbas_message_kind(&self.inner.message)
+    }
+
+    #[getter]
+    fn kind_label(&self) -> &'static str {
         sbas_message_label(&self.inner.message)
     }
 
+    /// Encode the block back to its original wire form.
     fn encode<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.inner.encode())
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "SbasBlock(form={}, message_type={}, kind={:?})",
+            "SbasBlock(form={}, message_type={}, kind={})",
             sbas_wire_form_label(self.inner.form),
             self.inner.message.message_type(),
             sbas_message_label(&self.inner.message)
@@ -208,6 +295,7 @@ impl PySbasBlock {
 
 #[pyclass(module = "sidereon._sidereon", name = "SbasLogBlock")]
 #[derive(Clone)]
+/// One SBAS log row with epoch, satellite, and raw message bytes.
 pub struct PySbasLogBlock {
     inner: SbasLogBlock,
 }
@@ -244,6 +332,16 @@ impl PySbasLogBlock {
             .map(PySbasBlock::from_inner)
             .map_err(to_rtcm_err)
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SbasLogBlock(satellite_id={:?}, week={}, tow_s={:.3}, form={})",
+            py_satellite(self.inner.satellite_id),
+            self.inner.epoch.week,
+            self.inner.epoch.tow_s,
+            sbas_wire_form_label(self.inner.form)
+        )
+    }
 }
 
 impl From<SbasLogBlock> for PySbasLogBlock {
@@ -254,6 +352,7 @@ impl From<SbasLogBlock> for PySbasLogBlock {
 
 #[pyclass(module = "sidereon._sidereon", name = "SbasFastCorrection")]
 #[derive(Clone)]
+/// SBAS fast pseudorange correction for one satellite.
 pub struct PySbasFastCorrection {
     inner: SbasFastCorrection,
 }
@@ -284,6 +383,13 @@ impl PySbasFastCorrection {
     fn iodf(&self) -> u8 {
         self.inner.iodf
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SbasFastCorrection(prc_m={:.6}, rrc_m_s={:.6}, udrei={}, iodf={})",
+            self.inner.prc_m, self.inner.rrc_m_s, self.inner.udrei, self.inner.iodf
+        )
+    }
 }
 
 impl From<SbasFastCorrection> for PySbasFastCorrection {
@@ -294,6 +400,7 @@ impl From<SbasFastCorrection> for PySbasFastCorrection {
 
 #[pyclass(module = "sidereon._sidereon", name = "SbasLongTermCorrection")]
 #[derive(Clone)]
+/// SBAS long-term orbit and clock correction for one satellite.
 pub struct PySbasLongTermCorrection {
     inner: SbasLongTermCorrection,
 }
@@ -329,6 +436,13 @@ impl PySbasLongTermCorrection {
     fn t0_j2000_s(&self) -> f64 {
         self.inner.t0_j2000_s
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SbasLongTermCorrection(iode={}, delta_af0_s={:.6e}, t0_j2000_s={:.3})",
+            self.inner.iode, self.inner.delta_af0_s, self.inner.t0_j2000_s
+        )
+    }
 }
 
 impl From<SbasLongTermCorrection> for PySbasLongTermCorrection {
@@ -339,6 +453,7 @@ impl From<SbasLongTermCorrection> for PySbasLongTermCorrection {
 
 #[pyclass(module = "sidereon._sidereon", name = "SbasIgp")]
 #[derive(Clone)]
+/// One SBAS ionospheric grid point.
 pub struct PySbasIgp {
     inner: SbasIgp,
 }
@@ -364,6 +479,13 @@ impl PySbasIgp {
     fn give_variance_m2(&self) -> Option<f64> {
         self.inner.give_variance_m2
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SbasIgp(lat_deg={:.3}, lon_deg={:.3}, vertical_delay_m={:.6})",
+            self.inner.lat_deg, self.inner.lon_deg, self.inner.vertical_delay_m
+        )
+    }
 }
 
 impl From<SbasIgp> for PySbasIgp {
@@ -374,6 +496,7 @@ impl From<SbasIgp> for PySbasIgp {
 
 #[pyclass(module = "sidereon._sidereon", name = "SbasIonoGrid")]
 #[derive(Clone)]
+/// SBAS ionospheric grid for one GEO provider.
 pub struct PySbasIonoGrid {
     inner: SbasIonoGrid,
 }
@@ -410,6 +533,14 @@ impl PySbasIonoGrid {
             .inner
             .slant_delay_m(receiver, elevation_rad, azimuth_rad, frequency_hz))
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SbasIonoGrid(iodi={}, igps={})",
+            self.inner.iodi,
+            self.inner.igps().len()
+        )
+    }
 }
 
 impl From<SbasIonoGrid> for PySbasIonoGrid {
@@ -420,6 +551,7 @@ impl From<SbasIonoGrid> for PySbasIonoGrid {
 
 #[pyclass(module = "sidereon._sidereon", name = "SbasGeoState")]
 #[derive(Clone)]
+/// SBAS GEO navigation state.
 pub struct PySbasGeoState {
     inner: SbasGeoState,
 }
@@ -459,6 +591,13 @@ impl PySbasGeoState {
     fn state_at(&self, t_j2000_s: f64) -> ([f64; 3], f64) {
         self.inner.state_at(t_j2000_s)
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SbasGeoState(t0_j2000_s={:.3}, clock_offset_s={:.6e})",
+            self.inner.t0_j2000_s, self.inner.clock_offset_s
+        )
+    }
 }
 
 impl From<SbasGeoState> for PySbasGeoState {
@@ -468,12 +607,14 @@ impl From<SbasGeoState> for PySbasGeoState {
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "SbasCorrectionStore")]
+/// Mutable SBAS correction store.
 pub struct PySbasCorrectionStore {
     inner: SbasCorrectionStore,
 }
 
 #[pymethods]
 impl PySbasCorrectionStore {
+    /// Build an empty SBAS correction store.
     #[new]
     fn new() -> Self {
         Self {
@@ -481,6 +622,7 @@ impl PySbasCorrectionStore {
         }
     }
 
+    /// Ingest a decoded SBAS block for a GEO satellite and epoch.
     #[pyo3(signature = (block, geo_satellite_id, week, tow_s, time_scale=PyTimeScale::GPST))]
     fn ingest(
         &mut self,
@@ -505,6 +647,7 @@ impl PySbasCorrectionStore {
             .collect()
     }
 
+    /// Return the latest fast correction for a GEO and satellite pair.
     fn fast(
         &self,
         geo_satellite_id: &str,
@@ -515,6 +658,7 @@ impl PySbasCorrectionStore {
         Ok(self.inner.fast(geo, sat).cloned().map(Into::into))
     }
 
+    /// Return the latest long-term correction for a GEO and satellite pair.
     fn long_term(
         &self,
         geo_satellite_id: &str,
@@ -525,11 +669,13 @@ impl PySbasCorrectionStore {
         Ok(self.inner.long_term(geo, sat).cloned().map(Into::into))
     }
 
+    /// Return the ionospheric grid for a GEO satellite.
     fn iono_grid(&self, geo_satellite_id: &str) -> PyResult<Option<PySbasIonoGrid>> {
         let geo = parse_satellite(geo_satellite_id)?;
         Ok(self.inner.iono_grid(geo).cloned().map(Into::into))
     }
 
+    /// Return the navigation state for a GEO satellite.
     fn geo_nav(&self, geo_satellite_id: &str) -> PyResult<Option<PySbasGeoState>> {
         let geo = parse_satellite(geo_satellite_id)?;
         Ok(self.inner.geo_nav(geo).cloned().map(Into::into))
@@ -537,6 +683,7 @@ impl PySbasCorrectionStore {
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "SbasCorrectedEphemeris")]
+/// Broadcast ephemeris source corrected with SBAS messages.
 pub struct PySbasCorrectedEphemeris {
     broadcast: Py<PyBroadcastEphemeris>,
     store: Py<PySbasCorrectionStore>,
@@ -546,6 +693,7 @@ pub struct PySbasCorrectedEphemeris {
 
 #[pymethods]
 impl PySbasCorrectedEphemeris {
+    /// Build an SBAS-corrected ephemeris source.
     #[new]
     #[pyo3(signature = (broadcast, store, geo_satellite_id, mode=PySbasSolveMode::MIXED_AUGMENTATION))]
     fn new(
@@ -562,6 +710,7 @@ impl PySbasCorrectedEphemeris {
         })
     }
 
+    /// Return corrected ECEF position in metres and clock offset in seconds.
     fn position_clock_at_j2000_s(
         &self,
         py: Python<'_>,
@@ -576,6 +725,7 @@ impl PySbasCorrectedEphemeris {
         Ok(source.position_clock_at_j2000_s(sat, t_j2000_s))
     }
 
+    /// Return the active ionospheric grid for the selected GEO.
     fn iono_grid(&self, py: Python<'_>) -> Option<PySbasIonoGrid> {
         let broadcast = self.broadcast.borrow(py);
         let store = self.store.borrow(py);
@@ -588,6 +738,7 @@ impl PySbasCorrectedEphemeris {
 #[pyclass(module = "sidereon._sidereon", name = "SsrKind", eq, eq_int)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
+/// RTCM SSR message kind.
 pub enum PySsrKind {
     ORBIT,
     CLOCK,
@@ -629,6 +780,95 @@ impl PySsrKind {
             Self::VTEC => "vtec",
         }
     }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::ORBIT => "SsrKind.ORBIT",
+            Self::CLOCK => "SsrKind.CLOCK",
+            Self::COMBINED_ORBIT_CLOCK => "SsrKind.COMBINED_ORBIT_CLOCK",
+            Self::CODE_BIAS => "SsrKind.CODE_BIAS",
+            Self::PHASE_BIAS => "SsrKind.PHASE_BIAS",
+            Self::URA => "SsrKind.URA",
+            Self::HIGH_RATE_CLOCK => "SsrKind.HIGH_RATE_CLOCK",
+            Self::VTEC => "SsrKind.VTEC",
+        }
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "SsrSource", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+/// Provider family that produced an SSR correction.
+pub enum PySsrSource {
+    RTCM_SSR,
+    GALILEO_HAS,
+}
+
+impl From<SsrSource> for PySsrSource {
+    fn from(source: SsrSource) -> Self {
+        match source {
+            SsrSource::RtcmSsr => Self::RTCM_SSR,
+            SsrSource::GalileoHas => Self::GALILEO_HAS,
+        }
+    }
+}
+
+#[pymethods]
+impl PySsrSource {
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::RTCM_SSR => "rtcm_ssr",
+            Self::GALILEO_HAS => "galileo_has",
+        }
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::RTCM_SSR => "SsrSource.RTCM_SSR",
+            Self::GALILEO_HAS => "SsrSource.GALILEO_HAS",
+        }
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "SsrSolution", eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+/// Provider and solution identity for an SSR correction.
+pub struct PySsrSolution {
+    inner: SsrSolution,
+}
+
+#[pymethods]
+impl PySsrSolution {
+    #[getter]
+    fn source(&self) -> PySsrSource {
+        self.inner.source.into()
+    }
+
+    #[getter]
+    fn provider_id(&self) -> u16 {
+        self.inner.provider_id
+    }
+
+    #[getter]
+    fn solution_id(&self) -> u8 {
+        self.inner.solution_id
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SsrSolution(source={}, provider_id={}, solution_id={})",
+            self.source().label(),
+            self.inner.provider_id,
+            self.inner.solution_id
+        )
+    }
+}
+
+impl From<SsrSolution> for PySsrSolution {
+    fn from(inner: SsrSolution) -> Self {
+        Self { inner }
+    }
 }
 
 #[pyclass(
@@ -639,9 +879,20 @@ impl PySsrKind {
 )]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
+/// Orbit reference point used by SSR orbit corrections.
 pub enum PyOrbitReferencePoint {
     ANTENNA_PHASE_CENTER,
     CENTER_OF_MASS,
+}
+
+#[pymethods]
+impl PyOrbitReferencePoint {
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::ANTENNA_PHASE_CENTER => "OrbitReferencePoint.ANTENNA_PHASE_CENTER",
+            Self::CENTER_OF_MASS => "OrbitReferencePoint.CENTER_OF_MASS",
+        }
+    }
 }
 
 impl From<PyOrbitReferencePoint> for OrbitReferencePoint {
@@ -670,9 +921,20 @@ impl From<OrbitReferencePoint> for PyOrbitReferencePoint {
 )]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
+/// Action taken when an SSR correction is missing.
 pub enum PyMissingCorrectionAction {
     DECLINE,
     FALL_BACK_TO_BROADCAST,
+}
+
+#[pymethods]
+impl PyMissingCorrectionAction {
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::DECLINE => "MissingCorrectionAction.DECLINE",
+            Self::FALL_BACK_TO_BROADCAST => "MissingCorrectionAction.FALL_BACK_TO_BROADCAST",
+        }
+    }
 }
 
 impl From<PyMissingCorrectionAction> for MissingCorrectionAction {
@@ -688,12 +950,14 @@ impl From<PyMissingCorrectionAction> for MissingCorrectionAction {
 
 #[pyclass(module = "sidereon._sidereon", name = "SsrFallbackPolicy")]
 #[derive(Clone)]
+/// Fallback policy used by an SSR-corrected ephemeris source.
 pub struct PySsrFallbackPolicy {
     inner: SsrFallbackPolicy,
 }
 
 #[pymethods]
 impl PySsrFallbackPolicy {
+    /// Build an SSR fallback policy.
     #[new]
     #[pyo3(signature = (on_missing_correction=PyMissingCorrectionAction::DECLINE, allow_regional_providers=None))]
     fn new(
@@ -711,16 +975,32 @@ impl PySsrFallbackPolicy {
             },
         }
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SsrFallbackPolicy(on_missing_correction={})",
+            match self.inner.on_missing_correction {
+                MissingCorrectionAction::Decline => "decline",
+                MissingCorrectionAction::FallBackToBroadcast => "fall_back_to_broadcast",
+            }
+        )
+    }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "SsrOrbitCorrection")]
 #[derive(Clone, Copy)]
+/// SSR orbit correction for one satellite.
 pub struct PySsrOrbitCorrection {
     inner: SsrOrbitCorrection,
 }
 
 #[pymethods]
 impl PySsrOrbitCorrection {
+    #[getter]
+    fn solution(&self) -> PySsrSolution {
+        self.inner.solution.into()
+    }
+
     #[getter]
     fn iode(&self) -> u32 {
         self.inner.iode
@@ -780,6 +1060,17 @@ impl PySsrOrbitCorrection {
     fn update_interval_s(&self) -> f64 {
         self.inner.update_interval_s
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SsrOrbitCorrection(iode={}, iod_ssr={}, radial_m={:.6}, along_m={:.6}, cross_m={:.6})",
+            self.inner.iode,
+            self.inner.iod_ssr,
+            self.inner.radial_m,
+            self.inner.along_m,
+            self.inner.cross_m
+        )
+    }
 }
 
 impl From<SsrOrbitCorrection> for PySsrOrbitCorrection {
@@ -790,12 +1081,18 @@ impl From<SsrOrbitCorrection> for PySsrOrbitCorrection {
 
 #[pyclass(module = "sidereon._sidereon", name = "SsrHighRateClock")]
 #[derive(Clone, Copy)]
+/// SSR high-rate clock correction for one satellite.
 pub struct PySsrHighRateClock {
     inner: SsrHighRateClock,
 }
 
 #[pymethods]
 impl PySsrHighRateClock {
+    #[getter]
+    fn solution(&self) -> PySsrSolution {
+        self.inner.solution.into()
+    }
+
     #[getter]
     fn c0_m(&self) -> f64 {
         self.inner.c0_m
@@ -810,6 +1107,13 @@ impl PySsrHighRateClock {
     fn update_interval_s(&self) -> f64 {
         self.inner.update_interval_s
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SsrHighRateClock(c0_m={:.6}, ref_epoch_j2000_s={:.3})",
+            self.inner.c0_m, self.inner.ref_epoch_j2000_s
+        )
+    }
 }
 
 impl From<SsrHighRateClock> for PySsrHighRateClock {
@@ -820,12 +1124,18 @@ impl From<SsrHighRateClock> for PySsrHighRateClock {
 
 #[pyclass(module = "sidereon._sidereon", name = "SsrClockCorrection")]
 #[derive(Clone, Copy)]
+/// SSR clock correction for one satellite.
 pub struct PySsrClockCorrection {
     inner: SsrClockCorrection,
 }
 
 #[pymethods]
 impl PySsrClockCorrection {
+    #[getter]
+    fn solution(&self) -> PySsrSolution {
+        self.inner.solution.into()
+    }
+
     #[getter]
     fn iod_ssr(&self) -> u8 {
         self.inner.iod_ssr
@@ -860,6 +1170,13 @@ impl PySsrClockCorrection {
     fn high_rate(&self) -> Option<PySsrHighRateClock> {
         self.inner.high_rate.map(Into::into)
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SsrClockCorrection(iod_ssr={}, c0_m={:.6}, c1_m_s={:.6e}, c2_m_s2={:.6e})",
+            self.inner.iod_ssr, self.inner.c0_m, self.inner.c1_m_s, self.inner.c2_m_s2
+        )
+    }
 }
 
 impl From<SsrClockCorrection> for PySsrClockCorrection {
@@ -870,6 +1187,7 @@ impl From<SsrClockCorrection> for PySsrClockCorrection {
 
 #[pyclass(module = "sidereon._sidereon", name = "SsrMessage")]
 #[derive(Clone)]
+/// Decoded RTCM SSR message.
 pub struct PySsrMessage {
     inner: SsrMessage,
 }
@@ -954,6 +1272,15 @@ impl PySsrMessage {
     fn encode<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.inner.encode())
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SsrMessage(message_number={}, kind={}, satellite_count={})",
+            self.inner.message_number,
+            ssr_kind_label(self.inner.kind),
+            self.inner.header.satellite_count
+        )
+    }
 }
 
 impl PySsrMessage {
@@ -963,12 +1290,14 @@ impl PySsrMessage {
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "SsrCorrectionStore")]
+/// Mutable RTCM SSR correction store.
 pub struct PySsrCorrectionStore {
     inner: SsrCorrectionStore,
 }
 
 #[pymethods]
 impl PySsrCorrectionStore {
+    /// Build an empty SSR correction store.
     #[new]
     #[pyo3(signature = (reference_point=PyOrbitReferencePoint::CENTER_OF_MASS))]
     fn new(reference_point: PyOrbitReferencePoint) -> Self {
@@ -977,6 +1306,7 @@ impl PySsrCorrectionStore {
         }
     }
 
+    /// Ingest one decoded SSR message at a GNSS week and time-of-week.
     #[pyo3(signature = (message, week, tow_s, time_scale=PyTimeScale::GPST))]
     fn ingest_ssr(
         &mut self,
@@ -996,21 +1326,25 @@ impl PySsrCorrectionStore {
         Ok(self.inner.orbit(sat).copied().map(Into::into))
     }
 
+    /// Return the latest SSR clock correction for a satellite.
     fn clock(&self, satellite_id: &str) -> PyResult<Option<PySsrClockCorrection>> {
         let sat = parse_satellite(satellite_id)?;
         Ok(self.inner.clock(sat).copied().map(Into::into))
     }
 
+    /// Return the latest SSR URA index for a satellite.
     fn ura_index(&self, satellite_id: &str) -> PyResult<Option<u8>> {
         let sat = parse_satellite(satellite_id)?;
         Ok(self.inner.ura_index(sat))
     }
 
+    /// Return the latest SSR code bias for a satellite signal.
     fn code_bias(&self, satellite_id: &str, signal: u8) -> PyResult<Option<f64>> {
         let sat = parse_satellite(satellite_id)?;
         Ok(self.inner.code_bias(sat, signal))
     }
 
+    /// Return the latest SSR phase bias for a satellite signal.
     fn phase_bias(&self, satellite_id: &str, signal: u8) -> PyResult<Option<f64>> {
         let sat = parse_satellite(satellite_id)?;
         Ok(self.inner.phase_bias(sat, signal))
@@ -1018,6 +1352,7 @@ impl PySsrCorrectionStore {
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "SsrCorrectedEphemeris")]
+/// Broadcast ephemeris source corrected with RTCM SSR messages.
 pub struct PySsrCorrectedEphemeris {
     broadcast: Py<PyBroadcastEphemeris>,
     store: Py<PySsrCorrectionStore>,
@@ -1027,6 +1362,7 @@ pub struct PySsrCorrectedEphemeris {
 
 #[pymethods]
 impl PySsrCorrectedEphemeris {
+    /// Build an SSR-corrected ephemeris source.
     #[new]
     #[pyo3(signature = (broadcast, store, fallback=None, max_staleness_s=None))]
     fn new(
@@ -1052,6 +1388,7 @@ impl PySsrCorrectedEphemeris {
         })
     }
 
+    /// Return corrected ECEF position in metres and clock offset in seconds.
     fn position_clock_at_j2000_s(
         &self,
         py: Python<'_>,
@@ -1070,28 +1407,10 @@ impl PySsrCorrectedEphemeris {
         }
         Ok(source.position_clock_at_j2000_s(sat, t_j2000_s))
     }
-
-    fn corrected_state(
-        &self,
-        py: Python<'_>,
-        satellite_id: &str,
-        t_j2000_s: f64,
-    ) -> PyResult<Option<([f64; 3], f64)>> {
-        let sat = parse_satellite(satellite_id)?;
-        let broadcast = self.broadcast.borrow(py);
-        let store = self.store.borrow(py);
-        let mut source = SsrCorrectedEphemeris::new(&broadcast.inner, &store.inner)
-            .with_fallback(self.fallback.clone());
-        if let Some(max_staleness_s) = self.max_staleness_s {
-            source = source.with_staleness(sidereon_core::staleness::StalenessPolicy::seconds(
-                max_staleness_s,
-            ));
-        }
-        Ok(source.position_clock_at_j2000_s(sat, t_j2000_s))
-    }
 }
 
 #[pyfunction]
+/// Decode raw SBAS message bytes in the selected wire form.
 fn decode_sbas_block(bytes: &[u8], form: PySbasWireForm) -> PyResult<PySbasBlock> {
     SbasBlock::decode(bytes, form.into())
         .map(PySbasBlock::from_inner)
@@ -1099,6 +1418,7 @@ fn decode_sbas_block(bytes: &[u8], form: PySbasWireForm) -> PyResult<PySbasBlock
 }
 
 #[pyfunction]
+/// Parse SBAS EMS log lines into timestamped raw message blocks.
 fn parse_sbas_ems_lines(text: &str) -> PyResult<Vec<PySbasLogBlock>> {
     core_parse_sbas_ems_lines(text)
         .map(|blocks| blocks.into_iter().map(Into::into).collect())
@@ -1106,6 +1426,7 @@ fn parse_sbas_ems_lines(text: &str) -> PyResult<Vec<PySbasLogBlock>> {
 }
 
 #[pyfunction]
+/// Parse RTKLIB-style SBAS log lines into timestamped raw message blocks.
 fn parse_sbas_rtklib_lines(text: &str) -> PyResult<Vec<PySbasLogBlock>> {
     core_parse_sbas_rtklib_lines(text)
         .map(|blocks| blocks.into_iter().map(Into::into).collect())
@@ -1113,17 +1434,20 @@ fn parse_sbas_rtklib_lines(text: &str) -> PyResult<Vec<PySbasLogBlock>> {
 }
 
 #[pyfunction]
+/// Convert an SBAS PRN to the package satellite token, if it is valid.
 fn sbas_prn_to_satellite_id(prn: u16) -> Option<String> {
     sbas_prn_to_sat(prn).map(py_satellite)
 }
 
 #[pyfunction]
+/// Convert an SBAS satellite token to its PRN, if it is valid.
 fn satellite_id_to_sbas_prn(satellite_id: &str) -> PyResult<Option<u16>> {
     let sat = parse_satellite(satellite_id)?;
     Ok(sat_to_sbas_prn(sat))
 }
 
 #[pyfunction]
+/// Decode a raw RTCM SSR message body.
 fn decode_ssr_message(body: &[u8]) -> PyResult<PySsrMessage> {
     SsrMessage::decode(body)
         .map(PySsrMessage::from_inner)
@@ -1133,6 +1457,7 @@ fn decode_ssr_message(body: &[u8]) -> PyResult<PySsrMessage> {
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySbasWireForm>()?;
     m.add_class::<PySbasSolveMode>()?;
+    m.add_class::<PySbasMessageKind>()?;
     m.add_class::<PySbasBlock>()?;
     m.add_class::<PySbasLogBlock>()?;
     m.add_class::<PySbasFastCorrection>()?;
@@ -1143,6 +1468,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySbasCorrectionStore>()?;
     m.add_class::<PySbasCorrectedEphemeris>()?;
     m.add_class::<PySsrKind>()?;
+    m.add_class::<PySsrSource>()?;
+    m.add_class::<PySsrSolution>()?;
     m.add_class::<PyOrbitReferencePoint>()?;
     m.add_class::<PyMissingCorrectionAction>()?;
     m.add_class::<PySsrFallbackPolicy>()?;

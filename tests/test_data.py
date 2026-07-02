@@ -417,7 +417,7 @@ def test_terrain_derivation_comes_from_core():
     assert data.skadi_tile_id(36, -107) == "N36W107"
     assert data.skadi_band(36) == "N36"
     assert data.skadi_archive_url(36, -107).endswith("/skadi/N36/N36W107.hgt.gz")
-    assert data.dted_cache_relpath(36, -107) == ("n30_w110/n36_w107_1arc_v3.dt2")
+    assert data.dted_cache_relpath(36, -107) == ("n30_w100/n36_w107_1arc_v3.dt2")
     assert data.terrain_tile_index(90.0, 180.0) == (89, 179)
     assert data.parse_skadi_tile_id("S01E010") == (-1, 10)
     with pytest.raises(data.InvalidTileId):
@@ -581,7 +581,7 @@ def test_fetch_dted_conversion_reference_and_terrain_reader(tmp_path, monkeypatc
     ]:
         lat = 36.0 + lat_posting / 3600.0
         lon = -107.0 + lon_posting / 3600.0
-        assert terrain.height_m(lon, lat, nearest) == pytest.approx(
+        assert terrain.height_m(lat, lon, nearest) == pytest.approx(
             _expected_posting(lat_posting, lon_posting)
         )
 

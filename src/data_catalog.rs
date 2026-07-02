@@ -233,6 +233,7 @@ fn data_ultra_issue_candidates(
 }
 
 #[pyfunction]
+#[allow(clippy::too_many_arguments)] // Mirrors the core timestamp signature used by the Python API.
 fn data_latest_ultra_issue(
     center_code: &str,
     year: i32,
@@ -249,7 +250,7 @@ fn data_latest_ultra_issue(
         .unwrap_or_default()
         .into_iter()
         .map(|(year, month, day, issue)| {
-            UltraIssue::new(date(year, month, day)?.into(), &issue).map_err(to_data_err)
+            UltraIssue::new(date(year, month, day)?, &issue).map_err(to_data_err)
         })
         .collect::<PyResult<Vec<_>>>()?;
     let available_ref = if available.is_empty() {

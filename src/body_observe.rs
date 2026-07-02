@@ -1,15 +1,14 @@
 //! General ground-site body observation binding.
 
-use numpy::PyReadonlyArray1;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyAny, PyModule};
 
 use sidereon::passes::UtcInstant;
 use sidereon_core::astro::bodies::observe as core;
 use sidereon_core::astro::frames::transforms::{GeodeticStationKm, PolarMotion};
 
-use crate::marshal::{fixed_array, FinitePolicy};
+use crate::marshal::{fixed_array_from_any, FinitePolicy};
 use crate::spk::PySpk;
 
 fn to_observe_err<E: std::fmt::Display>(err: E) -> PyErr {
@@ -26,6 +25,7 @@ fn station(latitude_deg: f64, longitude_deg: f64, altitude_km: f64) -> GeodeticS
 
 #[pyclass(module = "sidereon._sidereon", name = "PolarMotion")]
 #[derive(Clone, Copy)]
+/// Polar motion offsets for apparent-place reductions.
 pub struct PyPolarMotion {
     inner: PolarMotion,
 }
@@ -38,6 +38,7 @@ impl PyPolarMotion {
 
 #[pymethods]
 impl PyPolarMotion {
+    /// Build polar motion offsets in radians.
     #[new]
     fn new(xp_rad: f64, yp_rad: f64) -> PyResult<Self> {
         PolarMotion::from_radians(xp_rad, yp_rad)
@@ -54,10 +55,18 @@ impl PyPolarMotion {
     fn yp_rad(&self) -> f64 {
         self.inner.yp_rad
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PolarMotion(xp_rad={:.6e}, yp_rad={:.6e})",
+            self.inner.xp_rad, self.inner.yp_rad
+        )
+    }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "Refraction")]
 #[derive(Clone, Copy)]
+/// Simple atmospheric refraction settings for topocentric apparent places.
 pub struct PyRefraction {
     inner: core::Refraction,
 }
@@ -70,6 +79,7 @@ impl PyRefraction {
 
 #[pymethods]
 impl PyRefraction {
+    /// Build refraction settings from pressure and temperature.
     #[new]
     fn new(pressure_mbar: f64, temperature_c: f64) -> Self {
         Self {
@@ -89,10 +99,18 @@ impl PyRefraction {
     fn temperature_c(&self) -> f64 {
         self.inner.temperature_c
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Refraction(pressure_mbar={:.3}, temperature_c={:.3})",
+            self.inner.pressure_mbar, self.inner.temperature_c
+        )
+    }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "ObserveOptions")]
 #[derive(Clone, Copy)]
+/// Options controlling apparent-place corrections for body observation.
 pub struct PyObserveOptions {
     inner: core::ObserveOptions,
 }
@@ -105,6 +123,9 @@ impl PyObserveOptions {
 
 #[pymethods]
 impl PyObserveOptions {
+    /// Build body-observation options.
+    ///
+    /// Omitted polar motion and refraction use the core defaults for those corrections.
     #[new]
     #[pyo3(signature = (polar_motion=None, refraction=None, deflection=true, aberration=true))]
     fn new(
@@ -132,6 +153,26 @@ impl PyObserveOptions {
     fn aberration(&self) -> bool {
         self.inner.aberration
     }
+
+    #[getter]
+    fn polar_motion(&self) -> Option<PyPolarMotion> {
+        self.inner.polar_motion.map(|inner| PyPolarMotion { inner })
+    }
+
+    #[getter]
+    fn refraction(&self) -> Option<PyRefraction> {
+        self.inner.refraction.map(|inner| PyRefraction { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ObserveOptions(polar_motion={}, refraction={}, deflection={}, aberration={})",
+            self.inner.polar_motion.is_some(),
+            self.inner.refraction.is_some(),
+            self.inner.deflection,
+            self.inner.aberration
+        )
+    }
 }
 
 enum TargetKind {
@@ -149,12 +190,14 @@ enum TargetKind {
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "Target")]
+/// Target body selector for `observe_body`.
 pub struct PyTarget {
     kind: TargetKind,
 }
 
 #[pymethods]
 impl PyTarget {
+    /// Select the Sun as the observation target.
     #[staticmethod]
     fn sun() -> Self {
         Self {
@@ -162,6 +205,7 @@ impl PyTarget {
         }
     }
 
+    /// Select the Moon as the observation target.
     #[staticmethod]
     fn moon() -> Self {
         Self {
@@ -169,6 +213,7 @@ impl PyTarget {
         }
     }
 
+    /// Select a body from an SPK kernel by NAIF id.
     #[staticmethod]
     fn spk(kernel: Py<PySpk>, naif_id: i32) -> Self {
         Self {
@@ -176,16 +221,19 @@ impl PyTarget {
         }
     }
 
+    /// Select a barycentric state evaluated against an SPK kernel.
+    ///
+    /// Position and velocity may be numpy arrays or ordinary Python sequences of three finite floats.
     #[staticmethod]
     fn barycentric_state(
         kernel: Py<PySpk>,
-        position_km: PyReadonlyArray1<'_, f64>,
-        velocity_km_s: PyReadonlyArray1<'_, f64>,
+        position_km: &Bound<'_, PyAny>,
+        velocity_km_s: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
         let position_km =
-            fixed_array::<3>("position_km", &position_km, FinitePolicy::RequireFinite)?;
+            fixed_array_from_any::<3>("position_km", position_km, FinitePolicy::RequireFinite)?;
         let velocity_km_s =
-            fixed_array::<3>("velocity_km_s", &velocity_km_s, FinitePolicy::RequireFinite)?;
+            fixed_array_from_any::<3>("velocity_km_s", velocity_km_s, FinitePolicy::RequireFinite)?;
         Ok(Self {
             kind: TargetKind::BarycentricState {
                 kernel,
@@ -198,6 +246,7 @@ impl PyTarget {
 
 #[pyclass(module = "sidereon._sidereon", name = "Equatorial")]
 #[derive(Clone, Copy)]
+/// Equatorial coordinates for an observed body.
 pub struct PyEquatorial {
     inner: core::Equatorial,
 }
@@ -223,10 +272,18 @@ impl PyEquatorial {
     fn distance_km(&self) -> f64 {
         self.inner.distance_km
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Equatorial(right_ascension_deg={:.6}, declination_deg={:.6}, distance_km={:.3})",
+            self.inner.right_ascension_deg, self.inner.declination_deg, self.inner.distance_km
+        )
+    }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "Horizontal")]
 #[derive(Clone, Copy)]
+/// Topocentric horizontal coordinates for an observed body.
 pub struct PyHorizontal {
     inner: core::Horizontal,
 }
@@ -247,10 +304,18 @@ impl PyHorizontal {
     fn range_km(&self) -> f64 {
         self.inner.range_km
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Horizontal(azimuth_deg={:.6}, elevation_deg={:.6}, range_km={:.3})",
+            self.inner.azimuth_deg, self.inner.elevation_deg, self.inner.range_km
+        )
+    }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "Ecliptic")]
 #[derive(Clone, Copy)]
+/// Ecliptic coordinates for an observed body.
 pub struct PyEcliptic {
     inner: core::Ecliptic,
 }
@@ -271,10 +336,18 @@ impl PyEcliptic {
     fn distance_km(&self) -> f64 {
         self.inner.distance_km
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Ecliptic(longitude_deg={:.6}, latitude_deg={:.6}, distance_km={:.3})",
+            self.inner.longitude_deg, self.inner.latitude_deg, self.inner.distance_km
+        )
+    }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "Observation")]
 #[derive(Clone, Copy)]
+/// Complete apparent-place observation result for a target body.
 pub struct PyObservation {
     inner: core::Observation,
 }
@@ -336,10 +409,20 @@ impl PyObservation {
     fn reduced(&self) -> bool {
         self.inner.reduced
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Observation(hour_angle_deg={:.6}, reduced={})",
+            self.inner.hour_angle_deg, self.inner.reduced
+        )
+    }
 }
 
 #[pyfunction(name = "observe_body")]
 #[pyo3(signature = (latitude_deg, longitude_deg, altitude_km, epoch_unix_us, target, options=None))]
+/// Observe the Sun, Moon, SPK body, or barycentric target from a ground station.
+///
+/// Latitude and longitude are supplied in degrees and the epoch is Unix microseconds.
 fn observe_body(
     py: Python<'_>,
     latitude_deg: f64,
@@ -351,9 +434,7 @@ fn observe_body(
 ) -> PyResult<PyObservation> {
     let station = station(latitude_deg, longitude_deg, altitude_km);
     let time = UtcInstant::from_unix_microseconds(epoch_unix_us);
-    let options = options
-        .map(PyObserveOptions::inner)
-        .unwrap_or_else(core::ObserveOptions::default);
+    let options = options.map(PyObserveOptions::inner).unwrap_or_default();
     match &target.kind {
         TargetKind::Sun => core::observe(&station, time, core::Target::Sun, options),
         TargetKind::Moon => core::observe(&station, time, core::Target::Moon, options),
@@ -393,6 +474,9 @@ fn observe_body(
 
 #[pyfunction]
 #[pyo3(signature = (latitude_deg, longitude_deg, altitude_km, epoch_unix_us, kernel, naif_id))]
+/// Observe one SPK body from a ground station.
+///
+/// This convenience wrapper uses the default observation options.
 fn observe_spk_body(
     latitude_deg: f64,
     longitude_deg: f64,

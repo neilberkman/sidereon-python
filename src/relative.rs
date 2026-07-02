@@ -1,32 +1,44 @@
 //! Relative-frame and Clohessy-Wiltshire binding.
 
-use numpy::{PyArray1, PyArray2, PyReadonlyArray1};
+use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyAny, PyModule};
 
+use sidereon_core::astro::covariance::RtnFrameError;
 use sidereon_core::astro::relative as core;
 use sidereon_core::astro::state::CartesianState;
 
-use crate::marshal::{fixed_array, mat3_to_array, rows_to_array, FinitePolicy};
+use crate::marshal::{fixed_array_from_any, mat3_to_array, rows_to_array, FinitePolicy};
 use crate::np_array;
 
-fn to_relative_err<E: std::fmt::Debug>(err: E) -> PyErr {
-    PyValueError::new_err(format!("{err:?}"))
+fn to_relative_err(err: RtnFrameError) -> PyErr {
+    let message = match err {
+        RtnFrameError::InvalidInput { field, reason } => {
+            format!("invalid input for {field}: {reason}")
+        }
+        other => other.message().to_string(),
+    };
+    PyValueError::new_err(message)
 }
 
 fn state_from_arrays(
     epoch_tdb_seconds: f64,
-    position_km: &PyReadonlyArray1<'_, f64>,
-    velocity_km_s: &PyReadonlyArray1<'_, f64>,
+    position_km: &Bound<'_, PyAny>,
+    velocity_km_s: &Bound<'_, PyAny>,
 ) -> PyResult<CartesianState> {
-    let position = fixed_array::<3>("position_km", position_km, FinitePolicy::RequireFinite)?;
-    let velocity = fixed_array::<3>("velocity_km_s", velocity_km_s, FinitePolicy::RequireFinite)?;
+    let position =
+        fixed_array_from_any::<3>("position_km", position_km, FinitePolicy::RequireFinite)?;
+    let velocity =
+        fixed_array_from_any::<3>("velocity_km_s", velocity_km_s, FinitePolicy::RequireFinite)?;
     Ok(CartesianState::new(epoch_tdb_seconds, position, velocity))
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "CartesianState")]
 #[derive(Clone, Copy)]
+/// Cartesian position and velocity at a TDB epoch.
+///
+/// Positions are kilometres and velocities are kilometres per second.
 pub struct PyCartesianState {
     inner: CartesianState,
 }
@@ -43,14 +55,17 @@ impl PyCartesianState {
 
 #[pymethods]
 impl PyCartesianState {
+    /// Build a Cartesian state from epoch, position, and velocity.
+    ///
+    /// The vectors may be numpy arrays or ordinary Python sequences of three finite floats.
     #[new]
     fn new(
         epoch_tdb_seconds: f64,
-        position_km: PyReadonlyArray1<'_, f64>,
-        velocity_km_s: PyReadonlyArray1<'_, f64>,
+        position_km: &Bound<'_, PyAny>,
+        velocity_km_s: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
         Ok(Self {
-            inner: state_from_arrays(epoch_tdb_seconds, &position_km, &velocity_km_s)?,
+            inner: state_from_arrays(epoch_tdb_seconds, position_km, velocity_km_s)?,
         })
     }
 
@@ -81,12 +96,15 @@ impl PyCartesianState {
 
 fn rotation_to_array<'py>(
     py: Python<'py>,
-    rotation: Result<[[f64; 3]; 3], impl std::fmt::Debug>,
+    rotation: Result<[[f64; 3]; 3], RtnFrameError>,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
     Ok(mat3_to_array(py, &rotation.map_err(to_relative_err)?))
 }
 
 #[pyfunction]
+/// Return the rotation from RSW coordinates to inertial coordinates.
+///
+/// The result is a 3-by-3 numpy array whose rows are the inertial basis vectors.
 fn rsw_to_inertial_rotation<'py>(
     py: Python<'py>,
     chief: &PyCartesianState,
@@ -95,6 +113,9 @@ fn rsw_to_inertial_rotation<'py>(
 }
 
 #[pyfunction]
+/// Return the rotation from RTN coordinates to inertial coordinates.
+///
+/// The result is a 3-by-3 numpy array whose rows are the inertial basis vectors.
 fn rtn_to_inertial_rotation<'py>(
     py: Python<'py>,
     chief: &PyCartesianState,
@@ -103,6 +124,9 @@ fn rtn_to_inertial_rotation<'py>(
 }
 
 #[pyfunction]
+/// Return the rotation from RIC coordinates to inertial coordinates.
+///
+/// The result is a 3-by-3 numpy array whose rows are the inertial basis vectors.
 fn ric_to_inertial_rotation<'py>(
     py: Python<'py>,
     chief: &PyCartesianState,
@@ -111,6 +135,9 @@ fn ric_to_inertial_rotation<'py>(
 }
 
 #[pyfunction]
+/// Return the rotation from LVLH coordinates to inertial coordinates.
+///
+/// The result is a 3-by-3 numpy array whose rows are the inertial basis vectors.
 fn lvlh_to_inertial_rotation<'py>(
     py: Python<'py>,
     chief: &PyCartesianState,
@@ -119,6 +146,9 @@ fn lvlh_to_inertial_rotation<'py>(
 }
 
 #[pyfunction]
+/// Express the deputy state relative to the chief in the local orbital frame.
+///
+/// The returned state carries relative position and velocity components.
 fn relative_state(
     chief: &PyCartesianState,
     deputy: &PyCartesianState,
@@ -129,6 +159,9 @@ fn relative_state(
 }
 
 #[pyfunction]
+/// Rebuild an inertial deputy state from a chief state and local relative state.
+///
+/// This is the inverse operation for `relative_state` within numerical tolerance.
 fn absolute_from_relative(
     chief: &PyCartesianState,
     relative: &PyCartesianState,
@@ -139,6 +172,9 @@ fn absolute_from_relative(
 }
 
 #[pyfunction]
+/// Return the Clohessy-Wiltshire state-transition matrix.
+///
+/// `mean_motion_rad_s` is the circular-orbit mean motion and `dt_s` is the propagation interval.
 fn cw_stm<'py>(
     py: Python<'py>,
     mean_motion_rad_s: f64,
@@ -149,6 +185,9 @@ fn cw_stm<'py>(
 }
 
 #[pyfunction]
+/// Propagate a relative state with the Clohessy-Wiltshire equations.
+///
+/// The returned state uses the same local frame convention as `relative_state`.
 fn cw_propagate(
     relative: &PyCartesianState,
     mean_motion_rad_s: f64,
@@ -160,11 +199,13 @@ fn cw_propagate(
 }
 
 #[pyfunction]
+/// Return circular-orbit mean motion for a radius in kilometres.
 fn mean_motion_circular(radius_km: f64) -> PyResult<f64> {
     core::mean_motion_circular(radius_km).map_err(to_relative_err)
 }
 
 #[pyfunction]
+/// Estimate mean motion from a chief Cartesian state.
 fn mean_motion_from_state(chief: &PyCartesianState) -> PyResult<f64> {
     core::mean_motion_from_state(chief.inner()).map_err(to_relative_err)
 }

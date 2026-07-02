@@ -1,5 +1,6 @@
 //! GNSS bias product binding.
 
+use std::path::PathBuf;
 use std::str::FromStr;
 
 use pyo3::exceptions::PyValueError;
@@ -35,6 +36,7 @@ fn epoch(year: i32, day_of_year: u16, second_of_day: u32, scale: PyTimeScale) ->
 
 #[pyclass(module = "sidereon._sidereon", name = "CodeDcbOptions")]
 #[derive(Clone)]
+/// Options for parsing legacy CODE DCB files.
 pub struct PyCodeDcbOptions {
     inner: CodeDcbOptions,
 }
@@ -47,6 +49,7 @@ impl PyCodeDcbOptions {
 
 #[pymethods]
 impl PyCodeDcbOptions {
+    /// Build CODE DCB parser options.
     #[new]
     #[pyo3(signature = (obs1, obs2, year, month, time_scale=PyTimeScale::GPST, receiver_system=None))]
     fn new(
@@ -67,10 +70,18 @@ impl PyCodeDcbOptions {
             },
         }
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CodeDcbOptions(obs1={:?}, obs2={:?}, year={}, month={})",
+            self.inner.pair.0, self.inner.pair.1, self.inner.year, self.inner.month
+        )
+    }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "BiasRecord")]
 #[derive(Clone)]
+/// One GNSS code or phase bias record.
 pub struct PyBiasRecord {
     inner: BiasRecord,
 }
@@ -120,10 +131,22 @@ impl PyBiasRecord {
     fn is_phase(&self) -> bool {
         self.inner.is_phase
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BiasRecord(kind={:?}, target={:?}, obs1={:?}, obs2={:?}, value={:.6e})",
+            self.kind(),
+            self.target(),
+            self.inner.obs1,
+            self.inner.obs2,
+            self.inner.value
+        )
+    }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "BiasSet")]
 #[derive(Clone)]
+/// Parsed GNSS bias set with lookup helpers.
 pub struct PyBiasSet {
     pub(crate) inner: BiasSet,
 }
@@ -245,9 +268,18 @@ impl PyBiasSet {
             epoch(year, day_of_year, second_of_day, scale)?,
         ))
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BiasSet(record_count={}, skipped_records={})",
+            self.inner.records().len(),
+            self.inner.skipped_records()
+        )
+    }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "BiasParsed")]
+/// Lossy bias parse result containing a value and diagnostics.
 pub struct PyBiasParsed {
     value: BiasSet,
     diagnostics: Diagnostics,
@@ -271,9 +303,21 @@ impl PyBiasParsed {
     fn warning_count(&self) -> usize {
         self.diagnostics.warnings.len()
     }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BiasParsed(record_count={}, skip_count={}, warning_count={})",
+            self.value.records().len(),
+            self.diagnostics.skips.len(),
+            self.diagnostics.warnings.len()
+        )
+    }
 }
 
 #[pyfunction]
+/// Parse Bias-SINEX bytes into a bias set.
+///
+/// Raises `ValueError` when the input cannot be parsed strictly.
 fn parse_bias_sinex(bytes: Vec<u8>) -> PyResult<PyBiasSet> {
     sidereon::parse_bias_sinex(&bytes)
         .map(|inner| PyBiasSet { inner })
@@ -281,6 +325,9 @@ fn parse_bias_sinex(bytes: Vec<u8>) -> PyResult<PyBiasSet> {
 }
 
 #[pyfunction]
+/// Parse Bias-SINEX bytes and return diagnostics for skipped records.
+///
+/// The parsed value is available as `result.value`.
 fn parse_bias_sinex_lossy(bytes: Vec<u8>) -> PyResult<PyBiasParsed> {
     let parsed = sidereon::parse_bias_sinex_lossy(&bytes).map_err(to_bias_err)?;
     let (value, diagnostics) = parsed.into_parts();
@@ -288,20 +335,23 @@ fn parse_bias_sinex_lossy(bytes: Vec<u8>) -> PyResult<PyBiasParsed> {
 }
 
 #[pyfunction]
-fn load_bias_sinex(path: String) -> PyResult<PyBiasSet> {
+/// Load a Bias-SINEX file from a filesystem path.
+fn load_bias_sinex(path: PathBuf) -> PyResult<PyBiasSet> {
     sidereon::load_bias_sinex(path)
         .map(|inner| PyBiasSet { inner })
         .map_err(to_bias_err)
 }
 
 #[pyfunction]
-fn load_bias_sinex_lossy(path: String) -> PyResult<PyBiasParsed> {
+/// Load a Bias-SINEX file and return diagnostics for skipped records.
+fn load_bias_sinex_lossy(path: PathBuf) -> PyResult<PyBiasParsed> {
     let parsed = sidereon::load_bias_sinex_lossy(path).map_err(to_bias_err)?;
     let (value, diagnostics) = parsed.into_parts();
     Ok(PyBiasParsed { value, diagnostics })
 }
 
 #[pyfunction]
+/// Parse legacy CODE DCB bytes into a bias set.
 fn parse_code_dcb(bytes: Vec<u8>, options: Option<&PyCodeDcbOptions>) -> PyResult<PyBiasSet> {
     sidereon::parse_code_dcb(&bytes, options.map(PyCodeDcbOptions::inner))
         .map(|inner| PyBiasSet { inner })
@@ -309,6 +359,7 @@ fn parse_code_dcb(bytes: Vec<u8>, options: Option<&PyCodeDcbOptions>) -> PyResul
 }
 
 #[pyfunction]
+/// Parse legacy CODE DCB bytes and return diagnostics for skipped records.
 fn parse_code_dcb_lossy(
     bytes: Vec<u8>,
     options: Option<&PyCodeDcbOptions>,
@@ -320,14 +371,19 @@ fn parse_code_dcb_lossy(
 }
 
 #[pyfunction]
-fn load_code_dcb(path: String, options: Option<&PyCodeDcbOptions>) -> PyResult<PyBiasSet> {
+/// Load a legacy CODE DCB file from a filesystem path.
+fn load_code_dcb(path: PathBuf, options: Option<&PyCodeDcbOptions>) -> PyResult<PyBiasSet> {
     sidereon::load_code_dcb(path, options.map(PyCodeDcbOptions::inner))
         .map(|inner| PyBiasSet { inner })
         .map_err(to_bias_err)
 }
 
 #[pyfunction]
-fn load_code_dcb_lossy(path: String, options: Option<&PyCodeDcbOptions>) -> PyResult<PyBiasParsed> {
+/// Load a legacy CODE DCB file and return diagnostics for skipped records.
+fn load_code_dcb_lossy(
+    path: PathBuf,
+    options: Option<&PyCodeDcbOptions>,
+) -> PyResult<PyBiasParsed> {
     let parsed = sidereon::load_code_dcb_lossy(path, options.map(PyCodeDcbOptions::inner))
         .map_err(to_bias_err)?;
     let (value, diagnostics) = parsed.into_parts();

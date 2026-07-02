@@ -10,6 +10,7 @@ confirm the binding marshals the new shapes through faithfully.
 
 import datetime as dt
 import os
+import pathlib
 
 import numpy as np
 import pytest
@@ -315,35 +316,44 @@ def test_equinoctial_and_modified_equinoctial_round_trip_classical_elements():
     assert back2.ecc == pytest.approx(coe.ecc, rel=1e-12)
 
     r, v = sidereon.coe2rv(coe, 398600.4418)
-    eq_from_rv = sidereon.rv2eq(r, v, 398600.4418)
+    eq_from_rv = sidereon.rv2eq(list(r), tuple(v), 398600.4418)
     r2, v2 = sidereon.eq2rv(eq_from_rv, 398600.4418)
     np.testing.assert_allclose(r2, r, rtol=1e-10, atol=1e-7)
     np.testing.assert_allclose(v2, v, rtol=1e-10, atol=1e-10)
 
+    direct = sidereon.EquinoctialElements(
+        a=7000.0,
+        h=0.01,
+        k=0.02,
+        p=0.03,
+        q=0.04,
+        lambda_=0.5,
+    )
+    assert direct.lambda_ == pytest.approx(0.5)
+
 
 def test_angles_beta_and_relative_frames_round_trip():
     assert sidereon.angular_separation(
-        np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0])
+        [1.0, 0.0, 0.0], (0.0, 1.0, 0.0)
     ) == pytest.approx(90.0)
     assert sidereon.position_angle(0.0, 0.0, np.pi / 2.0, 0.0) == pytest.approx(90.0)
     beta = sidereon.beta_angle_from_state(
-        np.array([7000.0, 0.0, 0.0]),
-        np.array([0.0, 7.5, 0.0]),
-        np.array([0.0, 0.0, 1.0]),
+        [7000.0, 0.0, 0.0],
+        (0.0, 7.5, 0.0),
+        [0.0, 0.0, 1.0],
     )
     assert beta == pytest.approx(90.0)
 
-    chief = sidereon.CartesianState(
-        0.0, np.array([7000.0, 0.0, 0.0]), np.array([0.0, 7.5, 0.0])
-    )
-    deputy = sidereon.CartesianState(
-        0.0, np.array([7001.0, 0.0, 0.0]), np.array([0.0, 7.501, 0.0])
-    )
+    chief = sidereon.CartesianState(0.0, [7000.0, 0.0, 0.0], (0.0, 7.5, 0.0))
+    deputy = sidereon.CartesianState(0.0, (7001.0, 0.0, 0.0), [0.0, 7.501, 0.0])
     rel = sidereon.relative_state(chief, deputy)
     rebuilt = sidereon.absolute_from_relative(chief, rel)
     np.testing.assert_allclose(rebuilt.position_km, deputy.position_km, atol=1e-12)
     assert sidereon.rtn_to_inertial_rotation(chief).shape == (3, 3)
     assert sidereon.cw_stm(sidereon.mean_motion_from_state(chief), 60.0).shape == (6, 6)
+    with pytest.raises(ValueError, match="invalid input for n") as err:
+        sidereon.cw_stm(float("nan"), 60.0)
+    assert "InvalidInput" not in str(err.value)
 
 
 def test_body_observe_and_almanac_events_are_exposed():
@@ -396,33 +406,46 @@ def test_ephemeris_sample_returns_grid_rows_with_status():
 
 
 def test_dted_terrain_uses_core_tile_reader():
-    root = os.path.join(CORE_FIXTURES, "dted", "tiles")
+    root = pathlib.Path(CORE_FIXTURES) / "dted" / "tiles"
     terrain = sidereon.DtedTerrain(root)
+    tile = sidereon.DtedTile.from_path(root / "n36_w107_1arc_v3.dt2")
     opts = sidereon.DtedLookupOptions(sidereon.DtedInterpolation.NEAREST_POSTING)
     lon = hex_to_f64("0xc05ac00000000000")
     lat = hex_to_f64("0x4042000000000000")
-    assert terrain.height_m(lon, lat, opts) == pytest.approx(
+    assert terrain.height_m(lat, lon, opts) == pytest.approx(
         hex_to_f64("0xc034000000000000")
     )
+    assert tile.height_m(lat, lon) == pytest.approx(hex_to_f64("0xc034000000000000"))
 
 
 def test_bias_sinex_and_code_dcb_parsers_expose_bias_sets():
-    with open(
-        os.path.join(CORE_FIXTURES, "bias", "COD0OPSFIN_20261330000_01D_01D_OSB.BIA"),
-        "rb",
-    ) as fh:
+    bias_path = (
+        pathlib.Path(CORE_FIXTURES) / "bias" / "COD0OPSFIN_20261330000_01D_01D_OSB.BIA"
+    )
+    with open(bias_path, "rb") as fh:
         bias = sidereon.parse_bias_sinex(fh.read())
     assert bias.record_count > 0
     assert bias.records[0].kind in {"OSB", "DSB", "ISB"}
+    assert sidereon.load_bias_sinex(bias_path).record_count == bias.record_count
+    assert (
+        sidereon.load_bias_sinex_lossy(bias_path).value.record_count
+        == bias.record_count
+    )
     opts = sidereon.PppCodeBiasOptions(
         bias,
         [(sidereon.GnssSystem.GPS, "C1C", "C2W")],
     )
     assert opts is not None
 
-    with open(os.path.join(CORE_FIXTURES, "bias", "P1C1_RINEX.DCB"), "rb") as fh:
+    dcb_path = pathlib.Path(CORE_FIXTURES) / "bias" / "P1C1_RINEX.DCB"
+    with open(dcb_path, "rb") as fh:
         dcb = sidereon.parse_code_dcb(fh.read(), None)
     assert dcb.record_count > 0
+    assert sidereon.load_code_dcb(dcb_path, None).record_count == dcb.record_count
+    assert (
+        sidereon.load_code_dcb_lossy(dcb_path, None).value.record_count
+        == dcb.record_count
+    )
 
 
 def test_sbas_decode_parse_store_and_mapping_helpers():
@@ -430,7 +453,8 @@ def test_sbas_decode_parse_store_and_mapping_helpers():
     body = bytes.fromhex(body_hex)
     block = sidereon.decode_sbas_block(body, sidereon.SbasWireForm.BODY226)
     assert block.message_type == 1
-    assert block.kind == "prn_mask"
+    assert block.kind == sidereon.SbasMessageKind.PRN_MASK
+    assert block.kind_label == "prn_mask"
     assert block.encode() == body
 
     parsed = sidereon.parse_sbas_rtklib_lines(f"2360 259200 120 1 : {body_hex}\n")
@@ -443,6 +467,7 @@ def test_sbas_decode_parse_store_and_mapping_helpers():
 
 
 def test_ssr_decode_store_and_correction_queries():
+    assert sidereon.SsrSource.GALILEO_HAS.label == "galileo_has"
     with open(
         os.path.join(CORE_FIXTURES, "ssr", "SSRA02IGS0_2026181234930_1060.hex")
     ) as fh:
@@ -455,11 +480,17 @@ def test_ssr_decode_store_and_correction_queries():
     assert ssr.satellite_count == 2
     store = sidereon.SsrCorrectionStore()
     store.ingest_ssr(ssr, 2425, 344970.0)
-    assert store.orbit("G30") is not None
-    assert store.clock("G30") is not None
+    orbit = store.orbit("G30")
+    clock = store.clock("G30")
+    assert orbit is not None
+    assert clock is not None
+    assert orbit.solution.source == sidereon.SsrSource.RTCM_SSR
+    assert clock.solution.source == sidereon.SsrSource.RTCM_SSR
+    assert orbit.solution.provider_id == ssr.provider_id
+    assert clock.solution.solution_id == ssr.solution_id
 
 
-def test_spp_robust_fde_driver_returns_fde_result():
+def test_solve_spp_robust_fde_returns_fde_result_and_alias_warns():
     sp3 = _load_sp3(_SP3_FILE)
     _rx, observations, t_rx = _glonass_scenario(sp3)
     cfg = sidereon.SppConfig(
@@ -471,11 +502,16 @@ def test_spp_robust_fde_driver_returns_fde_result():
         corrections=sidereon.SppCorrections(ionosphere=False, troposphere=False),
         with_geodetic=True,
     )
-    result = sidereon.spp_robust_fde_driver(
+    result = sidereon.solve_spp_robust_fde(
         sp3, cfg, sidereon.SppRobustConfig(), 0.01, 2
     )
     assert result.iterations >= 0
     assert len(result.used_sats) >= 4
+    with pytest.warns(DeprecationWarning):
+        alias = sidereon.spp_robust_fde_driver(
+            sp3, cfg, sidereon.SppRobustConfig(), 0.01, 2
+        )
+    assert alias.iterations == result.iterations
 
 
 # --- shared helpers --------------------------------------------------------

@@ -12,7 +12,8 @@
 use std::collections::BTreeMap;
 
 use numpy::PyArray1;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyDeprecationWarning, PyValueError};
+use pyo3::ffi::c_str;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
@@ -254,7 +255,67 @@ fn qc_fde(
 #[pyfunction]
 #[pyo3(signature = (sp3, config, robust, p_fa, max_iterations, weights=None, n_systems=None, max_pdop=None))]
 #[allow(clippy::too_many_arguments)]
+/// Run robust SPP with RAIM fault detection and exclusion.
+///
+/// This wraps the core robust SPP FDE driver and returns the final accepted result.
+fn solve_spp_robust_fde(
+    sp3: &PySp3,
+    config: &PySppConfig,
+    robust: &PySppRobustConfig,
+    p_fa: f64,
+    max_iterations: usize,
+    weights: Option<BTreeMap<String, f64>>,
+    n_systems: Option<isize>,
+    max_pdop: Option<f64>,
+) -> PyResult<PyFdeResult> {
+    solve_spp_robust_fde_impl(
+        sp3,
+        config,
+        robust,
+        p_fa,
+        max_iterations,
+        weights,
+        n_systems,
+        max_pdop,
+    )
+}
+
+#[pyfunction]
+#[pyo3(signature = (sp3, config, robust, p_fa, max_iterations, weights=None, n_systems=None, max_pdop=None))]
+#[allow(clippy::too_many_arguments)]
+/// Deprecated alias for `solve_spp_robust_fde`.
 fn spp_robust_fde_driver(
+    py: Python<'_>,
+    sp3: &PySp3,
+    config: &PySppConfig,
+    robust: &PySppRobustConfig,
+    p_fa: f64,
+    max_iterations: usize,
+    weights: Option<BTreeMap<String, f64>>,
+    n_systems: Option<isize>,
+    max_pdop: Option<f64>,
+) -> PyResult<PyFdeResult> {
+    let warning = py.get_type::<PyDeprecationWarning>();
+    PyErr::warn(
+        py,
+        &warning,
+        c_str!("spp_robust_fde_driver is deprecated; use solve_spp_robust_fde"),
+        2,
+    )?;
+    solve_spp_robust_fde_impl(
+        sp3,
+        config,
+        robust,
+        p_fa,
+        max_iterations,
+        weights,
+        n_systems,
+        max_pdop,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn solve_spp_robust_fde_impl(
     sp3: &PySp3,
     config: &PySppConfig,
     robust: &PySppRobustConfig,
@@ -553,6 +614,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRangeFdeResult>()?;
     m.add_function(wrap_pyfunction!(qc_raim, m)?)?;
     m.add_function(wrap_pyfunction!(qc_fde, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_spp_robust_fde, m)?)?;
     m.add_function(wrap_pyfunction!(spp_robust_fde_driver, m)?)?;
     m.add_function(wrap_pyfunction!(qc_raim_fde_design, m)?)?;
     m.add_function(wrap_pyfunction!(chi2_inv, m)?)?;

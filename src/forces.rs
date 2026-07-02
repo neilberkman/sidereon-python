@@ -102,9 +102,7 @@ impl PyDragParameters {
     }
 
     fn sw(space_weather: Option<&PySpaceWeather>) -> SpaceWeather {
-        space_weather
-            .map(PySpaceWeather::inner)
-            .unwrap_or_else(SpaceWeather::default)
+        space_weather.map(PySpaceWeather::inner).unwrap_or_default()
     }
 }
 
@@ -162,6 +160,7 @@ impl PyDragParameters {
         .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
+    #[allow(clippy::wrong_self_convention)] // Public Python API keeps to_force while the Rust wrapper is Copy.
     fn to_force(&self) -> PyDragForce {
         PyDragForce {
             inner: self.inner.to_force(),
@@ -200,9 +199,7 @@ pub struct PyDragForce {
 
 impl PyDragForce {
     fn sw(space_weather: Option<&PySpaceWeather>) -> SpaceWeather {
-        space_weather
-            .map(PySpaceWeather::inner)
-            .unwrap_or_else(SpaceWeather::default)
+        space_weather.map(PySpaceWeather::inner).unwrap_or_default()
     }
 }
 

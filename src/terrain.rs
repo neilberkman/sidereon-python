@@ -1,5 +1,7 @@
 //! DTED terrain binding.
 
+use std::path::PathBuf;
+
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -13,6 +15,7 @@ fn to_terrain_err<E: std::fmt::Display>(err: E) -> PyErr {
 #[pyclass(module = "sidereon._sidereon", name = "DtedInterpolation", eq, eq_int)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
+/// DTED lookup interpolation mode.
 pub enum PyDtedInterpolation {
     NEAREST_POSTING,
     BILINEAR,
@@ -56,6 +59,7 @@ impl PyDtedInterpolation {
 
 #[pyclass(module = "sidereon._sidereon", name = "DtedLookupOptions")]
 #[derive(Clone, Copy)]
+/// Options for DTED height lookup.
 pub struct PyDtedLookupOptions {
     inner: DtedLookupOptions,
 }
@@ -68,6 +72,7 @@ impl PyDtedLookupOptions {
 
 #[pymethods]
 impl PyDtedLookupOptions {
+    /// Build DTED lookup options.
     #[new]
     #[pyo3(signature = (interpolation=PyDtedInterpolation::BILINEAR))]
     fn new(interpolation: PyDtedInterpolation) -> Self {
@@ -92,24 +97,29 @@ impl PyDtedLookupOptions {
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "DtedTerrain")]
+/// Lazy DTED terrain reader rooted at a directory of cached tiles.
 pub struct PyDtedTerrain {
     inner: DtedTerrain,
 }
 
 #[pymethods]
 impl PyDtedTerrain {
+    /// Build a DTED terrain reader from a path.
     #[new]
-    fn new(root: String) -> Self {
+    fn new(root: PathBuf) -> Self {
         Self {
             inner: DtedTerrain::new(root),
         }
     }
 
-    #[pyo3(signature = (longitude_deg, latitude_deg, options=None))]
+    /// Return terrain height in metres at latitude and longitude in degrees.
+    ///
+    /// Missing tiles use the core sea-level fallback.
+    #[pyo3(signature = (latitude_deg, longitude_deg, options=None))]
     fn height_m(
         &mut self,
-        longitude_deg: f64,
         latitude_deg: f64,
+        longitude_deg: f64,
         options: Option<&PyDtedLookupOptions>,
     ) -> PyResult<f64> {
         match options {
@@ -128,22 +138,26 @@ impl PyDtedTerrain {
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "DtedTile")]
+/// Parsed single DTED tile.
 pub struct PyDtedTile {
     inner: DtedTile,
 }
 
 #[pymethods]
 impl PyDtedTile {
+    /// Read a DTED tile from a path.
     #[staticmethod]
-    fn from_path(path: String) -> PyResult<Self> {
+    fn from_path(path: PathBuf) -> PyResult<Self> {
         DtedTile::from_path(path)
             .map(|inner| Self { inner })
             .map_err(to_terrain_err)
     }
 
-    fn get_elevation(&self, longitude_deg: f64, latitude_deg: f64) -> PyResult<i16> {
+    /// Return the nearest-posting height in metres at latitude and longitude in degrees.
+    fn height_m(&self, latitude_deg: f64, longitude_deg: f64) -> PyResult<f64> {
         self.inner
             .get_elevation(longitude_deg, latitude_deg)
+            .map(f64::from)
             .map_err(to_terrain_err)
     }
 

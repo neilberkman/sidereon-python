@@ -5,6 +5,7 @@ use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReado
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::pyclass::PyClass;
+use pyo3::types::PyAny;
 
 use sidereon::passes::UtcInstant;
 use sidereon_core::astro::covariance::{Covariance6, Covariance6Error};
@@ -158,6 +159,45 @@ pub(crate) fn fixed_array<const N: usize>(
         out[index] = value;
     }
     Ok(out)
+}
+
+pub(crate) fn fixed_array_from_any<const N: usize>(
+    name: &str,
+    values: &Bound<'_, PyAny>,
+    finite: FinitePolicy,
+) -> PyResult<[f64; N]> {
+    if let Ok(array) = values.extract::<PyReadonlyArray1<'_, f64>>() {
+        return fixed_array(name, &array, finite);
+    }
+
+    if let Ok(array) = values.extract::<[f64; N]>() {
+        return validate_fixed_array(name, array, finite);
+    }
+
+    let vec = values.extract::<Vec<f64>>().map_err(|_| {
+        PyValueError::new_err(format!("{name} must be a length-{N} numeric vector"))
+    })?;
+    let array: [f64; N] = vec
+        .try_into()
+        .map_err(|_| PyValueError::new_err(format!("{name} must have length {N}")))?;
+    validate_fixed_array(name, array, finite)
+}
+
+fn validate_fixed_array<const N: usize>(
+    name: &str,
+    array: [f64; N],
+    finite: FinitePolicy,
+) -> PyResult<[f64; N]> {
+    if finite.requires() {
+        for (index, value) in array.iter().copied().enumerate() {
+            if !value.is_finite() {
+                return Err(PyValueError::new_err(format!(
+                    "{name}[{index}] must be finite"
+                )));
+            }
+        }
+    }
+    Ok(array)
 }
 
 pub(crate) fn rows3_from_array(

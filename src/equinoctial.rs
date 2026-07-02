@@ -1,15 +1,15 @@
 //! Equinoctial-family element binding.
 
-use numpy::{PyArray1, PyReadonlyArray1};
+use numpy::PyArray1;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyAny, PyModule};
 use pyo3::Bound;
 
 use sidereon_core::astro::equinoctial as core;
 
 use crate::elements::PyClassicalElements;
-use crate::marshal::{fixed_array, FinitePolicy};
+use crate::marshal::{fixed_array_from_any, FinitePolicy};
 use crate::np_array;
 
 type StateArrays<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>);
@@ -20,6 +20,7 @@ fn to_equinoctial_err<E: std::fmt::Display>(err: E) -> PyErr {
 
 #[pyclass(module = "sidereon._sidereon", name = "RetrogradeFactor", eq, eq_int)]
 #[derive(Clone, Copy, PartialEq, Eq)]
+/// Direction convention for equinoctial-family element conversions.
 pub enum PyRetrogradeFactor {
     PROGRADE,
     RETROGRADE,
@@ -63,6 +64,9 @@ impl PyRetrogradeFactor {
 
 #[pyclass(module = "sidereon._sidereon", name = "EquinoctialElements")]
 #[derive(Clone, Copy)]
+/// Classical equinoctial orbital elements.
+///
+/// `lambda_` is the mean longitude in radians. Use `lambda_rad` as an alias when a unit-bearing name reads better.
 pub struct PyEquinoctialElements {
     inner: core::EquinoctialElements,
 }
@@ -75,15 +79,16 @@ impl PyEquinoctialElements {
 
 #[pymethods]
 impl PyEquinoctialElements {
+    /// Build classical equinoctial elements.
     #[new]
-    #[pyo3(signature = (a, h, k, p, q, lambda, retrograde=PyRetrogradeFactor::PROGRADE))]
+    #[pyo3(signature = (a, h, k, p, q, lambda_, retrograde=PyRetrogradeFactor::PROGRADE))]
     fn new(
         a: f64,
         h: f64,
         k: f64,
         p: f64,
         q: f64,
-        lambda: f64,
+        lambda_: f64,
         retrograde: PyRetrogradeFactor,
     ) -> Self {
         Self {
@@ -93,7 +98,7 @@ impl PyEquinoctialElements {
                 k,
                 p,
                 q,
-                lambda,
+                lambda: lambda_,
                 retrograde: retrograde.into(),
             },
         }
@@ -155,6 +160,9 @@ impl PyEquinoctialElements {
 
 #[pyclass(module = "sidereon._sidereon", name = "ModifiedEquinoctialElements")]
 #[derive(Clone, Copy)]
+/// Modified equinoctial orbital elements.
+///
+/// `l` is the true longitude in radians. Use `l_rad` as an alias when a unit-bearing name reads better.
 pub struct PyModifiedEquinoctialElements {
     inner: core::ModifiedEquinoctialElements,
 }
@@ -167,6 +175,7 @@ impl PyModifiedEquinoctialElements {
 
 #[pymethods]
 impl PyModifiedEquinoctialElements {
+    /// Build modified equinoctial elements.
     #[new]
     #[pyo3(signature = (p, f, g, h, k, l, retrograde=PyRetrogradeFactor::PROGRADE))]
     fn new(p: f64, f: f64, g: f64, h: f64, k: f64, l: f64, retrograde: PyRetrogradeFactor) -> Self {
@@ -239,6 +248,9 @@ impl PyModifiedEquinoctialElements {
 
 #[pyfunction]
 #[pyo3(signature = (elements, retrograde=PyRetrogradeFactor::PROGRADE))]
+/// Convert classical orbital elements to equinoctial elements.
+///
+/// The optional retrograde factor selects the singularity convention.
 fn coe2eq(
     elements: &PyClassicalElements,
     retrograde: PyRetrogradeFactor,
@@ -249,6 +261,7 @@ fn coe2eq(
 }
 
 #[pyfunction]
+/// Convert equinoctial elements to classical orbital elements.
 fn eq2coe(elements: &PyEquinoctialElements) -> PyResult<PyClassicalElements> {
     core::eq2coe(&elements.inner)
         .map(PyClassicalElements::from_inner)
@@ -257,6 +270,9 @@ fn eq2coe(elements: &PyEquinoctialElements) -> PyResult<PyClassicalElements> {
 
 #[pyfunction]
 #[pyo3(signature = (elements, retrograde=PyRetrogradeFactor::PROGRADE))]
+/// Convert classical orbital elements to modified equinoctial elements.
+///
+/// The optional retrograde factor selects the singularity convention.
 fn coe2mee(
     elements: &PyClassicalElements,
     retrograde: PyRetrogradeFactor,
@@ -267,6 +283,7 @@ fn coe2mee(
 }
 
 #[pyfunction]
+/// Convert modified equinoctial elements to classical orbital elements.
 fn mee2coe(elements: &PyModifiedEquinoctialElements) -> PyResult<PyClassicalElements> {
     core::mee2coe(&elements.inner)
         .map(PyClassicalElements::from_inner)
@@ -275,20 +292,26 @@ fn mee2coe(elements: &PyModifiedEquinoctialElements) -> PyResult<PyClassicalElem
 
 #[pyfunction]
 #[pyo3(signature = (r, v, mu, retrograde=PyRetrogradeFactor::PROGRADE))]
+/// Convert position and velocity vectors to equinoctial elements.
+///
+/// `r` and `v` may be numpy arrays or ordinary Python sequences of three finite floats.
 fn rv2eq(
-    r: PyReadonlyArray1<'_, f64>,
-    v: PyReadonlyArray1<'_, f64>,
+    r: &Bound<'_, PyAny>,
+    v: &Bound<'_, PyAny>,
     mu: f64,
     retrograde: PyRetrogradeFactor,
 ) -> PyResult<PyEquinoctialElements> {
-    let r = fixed_array::<3>("r", &r, FinitePolicy::RequireFinite)?;
-    let v = fixed_array::<3>("v", &v, FinitePolicy::RequireFinite)?;
+    let r = fixed_array_from_any::<3>("r", r, FinitePolicy::RequireFinite)?;
+    let v = fixed_array_from_any::<3>("v", v, FinitePolicy::RequireFinite)?;
     core::rv2eq(r, v, mu, retrograde.into())
         .map(PyEquinoctialElements::from_inner)
         .map_err(to_equinoctial_err)
 }
 
 #[pyfunction]
+/// Convert equinoctial elements to position and velocity vectors.
+///
+/// Returns `(r_km, v_km_s)` as numpy arrays.
 fn eq2rv<'py>(
     py: Python<'py>,
     elements: &PyEquinoctialElements,
@@ -300,20 +323,26 @@ fn eq2rv<'py>(
 
 #[pyfunction]
 #[pyo3(signature = (r, v, mu, retrograde=PyRetrogradeFactor::PROGRADE))]
+/// Convert position and velocity vectors to modified equinoctial elements.
+///
+/// `r` and `v` may be numpy arrays or ordinary Python sequences of three finite floats.
 fn rv2mee(
-    r: PyReadonlyArray1<'_, f64>,
-    v: PyReadonlyArray1<'_, f64>,
+    r: &Bound<'_, PyAny>,
+    v: &Bound<'_, PyAny>,
     mu: f64,
     retrograde: PyRetrogradeFactor,
 ) -> PyResult<PyModifiedEquinoctialElements> {
-    let r = fixed_array::<3>("r", &r, FinitePolicy::RequireFinite)?;
-    let v = fixed_array::<3>("v", &v, FinitePolicy::RequireFinite)?;
+    let r = fixed_array_from_any::<3>("r", r, FinitePolicy::RequireFinite)?;
+    let v = fixed_array_from_any::<3>("v", v, FinitePolicy::RequireFinite)?;
     core::rv2mee(r, v, mu, retrograde.into())
         .map(PyModifiedEquinoctialElements::from_inner)
         .map_err(to_equinoctial_err)
 }
 
 #[pyfunction]
+/// Convert modified equinoctial elements to position and velocity vectors.
+///
+/// Returns `(r_km, v_km_s)` as numpy arrays.
 fn mee2rv<'py>(
     py: Python<'py>,
     elements: &PyModifiedEquinoctialElements,

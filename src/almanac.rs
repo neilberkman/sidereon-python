@@ -9,6 +9,7 @@ use sidereon_core::astro::almanac as core;
 use sidereon_core::astro::frames::transforms::GeodeticStationKm;
 
 use crate::spk::PySpk;
+use crate::SidereonError;
 
 fn to_almanac_err<E: std::fmt::Display>(err: E) -> PyErr {
     PyValueError::new_err(err.to_string())
@@ -26,58 +27,66 @@ fn station(latitude_deg: f64, longitude_deg: f64, altitude_km: f64) -> GeodeticS
     }
 }
 
+fn non_exhaustive_variant(enum_name: &str) -> PyErr {
+    SidereonError::new_err(format!("core returned an unsupported {enum_name} variant"))
+}
+
 #[pyclass(module = "sidereon._sidereon", name = "SeasonKind", eq, eq_int)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
+/// Seasonal marker kind.
 pub enum PySeasonKind {
     MARCH_EQUINOX,
     JUNE_SOLSTICE,
     SEPTEMBER_EQUINOX,
     DECEMBER_SOLSTICE,
-    UNKNOWN,
 }
 
-impl From<core::SeasonKind> for PySeasonKind {
-    fn from(value: core::SeasonKind) -> Self {
+impl TryFrom<core::SeasonKind> for PySeasonKind {
+    type Error = PyErr;
+
+    fn try_from(value: core::SeasonKind) -> Result<Self, Self::Error> {
         match value {
-            core::SeasonKind::MarchEquinox => Self::MARCH_EQUINOX,
-            core::SeasonKind::JuneSolstice => Self::JUNE_SOLSTICE,
-            core::SeasonKind::SeptemberEquinox => Self::SEPTEMBER_EQUINOX,
-            core::SeasonKind::DecemberSolstice => Self::DECEMBER_SOLSTICE,
-            _ => Self::UNKNOWN,
+            core::SeasonKind::MarchEquinox => Ok(Self::MARCH_EQUINOX),
+            core::SeasonKind::JuneSolstice => Ok(Self::JUNE_SOLSTICE),
+            core::SeasonKind::SeptemberEquinox => Ok(Self::SEPTEMBER_EQUINOX),
+            core::SeasonKind::DecemberSolstice => Ok(Self::DECEMBER_SOLSTICE),
+            _ => Err(non_exhaustive_variant("SeasonKind")),
         }
     }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "MoonPhaseKind", eq, eq_int)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
+/// Principal lunar phase kind.
 pub enum PyMoonPhaseKind {
     NEW,
     FIRST_QUARTER,
     FULL,
     LAST_QUARTER,
-    UNKNOWN,
 }
 
-impl From<core::MoonPhaseKind> for PyMoonPhaseKind {
-    fn from(value: core::MoonPhaseKind) -> Self {
+impl TryFrom<core::MoonPhaseKind> for PyMoonPhaseKind {
+    type Error = PyErr;
+
+    fn try_from(value: core::MoonPhaseKind) -> Result<Self, Self::Error> {
         match value {
-            core::MoonPhaseKind::New => Self::NEW,
-            core::MoonPhaseKind::FirstQuarter => Self::FIRST_QUARTER,
-            core::MoonPhaseKind::Full => Self::FULL,
-            core::MoonPhaseKind::LastQuarter => Self::LAST_QUARTER,
-            _ => Self::UNKNOWN,
+            core::MoonPhaseKind::New => Ok(Self::NEW),
+            core::MoonPhaseKind::FirstQuarter => Ok(Self::FIRST_QUARTER),
+            core::MoonPhaseKind::Full => Ok(Self::FULL),
+            core::MoonPhaseKind::LastQuarter => Ok(Self::LAST_QUARTER),
+            _ => Err(non_exhaustive_variant("MoonPhaseKind")),
         }
     }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "PlanetaryEventKind", eq, eq_int)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Planetary ecliptic-longitude event kind.
 pub enum PyPlanetaryEventKind {
     CONJUNCTION,
     OPPOSITION,
-    UNKNOWN,
 }
 
 impl PyPlanetaryEventKind {
@@ -85,44 +94,46 @@ impl PyPlanetaryEventKind {
         match self {
             PyPlanetaryEventKind::CONJUNCTION => Ok(core::PlanetaryEventKind::Conjunction),
             PyPlanetaryEventKind::OPPOSITION => Ok(core::PlanetaryEventKind::Opposition),
-            PyPlanetaryEventKind::UNKNOWN => Err(PyValueError::new_err(
-                "PlanetaryEventKind.UNKNOWN is not a valid input",
-            )),
         }
     }
 }
 
-impl From<core::PlanetaryEventKind> for PyPlanetaryEventKind {
-    fn from(value: core::PlanetaryEventKind) -> Self {
+impl TryFrom<core::PlanetaryEventKind> for PyPlanetaryEventKind {
+    type Error = PyErr;
+
+    fn try_from(value: core::PlanetaryEventKind) -> Result<Self, Self::Error> {
         match value {
-            core::PlanetaryEventKind::Conjunction => Self::CONJUNCTION,
-            core::PlanetaryEventKind::Opposition => Self::OPPOSITION,
-            _ => Self::UNKNOWN,
+            core::PlanetaryEventKind::Conjunction => Ok(Self::CONJUNCTION),
+            core::PlanetaryEventKind::Opposition => Ok(Self::OPPOSITION),
+            _ => Err(non_exhaustive_variant("PlanetaryEventKind")),
         }
     }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "CulminationKind", eq, eq_int)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Meridian transit kind.
 pub enum PyCulminationKind {
     UPPER,
     LOWER,
-    UNKNOWN,
 }
 
-impl From<core::CulminationKind> for PyCulminationKind {
-    fn from(value: core::CulminationKind) -> Self {
+impl TryFrom<core::CulminationKind> for PyCulminationKind {
+    type Error = PyErr;
+
+    fn try_from(value: core::CulminationKind) -> Result<Self, Self::Error> {
         match value {
-            core::CulminationKind::Upper => Self::UPPER,
-            core::CulminationKind::Lower => Self::LOWER,
-            _ => Self::UNKNOWN,
+            core::CulminationKind::Upper => Ok(Self::UPPER),
+            core::CulminationKind::Lower => Ok(Self::LOWER),
+            _ => Err(non_exhaustive_variant("CulminationKind")),
         }
     }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "EclipseKind", eq, eq_int)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
+/// Lunar or solar eclipse kind.
 pub enum PyEclipseKind {
     LUNAR_PENUMBRAL,
     LUNAR_PARTIAL,
@@ -131,26 +142,28 @@ pub enum PyEclipseKind {
     SOLAR_ANNULAR,
     SOLAR_TOTAL,
     SOLAR_HYBRID,
-    UNKNOWN,
 }
 
-impl From<core::EclipseKind> for PyEclipseKind {
-    fn from(value: core::EclipseKind) -> Self {
+impl TryFrom<core::EclipseKind> for PyEclipseKind {
+    type Error = PyErr;
+
+    fn try_from(value: core::EclipseKind) -> Result<Self, Self::Error> {
         match value {
-            core::EclipseKind::LunarPenumbral => Self::LUNAR_PENUMBRAL,
-            core::EclipseKind::LunarPartial => Self::LUNAR_PARTIAL,
-            core::EclipseKind::LunarTotal => Self::LUNAR_TOTAL,
-            core::EclipseKind::SolarPartial => Self::SOLAR_PARTIAL,
-            core::EclipseKind::SolarAnnular => Self::SOLAR_ANNULAR,
-            core::EclipseKind::SolarTotal => Self::SOLAR_TOTAL,
-            core::EclipseKind::SolarHybrid => Self::SOLAR_HYBRID,
-            _ => Self::UNKNOWN,
+            core::EclipseKind::LunarPenumbral => Ok(Self::LUNAR_PENUMBRAL),
+            core::EclipseKind::LunarPartial => Ok(Self::LUNAR_PARTIAL),
+            core::EclipseKind::LunarTotal => Ok(Self::LUNAR_TOTAL),
+            core::EclipseKind::SolarPartial => Ok(Self::SOLAR_PARTIAL),
+            core::EclipseKind::SolarAnnular => Ok(Self::SOLAR_ANNULAR),
+            core::EclipseKind::SolarTotal => Ok(Self::SOLAR_TOTAL),
+            core::EclipseKind::SolarHybrid => Ok(Self::SOLAR_HYBRID),
+            _ => Err(non_exhaustive_variant("EclipseKind")),
         }
     }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "Planet", eq, eq_int)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Planet selector for almanac event finders.
 pub enum PyPlanet {
     MERCURY,
     VENUS,
@@ -159,7 +172,6 @@ pub enum PyPlanet {
     SATURN,
     URANUS,
     NEPTUNE,
-    UNKNOWN,
 }
 
 impl PyPlanet {
@@ -172,22 +184,23 @@ impl PyPlanet {
             PyPlanet::SATURN => Ok(core::Planet::Saturn),
             PyPlanet::URANUS => Ok(core::Planet::Uranus),
             PyPlanet::NEPTUNE => Ok(core::Planet::Neptune),
-            PyPlanet::UNKNOWN => Err(PyValueError::new_err("Planet.UNKNOWN is not a valid input")),
         }
     }
 }
 
-impl From<core::Planet> for PyPlanet {
-    fn from(value: core::Planet) -> Self {
+impl TryFrom<core::Planet> for PyPlanet {
+    type Error = PyErr;
+
+    fn try_from(value: core::Planet) -> Result<Self, Self::Error> {
         match value {
-            core::Planet::Mercury => Self::MERCURY,
-            core::Planet::Venus => Self::VENUS,
-            core::Planet::Mars => Self::MARS,
-            core::Planet::Jupiter => Self::JUPITER,
-            core::Planet::Saturn => Self::SATURN,
-            core::Planet::Uranus => Self::URANUS,
-            core::Planet::Neptune => Self::NEPTUNE,
-            _ => Self::UNKNOWN,
+            core::Planet::Mercury => Ok(Self::MERCURY),
+            core::Planet::Venus => Ok(Self::VENUS),
+            core::Planet::Mars => Ok(Self::MARS),
+            core::Planet::Jupiter => Ok(Self::JUPITER),
+            core::Planet::Saturn => Ok(Self::SATURN),
+            core::Planet::Uranus => Ok(Self::URANUS),
+            core::Planet::Neptune => Ok(Self::NEPTUNE),
+            _ => Err(non_exhaustive_variant("Planet")),
         }
     }
 }
@@ -201,6 +214,7 @@ enum TransitBodyKind {
 
 #[pyclass(module = "sidereon._sidereon", name = "TransitBody")]
 #[derive(Clone, Copy)]
+/// Body selector for meridian transit searches.
 pub struct PyTransitBody {
     kind: TransitBodyKind,
 }
@@ -217,6 +231,7 @@ impl PyTransitBody {
 
 #[pymethods]
 impl PyTransitBody {
+    /// Select the Sun for meridian transit searches.
     #[staticmethod]
     fn sun() -> Self {
         Self {
@@ -224,6 +239,7 @@ impl PyTransitBody {
         }
     }
 
+    /// Select the Moon for meridian transit searches.
     #[staticmethod]
     fn moon() -> Self {
         Self {
@@ -231,6 +247,7 @@ impl PyTransitBody {
         }
     }
 
+    /// Select a planet for meridian transit searches.
     #[staticmethod]
     fn planet(planet: PyPlanet) -> Self {
         Self {
@@ -241,6 +258,7 @@ impl PyTransitBody {
 
 #[pyclass(module = "sidereon._sidereon", name = "SeasonEvent")]
 #[derive(Clone, Copy)]
+/// One seasonal marker event.
 pub struct PySeasonEvent {
     inner: core::SeasonEvent,
 }
@@ -253,13 +271,22 @@ impl PySeasonEvent {
     }
 
     #[getter]
-    fn kind(&self) -> PySeasonKind {
-        self.inner.kind.into()
+    fn kind(&self) -> PyResult<PySeasonKind> {
+        self.inner.kind.try_into()
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!(
+            "SeasonEvent(time_unix_us={}, kind={:?})",
+            self.inner.time.unix_microseconds(),
+            self.kind()?
+        ))
     }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "MoonPhaseEvent")]
 #[derive(Clone, Copy)]
+/// One principal lunar phase event.
 pub struct PyMoonPhaseEvent {
     inner: core::MoonPhaseEvent,
 }
@@ -272,13 +299,22 @@ impl PyMoonPhaseEvent {
     }
 
     #[getter]
-    fn kind(&self) -> PyMoonPhaseKind {
-        self.inner.kind.into()
+    fn kind(&self) -> PyResult<PyMoonPhaseKind> {
+        self.inner.kind.try_into()
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!(
+            "MoonPhaseEvent(time_unix_us={}, kind={:?})",
+            self.inner.time.unix_microseconds(),
+            self.kind()?
+        ))
     }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "PlanetaryEvent")]
 #[derive(Clone, Copy)]
+/// One planetary conjunction or opposition event.
 pub struct PyPlanetaryEvent {
     inner: core::PlanetaryEvent,
 }
@@ -291,23 +327,34 @@ impl PyPlanetaryEvent {
     }
 
     #[getter]
-    fn planet(&self) -> PyPlanet {
-        self.inner.planet.into()
+    fn planet(&self) -> PyResult<PyPlanet> {
+        self.inner.planet.try_into()
     }
 
     #[getter]
-    fn kind(&self) -> PyPlanetaryEventKind {
-        self.inner.kind.into()
+    fn kind(&self) -> PyResult<PyPlanetaryEventKind> {
+        self.inner.kind.try_into()
     }
 
     #[getter]
     fn elongation_deg(&self) -> f64 {
         self.inner.elongation_deg
     }
+
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!(
+            "PlanetaryEvent(time_unix_us={}, planet={:?}, kind={:?}, elongation_deg={:.6})",
+            self.inner.time.unix_microseconds(),
+            self.planet()?,
+            self.kind()?,
+            self.inner.elongation_deg
+        ))
+    }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "CulminationEvent")]
 #[derive(Clone, Copy)]
+/// One upper or lower meridian transit event.
 pub struct PyCulminationEvent {
     inner: core::CulminationEvent,
 }
@@ -320,18 +367,28 @@ impl PyCulminationEvent {
     }
 
     #[getter]
-    fn kind(&self) -> PyCulminationKind {
-        self.inner.kind.into()
+    fn kind(&self) -> PyResult<PyCulminationKind> {
+        self.inner.kind.try_into()
     }
 
     #[getter]
     fn altitude_deg(&self) -> f64 {
         self.inner.altitude_deg
     }
+
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!(
+            "CulminationEvent(time_unix_us={}, kind={:?}, altitude_deg={:.6})",
+            self.inner.time.unix_microseconds(),
+            self.kind()?,
+            self.inner.altitude_deg
+        ))
+    }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "EclipseEvent")]
 #[derive(Clone, Copy)]
+/// One lunar or solar eclipse event.
 pub struct PyEclipseEvent {
     inner: core::EclipseEvent,
 }
@@ -344,8 +401,8 @@ impl PyEclipseEvent {
     }
 
     #[getter]
-    fn kind(&self) -> PyEclipseKind {
-        self.inner.kind.into()
+    fn kind(&self) -> PyResult<PyEclipseKind> {
+        self.inner.kind.try_into()
     }
 
     #[getter]
@@ -367,10 +424,23 @@ impl PyEclipseEvent {
     fn uncertain(&self) -> bool {
         self.inner.uncertain
     }
+
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!(
+            "EclipseEvent(time_maximum_unix_us={}, kind={:?}, magnitude={:.6}, uncertain={})",
+            self.inner.time_maximum.unix_microseconds(),
+            self.kind()?,
+            self.inner.magnitude,
+            self.inner.uncertain
+        ))
+    }
 }
 
 #[pyfunction]
 #[pyo3(signature = (start_unix_us, end_unix_us, step_seconds=86_400.0, time_tolerance_seconds=60.0, spk=None))]
+/// Find seasonal marker events in a Unix-microsecond interval.
+///
+/// Pass an SPK kernel for ephemeris-backed evaluation, or omit it for the analytic source.
 fn seasons(
     start_unix_us: i64,
     end_unix_us: i64,
@@ -399,6 +469,9 @@ fn seasons(
 
 #[pyfunction]
 #[pyo3(signature = (start_unix_us, end_unix_us, step_seconds=86_400.0, time_tolerance_seconds=60.0, spk=None))]
+/// Find principal lunar phase events in a Unix-microsecond interval.
+///
+/// Pass an SPK kernel for ephemeris-backed evaluation, or omit it for the analytic source.
 fn moon_phases(
     start_unix_us: i64,
     end_unix_us: i64,
@@ -427,6 +500,9 @@ fn moon_phases(
 
 #[pyfunction]
 #[pyo3(signature = (spk, planet, kind, start_unix_us, end_unix_us, step_seconds=86_400.0, time_tolerance_seconds=60.0))]
+/// Find planetary conjunctions or oppositions using an SPK kernel.
+///
+/// The search interval is supplied as Unix microseconds.
 fn planetary_events(
     spk: &PySpk,
     planet: PyPlanet,
@@ -457,6 +533,9 @@ fn planetary_events(
 #[pyfunction]
 #[pyo3(signature = (body, latitude_deg, longitude_deg, altitude_km, start_unix_us, end_unix_us, step_seconds=3_600.0, time_tolerance_seconds=30.0, spk=None))]
 #[allow(clippy::too_many_arguments)]
+/// Find upper and lower meridian transits for a body at a ground station.
+///
+/// Latitude and longitude are supplied in degrees.
 fn meridian_transits(
     body: PyTransitBody,
     latitude_deg: f64,
@@ -492,6 +571,9 @@ fn meridian_transits(
 
 #[pyfunction]
 #[pyo3(signature = (start_unix_us, end_unix_us, step_seconds=86_400.0, time_tolerance_seconds=60.0, spk=None))]
+/// Find lunar and solar eclipse events in a Unix-microsecond interval.
+///
+/// Pass an SPK kernel for ephemeris-backed evaluation, or omit it for the analytic source.
 fn lunar_solar_eclipses(
     start_unix_us: i64,
     end_unix_us: i64,

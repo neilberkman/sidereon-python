@@ -33,6 +33,35 @@ jobs:
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
+      - name: Determine sidereon-core version
+        id: core-version
+        shell: bash
+        run: |
+          version=$(python - <<'PY'
+          import tomllib
+
+          with open("Cargo.toml", "rb") as handle:
+              manifest = tomllib.load(handle)
+
+          dep = manifest["dependencies"]["sidereon-core"]
+          if isinstance(dep, str):
+              version = dep
+          else:
+              version = dep["version"]
+
+          if any(ch in version for ch in "<>=, "):
+              raise SystemExit(f"cannot derive a release tag from version requirement: {version}")
+
+          print(version)
+          PY
+          )
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Check out sidereon-core fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: neilberkman/sidereon
+          ref: v${{ steps.core-version.outputs.version }}
+          path: .core-checkout
       - name: Create venv + install tooling
         run: |
           python -m venv .venv
@@ -50,15 +79,15 @@ jobs:
         run: |
           . .venv/bin/activate
           maturin develop
-      - name: pytest
+      - name: stub accuracy
         run: |
           . .venv/bin/activate
-          # The published sidereon-core crate ships without its test fixtures, so
-          # tests that import _helpers.CORE_FIXTURES cannot resolve them in CI
-          # (there is no sibling core checkout and Cargo.lock pins the registry
-          # release, not a git rev). Run the binding's own tests and every
-          # fixture-independent test; the fixture-dependent files are exercised
-          # against a local core checkout during development. The ignore list is
-          # derived from the source so it never goes stale.
-          ignore=$(grep -rl CORE_FIXTURES tests/test_*.py | sed 's/^/--ignore=/')
-          pytest $ignore
+          pytest tests/test_stub_accuracy.py
+      - name: pytest
+        env:
+          SIDEREON_CORE_FIXTURES: ${{ github.workspace }}/.core-checkout/crates/sidereon-core/tests/fixtures
+        run: |
+          . .venv/bin/activate
+          # The published sidereon-core crate omits test fixtures, so CI checks
+          # out the matching release tag and points the test resolver at them.
+          pytest

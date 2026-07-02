@@ -26,7 +26,7 @@ Quick start::
     path = data.fetch_dted(36.5, -106.5, cache_dir=terrain_root)
     if path is not None:
         terrain = sidereon.DtedTerrain(terrain_root)
-        height_m = terrain.height_m(-106.5, 36.5)
+        height_m = terrain.height_m(36.5, -106.5)
 
 Bulk terrain workflow::
 
