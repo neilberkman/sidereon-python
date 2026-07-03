@@ -306,6 +306,10 @@ pub(crate) fn covariance6_from_array(
             Covariance6Error::NonFinite => "contains a non-finite entry",
             Covariance6Error::Asymmetric => "is not symmetric",
             Covariance6Error::NotPositiveSemidefinite => "is not positive semidefinite",
+            Covariance6Error::NotFactorizable => "is not factorable",
+            Covariance6Error::InvalidInterpolationParameter => {
+                "has an invalid interpolation parameter"
+            }
         };
         PyValueError::new_err(format!("{name} {reason}"))
     })

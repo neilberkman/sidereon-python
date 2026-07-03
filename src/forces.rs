@@ -12,15 +12,18 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
 use sidereon_core::astro::forces::{
-    DragForce, DragParameters, ForceModel, J2Gravity, SpaceWeather, TwoBodyGravity,
+    DragForce, DragParameters, ForceModel, J2Gravity, SourcedDragForce, SpaceWeather,
+    TwoBodyGravity,
 };
 use sidereon_core::astro::propagator::api::PropagationContext;
 use sidereon_core::astro::propagator::decay::{
-    estimate_decay as core_estimate_decay, DecayConfig, DecayEstimate,
+    estimate_decay as core_estimate_decay,
+    estimate_decay_with_source as core_estimate_decay_with_source, DecayConfig, DecayEstimate,
 };
 use sidereon_core::astro::state::CartesianState;
 
 use crate::np_array;
+use crate::space_weather::PySpaceWeatherTable;
 
 fn acceleration<'py>(
     py: Python<'py>,
@@ -277,6 +280,54 @@ impl PyDragForce {
     }
 }
 
+#[pyclass(module = "sidereon._sidereon", name = "SourcedDragForce")]
+pub struct PySourcedDragForce {
+    inner: SourcedDragForce,
+}
+
+#[pymethods]
+impl PySourcedDragForce {
+    #[new]
+    fn new(drag: &PyDragParameters, space_weather_table: &PySpaceWeatherTable) -> Self {
+        Self {
+            inner: SourcedDragForce::new(drag.inner(), space_weather_table.source()),
+        }
+    }
+
+    #[getter]
+    fn bc_factor_m2_kg(&self) -> f64 {
+        self.inner.bc_factor_m2_kg()
+    }
+
+    #[getter]
+    fn cutoff_altitude_km(&self) -> f64 {
+        self.inner.cutoff_altitude_km()
+    }
+
+    fn acceleration<'py>(
+        &self,
+        py: Python<'py>,
+        epoch_tdb_seconds: f64,
+        position_km: [f64; 3],
+        velocity_km_s: [f64; 3],
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let state = CartesianState::new(epoch_tdb_seconds, position_km, velocity_km_s);
+        let accel = self
+            .inner
+            .acceleration(&state, &PropagationContext::default())
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        Ok(np_array(py, &[accel.x, accel.y, accel.z]))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SourcedDragForce(bc_factor_m2_kg={}, cutoff_altitude_km={})",
+            self.inner.bc_factor_m2_kg(),
+            self.inner.cutoff_altitude_km()
+        )
+    }
+}
+
 #[pyclass(module = "sidereon._sidereon", name = "DecayEstimate")]
 pub struct PyDecayEstimate {
     inner: DecayEstimate,
@@ -373,6 +424,7 @@ fn force_drag_acceleration<'py>(
     crossing_tolerance_s=DecayConfig::DEFAULT_CROSSING_TOLERANCE_S,
     max_duration_s=DecayConfig::DEFAULT_MAX_DURATION_S,
     max_scan_samples=DecayConfig::DEFAULT_MAX_SCAN_SAMPLES,
+    space_weather_table=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn estimate_decay(
@@ -386,6 +438,7 @@ fn estimate_decay(
     crossing_tolerance_s: f64,
     max_duration_s: f64,
     max_scan_samples: u32,
+    space_weather_table: Option<&PySpaceWeatherTable>,
 ) -> PyResult<PyDecayEstimate> {
     let initial = CartesianState::new(epoch_tdb_seconds, position_km, velocity_km_s);
     let config = DecayConfig::new(drag.inner())
@@ -394,15 +447,23 @@ fn estimate_decay(
         .with_crossing_tolerance_s(crossing_tolerance_s)
         .with_max_duration_s(max_duration_s)
         .with_max_scan_samples(max_scan_samples);
-    py.allow_threads(move || core_estimate_decay(initial, &config))
-        .map(|inner| PyDecayEstimate { inner })
-        .map_err(|err| PyValueError::new_err(err.to_string()))
+    if let Some(table) = space_weather_table {
+        let source = table.source();
+        py.allow_threads(move || core_estimate_decay_with_source(initial, &config, &source))
+            .map(|inner| PyDecayEstimate { inner })
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    } else {
+        py.allow_threads(move || core_estimate_decay(initial, &config))
+            .map(|inner| PyDecayEstimate { inner })
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySpaceWeather>()?;
     m.add_class::<PyDragParameters>()?;
     m.add_class::<PyDragForce>()?;
+    m.add_class::<PySourcedDragForce>()?;
     m.add_class::<PyDecayEstimate>()?;
     m.add_function(wrap_pyfunction!(force_twobody_acceleration, m)?)?;
     m.add_function(wrap_pyfunction!(force_j2_acceleration, m)?)?;

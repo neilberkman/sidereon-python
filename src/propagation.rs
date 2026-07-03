@@ -25,7 +25,11 @@ use sidereon::propagator::api::IntegratorOptions;
 use sidereon::propagator::{
     propagate_states, IntegratorKind, PropagationConfig, PropagationForceModel,
 };
-use sidereon::sgp4::{parse_tle_file_with_opsmode, OpsMode as CoreOpsMode, Satellite};
+use sidereon::sgp4::{
+    fit_tle as core_fit_tle, parse_tle_file_with_opsmode, ElementSet, FitConfig, FitEpoch,
+    FitSample, FitStatistics, JulianDate as Sgp4JulianDate, Loss as CoreLoss,
+    OpsMode as CoreOpsMode, Satellite, TleFit, TleMetadata, XScale,
+};
 use sidereon::tle::{
     encode as encode_tle_lines, parse as parse_tle_lines, ChecksumWarning, TleElements,
 };
@@ -36,6 +40,8 @@ use crate::marshal::{
     fixed_array, instants_from_unix_micros, rows3_to_array, rows6_to_array, scalar_rows_to_array2,
     vec3_rows_to_array3, EmptyPolicy, FinitePolicy,
 };
+use crate::omm::PyOmm;
+use crate::space_weather::PySpaceWeatherTable;
 use crate::{to_solve_err, to_tle_err, SolveError, TleParseError};
 
 /// SGP4 operation mode for TLE initialization.
@@ -118,7 +124,7 @@ impl PyForceModel {
         }
     }
 
-    fn to_core(self) -> PropagationForceModel {
+    pub(crate) fn to_core(self) -> PropagationForceModel {
         match self {
             PyForceModel::TWO_BODY => PropagationForceModel::TwoBody,
             PyForceModel::TWO_BODY_J2 => PropagationForceModel::TwoBodyJ2,
@@ -145,7 +151,7 @@ impl PyForceModel {
     }
 }
 
-fn extract_force_model(obj: &Bound<'_, PyAny>) -> PyResult<PyForceModel> {
+pub(crate) fn extract_force_model(obj: &Bound<'_, PyAny>) -> PyResult<PyForceModel> {
     if let Ok(model) = obj.extract::<PyForceModel>() {
         return Ok(model);
     }
@@ -203,7 +209,7 @@ impl PyIntegrator {
     }
 }
 
-fn extract_integrator(obj: &Bound<'_, PyAny>) -> PyResult<PyIntegrator> {
+pub(crate) fn extract_integrator(obj: &Bound<'_, PyAny>) -> PyResult<PyIntegrator> {
     if let Ok(integrator) = obj.extract::<PyIntegrator>() {
         return Ok(integrator);
     }
@@ -608,6 +614,638 @@ impl From<&ChecksumWarning> for PyChecksumWarning {
             computed: w.computed,
         }
     }
+}
+
+fn vec3_from_vec(name: &str, values: Vec<f64>) -> PyResult<[f64; 3]> {
+    let array: [f64; 3] = values
+        .try_into()
+        .map_err(|_| PyValueError::new_err(format!("{name} must have length 3")))?;
+    if !array.iter().all(|value| value.is_finite()) {
+        return Err(PyValueError::new_err(format!(
+            "{name} must contain only finite values"
+        )));
+    }
+    Ok(array)
+}
+
+fn extract_loss(obj: &Bound<'_, PyAny>) -> PyResult<PyLoss> {
+    if let Ok(loss) = obj.extract::<PyLoss>() {
+        return Ok(loss);
+    }
+    PyLoss::from_label(&obj.extract::<String>()?)
+}
+
+/// Robust loss selector for TLE fitting.
+#[pyclass(module = "sidereon._sidereon", name = "Loss", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyLoss {
+    LINEAR,
+    SOFT_L1,
+    HUBER,
+    CAUCHY,
+    ARCTAN,
+}
+
+impl PyLoss {
+    fn from_label(value: &str) -> PyResult<Self> {
+        match value {
+            "linear" => Ok(Self::LINEAR),
+            "soft_l1" => Ok(Self::SOFT_L1),
+            "huber" => Ok(Self::HUBER),
+            "cauchy" => Ok(Self::CAUCHY),
+            "arctan" => Ok(Self::ARCTAN),
+            other => Err(PyValueError::new_err(format!(
+                "unknown loss {other:?}; expected linear, soft_l1, huber, cauchy, or arctan"
+            ))),
+        }
+    }
+}
+
+impl From<PyLoss> for CoreLoss {
+    fn from(loss: PyLoss) -> Self {
+        match loss {
+            PyLoss::LINEAR => CoreLoss::Linear,
+            PyLoss::SOFT_L1 => CoreLoss::SoftL1,
+            PyLoss::HUBER => CoreLoss::Huber,
+            PyLoss::CAUCHY => CoreLoss::Cauchy,
+            PyLoss::ARCTAN => CoreLoss::Arctan,
+        }
+    }
+}
+
+#[pymethods]
+impl PyLoss {
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::LINEAR => "linear",
+            Self::SOFT_L1 => "soft_l1",
+            Self::HUBER => "huber",
+            Self::CAUCHY => "cauchy",
+            Self::ARCTAN => "arctan",
+        }
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::LINEAR => "Loss.LINEAR",
+            Self::SOFT_L1 => "Loss.SOFT_L1",
+            Self::HUBER => "Loss.HUBER",
+            Self::CAUCHY => "Loss.CAUCHY",
+            Self::ARCTAN => "Loss.ARCTAN",
+        }
+    }
+}
+
+/// TLE fit parameter scaling selector.
+#[pyclass(module = "sidereon._sidereon", name = "XScale")]
+#[derive(Clone)]
+pub struct PyXScale {
+    inner: XScale,
+}
+
+impl PyXScale {
+    fn inner(&self) -> XScale {
+        self.inner.clone()
+    }
+}
+
+#[pymethods]
+impl PyXScale {
+    #[staticmethod]
+    fn unit() -> Self {
+        Self {
+            inner: XScale::Unit,
+        }
+    }
+
+    #[staticmethod]
+    fn jac() -> Self {
+        Self { inner: XScale::Jac }
+    }
+
+    #[staticmethod]
+    fn values(values: Vec<f64>) -> PyResult<Self> {
+        if values.is_empty()
+            || values
+                .iter()
+                .any(|value| !value.is_finite() || *value <= 0.0)
+        {
+            return Err(PyValueError::new_err(
+                "x_scale values must be finite positive numbers",
+            ));
+        }
+        Ok(Self {
+            inner: XScale::Values(values),
+        })
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match self.inner {
+            XScale::Unit => "unit",
+            XScale::Values(_) => "values",
+            XScale::Jac => "jac",
+        }
+    }
+
+    #[getter]
+    fn scale_values(&self) -> Option<Vec<f64>> {
+        match &self.inner {
+            XScale::Values(values) => Some(values.clone()),
+            XScale::Unit | XScale::Jac => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("XScale(kind={:?})", self.kind())
+    }
+}
+
+/// One target TEME sample for inverse SGP4 fitting.
+#[pyclass(module = "sidereon._sidereon", name = "FitSample")]
+#[derive(Clone, Copy)]
+pub struct PyFitSample {
+    inner: FitSample,
+}
+
+#[pymethods]
+impl PyFitSample {
+    #[new]
+    #[pyo3(signature = (
+        jd_whole,
+        jd_fraction,
+        position_teme_km,
+        velocity_teme_km_s=None,
+    ))]
+    fn new(
+        jd_whole: f64,
+        jd_fraction: f64,
+        position_teme_km: Vec<f64>,
+        velocity_teme_km_s: Option<Vec<f64>>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: FitSample {
+                epoch: Sgp4JulianDate(jd_whole, jd_fraction),
+                position_teme_km: vec3_from_vec("position_teme_km", position_teme_km)?,
+                velocity_teme_km_s: velocity_teme_km_s
+                    .map(|value| vec3_from_vec("velocity_teme_km_s", value))
+                    .transpose()?,
+            },
+        })
+    }
+
+    #[getter]
+    fn jd_whole(&self) -> f64 {
+        self.inner.epoch.0
+    }
+
+    #[getter]
+    fn jd_fraction(&self) -> f64 {
+        self.inner.epoch.1
+    }
+
+    #[getter]
+    fn position_teme_km<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.inner.position_teme_km)
+    }
+
+    #[getter]
+    fn velocity_teme_km_s<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray1<f64>>> {
+        self.inner
+            .velocity_teme_km_s
+            .map(|velocity| PyArray1::from_slice(py, &velocity))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "FitSample(jd_whole={}, jd_fraction={})",
+            self.inner.epoch.0, self.inner.epoch.1
+        )
+    }
+}
+
+/// Selector for the fitted TLE epoch.
+#[pyclass(module = "sidereon._sidereon", name = "FitEpoch")]
+#[derive(Clone, Copy)]
+pub struct PyFitEpoch {
+    inner: FitEpoch,
+}
+
+impl PyFitEpoch {
+    fn inner(&self) -> FitEpoch {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyFitEpoch {
+    #[staticmethod]
+    fn midpoint() -> Self {
+        Self {
+            inner: FitEpoch::Midpoint,
+        }
+    }
+
+    #[staticmethod]
+    fn first() -> Self {
+        Self {
+            inner: FitEpoch::First,
+        }
+    }
+
+    #[staticmethod]
+    fn last() -> Self {
+        Self {
+            inner: FitEpoch::Last,
+        }
+    }
+
+    #[staticmethod]
+    fn sample(index: usize) -> Self {
+        Self {
+            inner: FitEpoch::Sample(index),
+        }
+    }
+
+    #[staticmethod]
+    fn jd(jd_whole: f64, jd_fraction: f64) -> Self {
+        Self {
+            inner: FitEpoch::Jd(Sgp4JulianDate(jd_whole, jd_fraction)),
+        }
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match self.inner {
+            FitEpoch::Midpoint => "midpoint",
+            FitEpoch::First => "first",
+            FitEpoch::Last => "last",
+            FitEpoch::Sample(_) => "sample",
+            FitEpoch::Jd(_) => "jd",
+        }
+    }
+
+    #[getter]
+    fn sample_index(&self) -> Option<usize> {
+        match self.inner {
+            FitEpoch::Sample(index) => Some(index),
+            _ => None,
+        }
+    }
+
+    #[getter]
+    fn jd_pair(&self) -> Option<(f64, f64)> {
+        match self.inner {
+            FitEpoch::Jd(epoch) => Some((epoch.0, epoch.1)),
+            _ => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("FitEpoch(kind={:?})", self.kind())
+    }
+}
+
+/// Metadata carried into fitted TLE and OMM encodings.
+#[pyclass(module = "sidereon._sidereon", name = "TleFitMetadata")]
+#[derive(Clone)]
+pub struct PyTleFitMetadata {
+    inner: TleMetadata,
+}
+
+impl PyTleFitMetadata {
+    fn inner(&self) -> TleMetadata {
+        self.inner.clone()
+    }
+}
+
+#[pymethods]
+impl PyTleFitMetadata {
+    #[new]
+    #[pyo3(signature = (
+        catalog_number=0,
+        classification="U".to_string(),
+        international_designator="".to_string(),
+        element_set_number=999,
+        rev_at_epoch=0,
+        object_name="".to_string(),
+    ))]
+    fn new(
+        catalog_number: u32,
+        classification: String,
+        international_designator: String,
+        element_set_number: i32,
+        rev_at_epoch: i64,
+        object_name: String,
+    ) -> Self {
+        Self {
+            inner: TleMetadata {
+                catalog_number,
+                classification,
+                international_designator,
+                element_set_number,
+                rev_at_epoch,
+                object_name,
+            },
+        }
+    }
+
+    #[getter]
+    fn catalog_number(&self) -> u32 {
+        self.inner.catalog_number
+    }
+
+    #[getter]
+    fn classification(&self) -> &str {
+        &self.inner.classification
+    }
+
+    #[getter]
+    fn international_designator(&self) -> &str {
+        &self.inner.international_designator
+    }
+
+    #[getter]
+    fn element_set_number(&self) -> i32 {
+        self.inner.element_set_number
+    }
+
+    #[getter]
+    fn rev_at_epoch(&self) -> i64 {
+        self.inner.rev_at_epoch
+    }
+
+    #[getter]
+    fn object_name(&self) -> &str {
+        &self.inner.object_name
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TleFitMetadata(catalog_number={}, object_name={:?})",
+            self.inner.catalog_number, self.inner.object_name
+        )
+    }
+}
+
+/// Diagnostics from inverse SGP4 fitting.
+#[pyclass(module = "sidereon._sidereon", name = "FitStatistics")]
+#[derive(Clone)]
+pub struct PyFitStatistics {
+    inner: FitStatistics,
+}
+
+#[pymethods]
+impl PyFitStatistics {
+    #[getter]
+    fn rms_position_km(&self) -> f64 {
+        self.inner.rms_position_km
+    }
+
+    #[getter]
+    fn max_position_km(&self) -> f64 {
+        self.inner.max_position_km
+    }
+
+    #[getter]
+    fn rms_position_axes_km<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_slice(py, &self.inner.rms_position_axes_km)
+    }
+
+    #[getter]
+    fn rms_velocity_km_s(&self) -> Option<f64> {
+        self.inner.rms_velocity_km_s
+    }
+
+    #[getter]
+    fn tle_rms_position_km(&self) -> f64 {
+        self.inner.tle_rms_position_km
+    }
+
+    #[getter]
+    fn status(&self) -> i32 {
+        self.inner.status
+    }
+
+    #[getter]
+    fn nfev(&self) -> usize {
+        self.inner.nfev
+    }
+
+    #[getter]
+    fn njev(&self) -> usize {
+        self.inner.njev
+    }
+
+    #[getter]
+    fn cost(&self) -> f64 {
+        self.inner.cost
+    }
+
+    #[getter]
+    fn optimality(&self) -> f64 {
+        self.inner.optimality
+    }
+
+    #[getter]
+    fn bstar_observable(&self) -> bool {
+        self.inner.bstar_observable
+    }
+
+    #[getter]
+    fn seed_refine_passes(&self) -> usize {
+        self.inner.seed_refine_passes
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "FitStatistics(rms_position_km={}, bstar_observable={})",
+            self.inner.rms_position_km, self.inner.bstar_observable
+        )
+    }
+}
+
+/// Fitted SGP4 element set plus TLE and OMM encodings.
+#[pyclass(module = "sidereon._sidereon", name = "TleFit")]
+#[derive(Clone)]
+pub struct PyTleFit {
+    inner: TleFit,
+}
+
+impl PyTleFit {
+    fn elements(&self) -> &ElementSet {
+        &self.inner.elements
+    }
+}
+
+#[pymethods]
+impl PyTleFit {
+    #[getter]
+    fn line1(&self) -> &str {
+        &self.inner.line1
+    }
+
+    #[getter]
+    fn line2(&self) -> &str {
+        &self.inner.line2
+    }
+
+    #[getter]
+    fn omm(&self) -> PyOmm {
+        PyOmm::from_inner(self.inner.omm.clone())
+    }
+
+    #[getter]
+    fn stats(&self) -> PyFitStatistics {
+        PyFitStatistics {
+            inner: self.inner.stats.clone(),
+        }
+    }
+
+    #[getter]
+    fn jd_whole(&self) -> f64 {
+        self.elements().epoch.0
+    }
+
+    #[getter]
+    fn jd_fraction(&self) -> f64 {
+        self.elements().epoch.1
+    }
+
+    #[getter]
+    fn bstar(&self) -> f64 {
+        self.elements().bstar
+    }
+
+    #[getter]
+    fn mean_motion_dot(&self) -> f64 {
+        self.elements().mean_motion_dot
+    }
+
+    #[getter]
+    fn mean_motion_double_dot(&self) -> f64 {
+        self.elements().mean_motion_double_dot
+    }
+
+    #[getter]
+    fn eccentricity(&self) -> f64 {
+        self.elements().eccentricity
+    }
+
+    #[getter]
+    fn argument_of_perigee_deg(&self) -> f64 {
+        self.elements().argument_of_perigee_deg
+    }
+
+    #[getter]
+    fn inclination_deg(&self) -> f64 {
+        self.elements().inclination_deg
+    }
+
+    #[getter]
+    fn mean_anomaly_deg(&self) -> f64 {
+        self.elements().mean_anomaly_deg
+    }
+
+    #[getter]
+    fn mean_motion_rev_per_day(&self) -> f64 {
+        self.elements().mean_motion_rev_per_day
+    }
+
+    #[getter]
+    fn right_ascension_deg(&self) -> f64 {
+        self.elements().right_ascension_deg
+    }
+
+    #[getter]
+    fn catalog_number(&self) -> u32 {
+        self.elements().catalog_number
+    }
+
+    fn to_lines(&self) -> (String, String) {
+        (self.inner.line1.clone(), self.inner.line2.clone())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TleFit(catalog_number={}, rms_position_km={})",
+            self.elements().catalog_number,
+            self.inner.stats.rms_position_km
+        )
+    }
+}
+
+/// Fit a TLE to a TEME state arc.
+#[pyfunction]
+#[pyo3(signature = (
+    samples,
+    *,
+    epoch = None,
+    fit_bstar = true,
+    bstar_seed = 0.0,
+    use_velocity = true,
+    velocity_weight_s = None,
+    weights = None,
+    opsmode = PyOpsMode::IMPROVED,
+    ftol = None,
+    xtol = None,
+    gtol = None,
+    max_nfev = None,
+    x_scale = None,
+    loss = PyLoss::LINEAR,
+    f_scale = 1.0,
+    metadata = None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn fit_tle(
+    py: Python<'_>,
+    samples: Vec<Py<PyFitSample>>,
+    epoch: Option<Py<PyFitEpoch>>,
+    fit_bstar: bool,
+    bstar_seed: f64,
+    use_velocity: bool,
+    velocity_weight_s: Option<f64>,
+    weights: Option<Vec<f64>>,
+    #[pyo3(from_py_with = extract_opsmode)] opsmode: PyOpsMode,
+    ftol: Option<f64>,
+    xtol: Option<f64>,
+    gtol: Option<f64>,
+    max_nfev: Option<usize>,
+    x_scale: Option<Py<PyXScale>>,
+    #[pyo3(from_py_with = extract_loss)] loss: PyLoss,
+    f_scale: f64,
+    metadata: Option<Py<PyTleFitMetadata>>,
+) -> PyResult<PyTleFit> {
+    let samples: Vec<FitSample> = samples.iter().map(|s| s.borrow(py).inner).collect();
+    let config = FitConfig {
+        epoch: epoch
+            .as_ref()
+            .map(|value| value.borrow(py).inner())
+            .unwrap_or_default(),
+        fit_bstar,
+        bstar_seed,
+        use_velocity,
+        velocity_weight_s,
+        weights,
+        opsmode: opsmode.into(),
+        ftol,
+        xtol,
+        gtol,
+        max_nfev,
+        x_scale: x_scale.as_ref().map(|value| value.borrow(py).inner()),
+        loss: loss.into(),
+        f_scale,
+        metadata: metadata
+            .as_ref()
+            .map(|value| value.borrow(py).inner())
+            .unwrap_or_default(),
+    };
+    let inner = py
+        .allow_threads(move || core_fit_tle(&samples, &config))
+        .map_err(|err| SolveError::new_err(err.to_string()))?;
+    Ok(PyTleFit { inner })
 }
 
 /// A parsed two-line element set, ready to propagate.
@@ -1150,6 +1788,7 @@ impl PyEphemeris {
     max_steps = 1_000_000,
     mu_km3_s2 = None,
     drag = None,
+    space_weather_table = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn propagate_state(
@@ -1168,6 +1807,7 @@ fn propagate_state(
     max_steps: u32,
     mu_km3_s2: Option<f64>,
     drag: Option<Py<PyDragParameters>>,
+    space_weather_table: Option<Py<PySpaceWeatherTable>>,
 ) -> PyResult<PyEphemeris> {
     let position = fixed_array::<3>("position_km", &position_km, FinitePolicy::AllowNonFinite)?;
     let velocity = fixed_array::<3>(
@@ -1202,9 +1842,15 @@ fn propagate_state(
     };
 
     let output_times = times_vec.clone();
-    let states = py
-        .allow_threads(move || propagate_states(&config, &times_vec))
-        .map_err(to_solve_err)?;
+    let states = if let Some(table) = space_weather_table {
+        let source = table.borrow(py).source();
+        let propagator = config.to_propagator().with_space_weather(source);
+        py.allow_threads(move || propagator.ephemeris(&times_vec))
+            .map_err(to_solve_err)?
+    } else {
+        py.allow_threads(move || propagate_states(&config, &times_vec))
+            .map_err(to_solve_err)?
+    };
     Ok(PyEphemeris {
         times_s: output_times,
         positions_km: states.iter().map(|s| s.position_array()).collect(),
@@ -1844,6 +2490,13 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyIntegrator>()?;
     m.add_class::<PyGroundStation>()?;
     m.add_class::<PyChecksumWarning>()?;
+    m.add_class::<PyLoss>()?;
+    m.add_class::<PyXScale>()?;
+    m.add_class::<PyFitSample>()?;
+    m.add_class::<PyFitEpoch>()?;
+    m.add_class::<PyTleFitMetadata>()?;
+    m.add_class::<PyFitStatistics>()?;
+    m.add_class::<PyTleFit>()?;
     m.add_class::<PyTle>()?;
     m.add_class::<PyNamedTle>()?;
     m.add_class::<PyTleFile>()?;
@@ -1859,6 +2512,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFleetPass>()?;
     m.add_class::<PyConstellation>()?;
     m.add_function(wrap_pyfunction!(parse_tle_file, m)?)?;
+    m.add_function(wrap_pyfunction!(fit_tle, m)?)?;
     m.add_function(wrap_pyfunction!(propagate_state, m)?)?;
     m.add_function(wrap_pyfunction!(propagate_batch, m)?)?;
     m.add_function(wrap_pyfunction!(look_angles_batch, m)?)?;

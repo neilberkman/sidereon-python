@@ -6,7 +6,8 @@ use pyo3::types::{PyBytes, PyModule};
 
 use sidereon_core::data as core;
 use sidereon_core::data::{
-    AnalysisCenter, ArchiveCompression, ProductDate, ProductDateTime, ProductType, UltraIssue,
+    AnalysisCenter, ArchiveCompression, ProductDate, ProductDateTime, ProductType,
+    SpaceWeatherProduct, UltraIssue,
 };
 
 fn to_data_err<E: std::fmt::Display>(err: E) -> PyErr {
@@ -18,6 +19,10 @@ fn center(code: &str) -> PyResult<AnalysisCenter> {
 }
 
 fn product_type(code: &str) -> PyResult<ProductType> {
+    code.parse().map_err(to_data_err)
+}
+
+fn space_weather_product(code: &str) -> PyResult<SpaceWeatherProduct> {
     code.parse().map_err(to_data_err)
 }
 
@@ -150,6 +155,36 @@ fn data_skadi_source_entry() -> (String, String, String, String) {
         entry.compression.as_str().to_string(),
         entry.root_url.to_string(),
     )
+}
+
+#[pyfunction]
+fn data_space_weather_source_entry() -> (String, String, String, String) {
+    let entry = core::space_weather_source_entry();
+    (
+        entry.protocol.as_str().to_string(),
+        entry.host.to_string(),
+        entry.compression.as_str().to_string(),
+        entry.root_url.to_string(),
+    )
+}
+
+#[pyfunction]
+fn data_space_weather_filename(product_code: &str) -> PyResult<String> {
+    Ok(core::space_weather_filename(space_weather_product(product_code)?).to_string())
+}
+
+#[pyfunction]
+fn data_space_weather_archive_url(product_code: &str) -> PyResult<String> {
+    Ok(core::space_weather_archive_url(space_weather_product(
+        product_code,
+    )?))
+}
+
+#[pyfunction]
+fn data_space_weather_cache_relpath(product_code: &str) -> PyResult<String> {
+    Ok(core::space_weather_cache_relpath(space_weather_product(
+        product_code,
+    )?))
 }
 
 #[pyfunction]
@@ -301,6 +336,10 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(data_archive_url, m)?)?;
     m.add_function(wrap_pyfunction!(data_archive_compression, m)?)?;
     m.add_function(wrap_pyfunction!(data_skadi_source_entry, m)?)?;
+    m.add_function(wrap_pyfunction!(data_space_weather_source_entry, m)?)?;
+    m.add_function(wrap_pyfunction!(data_space_weather_filename, m)?)?;
+    m.add_function(wrap_pyfunction!(data_space_weather_archive_url, m)?)?;
+    m.add_function(wrap_pyfunction!(data_space_weather_cache_relpath, m)?)?;
     m.add_function(wrap_pyfunction!(data_skadi_tile_id, m)?)?;
     m.add_function(wrap_pyfunction!(data_skadi_band, m)?)?;
     m.add_function(wrap_pyfunction!(data_skadi_archive_url, m)?)?;

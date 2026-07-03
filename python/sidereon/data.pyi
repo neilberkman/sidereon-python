@@ -95,6 +95,13 @@ class TerrainSourceEntry:
     root_url: str
 
 @dataclass(frozen=True)
+class SpaceWeatherSourceEntry:
+    protocol: str
+    host: str
+    compression: str
+    root_url: str
+
+@dataclass(frozen=True)
 class TerrainFetchReport:
     fetched: list[str]
     cached: list[str]
@@ -109,6 +116,10 @@ def gps_week(date: _dt.date) -> int: ...
 def day_of_year(date: _dt.date) -> int: ...
 def predicted_day_offset(center: str) -> int: ...
 def skadi_source_entry() -> TerrainSourceEntry: ...
+def space_weather_source_entry() -> SpaceWeatherSourceEntry: ...
+def space_weather_filename(product: str = ...) -> str: ...
+def space_weather_archive_url(product: str = ...) -> str: ...
+def space_weather_cache_relpath(product: str = ...) -> str: ...
 def skadi_tile_id(lat_index: int, lon_index: int) -> str: ...
 def skadi_band(lat_index: int) -> str: ...
 def skadi_archive_url(lat_index: int, lon_index: int) -> str: ...
@@ -186,6 +197,18 @@ def fetch_dted(
     max_compressed_bytes: int = ...,
     max_decompressed_bytes: int = ...,
 ) -> Optional[str]: ...
+def fetch_space_weather(
+    product: str = ...,
+    *,
+    cache_dir: Optional[str] = ...,
+    offline: bool = ...,
+    sha256: Optional[str] = ...,
+    max_age_s: float = ...,
+    timeout_s: float = ...,
+    retries: int = ...,
+    backoff_s: float = ...,
+    max_compressed_bytes: int = ...,
+) -> sidereon.SpaceWeatherTable: ...
 def prefetch_dted_bbox(
     min_lat: float,
     min_lon: float,

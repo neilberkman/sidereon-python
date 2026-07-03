@@ -50,6 +50,7 @@ import datetime as _dt
 import gzip as _gzip
 import hashlib as _hashlib
 import json as _json
+import math as _math
 import os as _os
 import zlib as _zlib
 from dataclasses import dataclass, field
@@ -124,6 +125,18 @@ from sidereon._sidereon import (
     data_skadi_tile_id as _core_data_skadi_tile_id,
 )
 from sidereon._sidereon import (
+    data_space_weather_archive_url as _core_data_space_weather_archive_url,
+)
+from sidereon._sidereon import (
+    data_space_weather_cache_relpath as _core_data_space_weather_cache_relpath,
+)
+from sidereon._sidereon import (
+    data_space_weather_filename as _core_data_space_weather_filename,
+)
+from sidereon._sidereon import (
+    data_space_weather_source_entry as _core_data_space_weather_source_entry,
+)
+from sidereon._sidereon import (
     data_terrain_tile_index as _core_data_terrain_tile_index,
 )
 from sidereon._sidereon import (
@@ -152,6 +165,7 @@ __all__ = [
     "Product",
     "MergeReport",
     "TerrainSourceEntry",
+    "SpaceWeatherSourceEntry",
     "TerrainFetchReport",
     "default_cache_dir",
     "default_terrain_cache_dir",
@@ -171,6 +185,10 @@ __all__ = [
     "skadi_tile_id",
     "skadi_band",
     "skadi_archive_url",
+    "space_weather_source_entry",
+    "space_weather_filename",
+    "space_weather_archive_url",
+    "space_weather_cache_relpath",
     "terrain_tile_index",
     "dted_tile_filename",
     "dted_block_dir",
@@ -179,6 +197,7 @@ __all__ = [
     "hgt_to_dted",
     "fetch",
     "fetch_dted",
+    "fetch_space_weather",
     "prefetch_dted_bbox",
     "prefetch_dted_tiles",
     "populate_terrain_cache",
@@ -315,6 +334,16 @@ class TerrainSourceEntry:
 
 
 @dataclass(frozen=True)
+class SpaceWeatherSourceEntry:
+    """Catalog facts for the CelesTrak space-weather source."""
+
+    protocol: str
+    host: str
+    compression: str
+    root_url: str
+
+
+@dataclass(frozen=True)
 class TerrainFetchReport:
     """Partitioned result from a terrain region or bulk cache population."""
 
@@ -394,6 +423,40 @@ def skadi_source_entry() -> TerrainSourceEntry:
     """Catalog facts for the Skadi SRTM source."""
     protocol, host, compression, root_url = _core_data_skadi_source_entry()
     return TerrainSourceEntry(protocol, host, compression, root_url)
+
+
+def _space_weather_catalog_error(exc: ValueError) -> DataError:
+    return UnsupportedProduct(str(exc))
+
+
+def space_weather_source_entry() -> SpaceWeatherSourceEntry:
+    """Catalog facts for the CelesTrak space-weather source."""
+    protocol, host, compression, root_url = _core_data_space_weather_source_entry()
+    return SpaceWeatherSourceEntry(protocol, host, compression, root_url)
+
+
+def space_weather_filename(product: str = "sw_all") -> str:
+    """Core-derived CelesTrak space-weather filename for ``product``."""
+    try:
+        return _core_data_space_weather_filename(product)
+    except ValueError as exc:
+        raise _space_weather_catalog_error(exc) from None
+
+
+def space_weather_archive_url(product: str = "sw_all") -> str:
+    """Core-derived CelesTrak space-weather source URL for ``product``."""
+    try:
+        return _core_data_space_weather_archive_url(product)
+    except ValueError as exc:
+        raise _space_weather_catalog_error(exc) from None
+
+
+def space_weather_cache_relpath(product: str = "sw_all") -> str:
+    """Core-derived cache path below the GNSS cache root."""
+    try:
+        return _core_data_space_weather_cache_relpath(product)
+    except ValueError as exc:
+        raise _space_weather_catalog_error(exc) from None
 
 
 def skadi_tile_id(lat_index: int, lon_index: int) -> str:
@@ -829,6 +892,15 @@ def _terrain_cache_path(cache_dir: str, relpath: str) -> str:
     return _os.path.join(cache_dir, parts[0], parts[1])
 
 
+def _catalog_rel_cache_path(cache_dir: str, relpath: str) -> str:
+    parts = relpath.split("/")
+    if len(parts) != 2:
+        raise CacheNotWritable(f"unsafe cache path: {relpath!r}")
+    for part in parts:
+        _validate_cache_component(part)
+    return _os.path.join(cache_dir, parts[0], parts[1])
+
+
 def _provenance_path(path: str) -> str:
     return path + ".provenance.json"
 
@@ -845,6 +917,29 @@ def _read_provenance(path: str) -> Optional[dict]:
         return None
     except (ValueError, OSError):
         return None
+
+
+def _fetched_at(provenance: Optional[dict]) -> Optional[_dt.datetime]:
+    if not provenance:
+        return None
+    value = provenance.get("fetched_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = _dt.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+    return parsed.astimezone(_dt.timezone.utc)
+
+
+def _fresh_enough(path: str, max_age_s: float) -> bool:
+    fetched_at = _fetched_at(_read_provenance(path))
+    if fetched_at is None:
+        return False
+    age_s = (_dt.datetime.now(_dt.timezone.utc) - fetched_at).total_seconds()
+    return age_s <= max_age_s
 
 
 def _classify(path: str, expected_sha256: Optional[str]) -> tuple[str, object]:
@@ -1207,6 +1302,89 @@ def _download_and_cache(
             raise ChecksumMismatch(sha256.lower(), got)
     provenance = _provenance(url, protocol, compression, downloaded, decompressed)
     return _commit(path, decompressed, provenance)
+
+
+# --- space weather -------------------------------------------------------
+
+
+def fetch_space_weather(
+    product: str = "sw_all",
+    *,
+    cache_dir: Optional[str] = None,
+    offline: bool = False,
+    sha256: Optional[str] = None,
+    max_age_s: float = 86_400.0,
+    timeout_s: float = _DEFAULT_TIMEOUT_S,
+    retries: int = _DEFAULT_RETRIES,
+    backoff_s: float = _DEFAULT_BACKOFF_S,
+    max_compressed_bytes: int = _DEFAULT_MAX_COMPRESSED_BYTES,
+) -> "sidereon.SpaceWeatherTable":
+    """Fetch and load a CelesTrak space-weather table.
+
+    The product is mutable, so a verified cache hit is reused only while its
+    provenance ``fetched_at`` is no older than ``max_age_s``. ``offline=True``
+    returns a verified cached file at any age. A caller-supplied ``sha256`` pins
+    an exact snapshot and is verified on every cache read and fetch.
+    """
+    if not _math.isfinite(max_age_s) or max_age_s < 0.0:
+        raise UnsupportedProduct("max_age_s must be finite and non-negative")
+
+    resolved = _resolve_cache_dir(cache_dir)
+    relpath = space_weather_cache_relpath(product)
+    path = _catalog_rel_cache_path(resolved, relpath)
+    filename = space_weather_filename(product)
+
+    state, detail = _classify(path, sha256)
+    if state == "hit":
+        if offline or sha256 is not None or _fresh_enough(path, max_age_s):
+            return sidereon.load_space_weather(path)
+    elif state == "absent":
+        if offline:
+            raise OfflineCacheMiss(f"not cached: {filename}")
+    elif state == "unverified":
+        if offline:
+            raise OfflineCacheMiss(
+                f"cached but unverifiable (no provenance sidecar): {filename}"
+            )
+    else:
+        if sha256 is not None or offline:
+            raise detail
+
+    path = _download_space_weather_and_cache(
+        product,
+        path,
+        sha256,
+        dict(
+            timeout_s=timeout_s,
+            retries=retries,
+            backoff_s=backoff_s,
+            max_compressed_bytes=max_compressed_bytes,
+        ),
+    )
+    return sidereon.load_space_weather(path)
+
+
+def _download_space_weather_and_cache(
+    product: str,
+    path: str,
+    sha256: Optional[str],
+    opts: dict,
+) -> str:
+    source = space_weather_source_entry()
+    url = space_weather_archive_url(product)
+    downloaded = _download(url, source.protocol, opts)
+    if source.compression != "none":
+        raise UnsupportedProduct(
+            f"unsupported space-weather compression: {source.compression}"
+        )
+    if sha256 is not None:
+        got = _sha256(downloaded)
+        if got != sha256.lower():
+            raise ChecksumMismatch(sha256.lower(), got)
+    provenance = _provenance(
+        url, source.protocol, source.compression, downloaded, downloaded
+    )
+    return _commit(path, downloaded, provenance)
 
 
 # --- terrain -------------------------------------------------------------

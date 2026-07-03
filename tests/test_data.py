@@ -143,6 +143,20 @@ SYNTHETIC_DTED_SHA256 = (
     "708c193f768f3d859b71da20a81059db4e6077494481c4484d0bc238af096d77"
 )
 
+SPACE_WEATHER_CSV = (
+    "DATE,BSRN,ND,KP1,KP2,KP3,KP4,KP5,KP6,KP7,KP8,KP_SUM,AP1,AP2,AP3,AP4,"
+    "AP5,AP6,AP7,AP8,AP_AVG,CP,C9,ISN,F10.7_OBS,F10.7_ADJ,F10.7_DATA_TYPE,"
+    "F10.7_OBS_CENTER81,F10.7_OBS_LAST81,F10.7_ADJ_CENTER81,F10.7_ADJ_LAST81\n"
+    "2024-05-09,2556,1,23,27,30,33,40,50,47,37,287,9,12,15,18,27,48,39,22,"
+    "24,1.2,5,120,165.1,162.0,OBS,150.1,149.8,147.0,146.6\n"
+    "2024-05-10,2556,2,40,50,60,70,67,57,47,37,428,27,48,80,132,111,67,39,"
+    "22,66,1.8,7,121,190.2,187.1,OBS,151.2,150.9,148.0,147.6\n"
+    "2024-05-11,2556,3,33,30,27,23,20,17,13,10,173,18,15,12,9,7,6,5,4,10,"
+    "0.8,3,119,176.3,173.0,OBS,152.3,151.1,149.0,148.2\n"
+    "2024-06-01,2557,24,,,,,,,,,,,,,,,,,,,,,118,171.0,168.0,PRM,153.0,152.0,"
+    "150.0,149.0\n"
+).encode()
+
 
 def _synthetic_hgt_sample(row, col):
     if (row, col) == (2366, 2345):
@@ -178,6 +192,29 @@ def _synthetic_hgt():
 @functools.lru_cache(maxsize=1)
 def _synthetic_hgt_gz():
     return gzip.compress(_synthetic_hgt(), mtime=0)
+
+
+def _seed_space_weather(cache_dir, product="sw_all", fetched_at=None, payload=None):
+    relpath = data.space_weather_cache_relpath(product)
+    dest = os.path.join(cache_dir, relpath)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    body = payload or SPACE_WEATHER_CSV
+    with open(dest, "wb") as handle:
+        handle.write(body)
+    digest = hashlib.sha256(body).hexdigest()
+    with open(dest + ".provenance.json", "w") as handle:
+        json.dump(
+            {
+                "source_url": data.space_weather_archive_url(product),
+                "sha256_data": digest,
+                "fetched_at": (
+                    fetched_at or dt.datetime.now(dt.timezone.utc).isoformat()
+                ),
+                "fetcher": "sidereon.data",
+            },
+            handle,
+        )
+    return dest
 
 
 # An IONEX day whose canonical predicted name we seed; the offset is applied by
@@ -252,6 +289,73 @@ def test_sp3_center_urls_match_reference():
 def test_gps_week_and_doy():
     assert data.gps_week(dt.date(2020, 6, 24)) == 2111
     assert data.day_of_year(dt.date(2020, 6, 24)) == 176
+
+
+def test_space_weather_catalog_paths_match_reference():
+    source = data.space_weather_source_entry()
+    assert source.protocol == "https"
+    assert source.host == "celestrak.org"
+    assert source.compression == "none"
+    assert data.space_weather_filename() == "SW-All.csv"
+    assert data.space_weather_filename("sw_last5") == "SW-Last5Years.csv"
+    assert data.space_weather_cache_relpath() == "space-weather/SW-All.csv"
+    assert data.space_weather_archive_url("sw_last5") == (
+        "https://celestrak.org/SpaceData/SW-Last5Years.csv"
+    )
+
+
+def test_fetch_space_weather_fresh_cache_returns_loaded_table(tmp_path, monkeypatch):
+    _seed_space_weather(tmp_path)
+    calls = _stub_http(monkeypatch, [])
+
+    table = data.fetch_space_weather(cache_dir=str(tmp_path), offline=False)
+
+    assert calls == []
+    sample = table.sample_at(sidereon.j2000_seconds(2024, 5, 10, 12, 0, 0.0))
+    assert sample.space_weather.f107 == 165.1
+    assert sample.space_weather.ap == 66.0
+
+
+def test_fetch_space_weather_offline_returns_stale_cache(tmp_path, monkeypatch):
+    old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=5)).isoformat()
+    _seed_space_weather(tmp_path, fetched_at=old)
+    calls = _stub_http(monkeypatch, [])
+
+    table = data.fetch_space_weather(
+        cache_dir=str(tmp_path),
+        offline=True,
+        max_age_s=1.0,
+    )
+
+    assert calls == []
+    assert table.coverage().first_j2000_s < table.coverage().end_j2000_s
+
+
+def test_fetch_space_weather_expired_cache_refetches(tmp_path, monkeypatch):
+    old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=5)).isoformat()
+    path = _seed_space_weather(tmp_path, fetched_at=old)
+    calls = _stub_http(monkeypatch, [(200, SPACE_WEATHER_CSV)])
+
+    table = data.fetch_space_weather(cache_dir=str(tmp_path), max_age_s=1.0)
+
+    assert len(calls) == 1
+    assert calls[0]["url"] == data.space_weather_archive_url("sw_all")
+    weather = table.space_weather_at(sidereon.j2000_seconds(2024, 5, 10, 0, 0, 0.0))
+    assert weather.ap == 66.0
+    with open(path + ".provenance.json") as handle:
+        provenance = json.load(handle)
+    assert provenance["source_url"] == data.space_weather_archive_url("sw_all")
+    assert provenance["fetcher"] == "sidereon.data"
+
+
+def test_fetch_space_weather_sha256_mismatch_is_terminal(tmp_path, monkeypatch):
+    _seed_space_weather(tmp_path)
+    calls = _stub_http(monkeypatch, [(200, SPACE_WEATHER_CSV)])
+
+    with pytest.raises(data.ChecksumMismatch):
+        data.fetch_space_weather(cache_dir=str(tmp_path), sha256="0" * 64)
+
+    assert calls == []
 
 
 def test_unknown_center_raises():

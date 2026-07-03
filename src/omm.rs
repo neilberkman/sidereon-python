@@ -56,6 +56,17 @@ impl PyOmmEpoch {
 #[pymethods]
 impl PyOmmEpoch {
     #[new]
+    #[pyo3(signature = (
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        microsecond,
+        femtosecond=0,
+    ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         year: i32,
         month: u32,
@@ -64,6 +75,7 @@ impl PyOmmEpoch {
         minute: u32,
         second: u32,
         microsecond: u32,
+        femtosecond: u32,
     ) -> PyResult<Self> {
         if !(1..=12).contains(&month) {
             return Err(PyValueError::new_err("month must be in 1..=12"));
@@ -83,6 +95,11 @@ impl PyOmmEpoch {
         if microsecond > 999_999 {
             return Err(PyValueError::new_err("microsecond must be in 0..=999999"));
         }
+        if femtosecond > 999_999_999 {
+            return Err(PyValueError::new_err(
+                "femtosecond must be in 0..=999999999",
+            ));
+        }
         Ok(Self {
             inner: OmmEpoch {
                 year,
@@ -92,6 +109,7 @@ impl PyOmmEpoch {
                 minute,
                 second,
                 microsecond,
+                femtosecond,
             },
         })
     }
@@ -131,6 +149,11 @@ impl PyOmmEpoch {
         self.inner.microsecond
     }
 
+    #[getter]
+    fn femtosecond(&self) -> u32 {
+        self.inner.femtosecond
+    }
+
     /// ISO-8601 epoch text with microsecond precision.
     #[getter]
     fn iso8601(&self) -> String {
@@ -154,7 +177,7 @@ pub struct PyOmm {
 }
 
 impl PyOmm {
-    fn from_inner(inner: Omm) -> Self {
+    pub(crate) fn from_inner(inner: Omm) -> Self {
         Self { inner }
     }
 }
@@ -242,6 +265,8 @@ impl PyOmm {
                 bstar: finite(bstar, "bstar")?,
                 mean_motion_dot: finite(mean_motion_dot, "mean_motion_dot")?,
                 mean_motion_ddot: finite(mean_motion_ddot, "mean_motion_ddot")?,
+                exact_sgp4_epoch: None,
+                quantize_tle_derived_fields: true,
             },
         })
     }

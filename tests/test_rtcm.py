@@ -55,6 +55,13 @@ def test_stream_decodes_both_frames_in_order():
     assert [m.message_number for m in messages] == [1006, 1230]
 
 
+def test_stream_diagnostics_surface_resync_bytes():
+    stream = sidereon.decode_rtcm_stream(b"junk" + STREAM_TWO)
+    assert [m.message_number for m in stream.messages] == [1006, 1230]
+    assert stream.diagnostics.resync_bytes >= 4
+    assert stream.diagnostics.skipped_frames == []
+
+
 def test_unsupported_message_preserves_body():
     msg = sidereon.decode_rtcm(UNSUPPORTED_FRAME)[0]
     assert msg.kind == "unsupported"
@@ -361,6 +368,64 @@ def test_construct_msm7_round_trips():
     assert out.satellites[0].rough_phase_range_rate_m_s == -50
     assert out.signals[0].half_cycle_ambiguity is True
     assert out.signals[0].fine_phase_range_rate == -7
+
+
+def test_rtcm_lli_helpers_delegate_to_core_tables():
+    assert sidereon.RTCM_LLI_LOSS_OF_LOCK == 1
+    assert sidereon.RTCM_LLI_HALF_CYCLE == 2
+    assert sidereon.rtcm_minimum_lock_time_ms("msm4", 0) == 0
+    assert sidereon.rtcm_minimum_lock_time_ms("msm4", 5) == 512
+    assert sidereon.rtcm_minimum_lock_time_ms("msm4", 16) is None
+    assert sidereon.rtcm_minimum_lock_time_ms("msm7", 704) == 67_108_864
+    assert sidereon.rtcm_minimum_lock_time_ms("msm7", 705) is None
+    assert sidereon.rtcm_derive_lli(None, None, 0, True) == sidereon.RTCM_LLI_HALF_CYCLE
+    assert (
+        sidereon.rtcm_derive_lli(1024, 500, 512, False)
+        == sidereon.RTCM_LLI_LOSS_OF_LOCK
+    )
+    assert (
+        sidereon.rtcm_derive_lli(512, 600, 512, False) == sidereon.RTCM_LLI_LOSS_OF_LOCK
+    )
+    assert sidereon.rtcm_derive_lli(512, 512, 512, False) == 0
+    assert sidereon.rtcm_msm_epoch_dt_ms("G", 604_799_000, 1_000) == 2_000
+    assert sidereon.rtcm_msm_signal_rinex_code("G", 2) == "1C"
+    assert sidereon.rtcm_msm_signal_rinex_code("G", 1) is None
+
+
+def test_msm_signal_lock_time_helper():
+    signal = _msm4_message().signals[0]
+    assert signal.minimum_lock_time_ms("msm4") == 512
+    assert signal.minimum_lock_time_ms("msm7") == 5
+
+
+def test_rtcm_lock_time_tracker_derives_per_cell_lli():
+    first = _msm4_message()
+    second = sidereon.RtcmMsmMessage(
+        message_number=1074,
+        system="G",
+        kind="msm4",
+        header=sidereon.RtcmMsmHeader(
+            reference_station_id=2003,
+            epoch_time=700,
+            multiple_message=False,
+            iods=0,
+            reserved=0,
+            clock_steering=0,
+            external_clock=0,
+            divergence_free_smoothing=False,
+            smoothing_interval=0,
+        ),
+        satellites=first.satellites,
+        signals=first.signals,
+    )
+    tracker = sidereon.RtcmLockTimeTracker()
+    assert [cell.lli for cell in tracker.observe(first)] == [0]
+    out = tracker.observe(second)
+    assert [(cell.satellite_id, cell.signal_id) for cell in out] == [(5, 2)]
+    assert out[0].min_lock_time_ms == 512
+    assert out[0].lli == sidereon.RTCM_LLI_LOSS_OF_LOCK
+    tracker.reset()
+    assert [cell.lli for cell in tracker.observe(second)] == [0]
 
 
 def test_construct_msm_rejects_bad_system_letter():

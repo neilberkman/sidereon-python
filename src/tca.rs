@@ -11,18 +11,29 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 use pyo3::Bound;
 
+use sidereon_core::astro::propagator::api::IntegratorOptions;
+use sidereon_core::astro::propagator::{
+    ForceModelKind, IntegratorKind as CoreIntegratorKind, ProcessNoise,
+};
 use sidereon_core::astro::sgp4::JulianDate;
 use sidereon_core::astro::tca::{
     find_tca_candidates_from_tles as core_find_tca_candidates_from_tles,
     find_tca_conjunctions_from_tles as core_find_tca_conjunctions_from_tles,
+    find_tca_conjunctions_with_propagated_covariance_from_tles as core_find_tca_conjunctions_with_propagated_covariance_from_tles,
     screen_tca_candidates_from_tle_catalog_serial as core_screen_candidates,
-    screen_tca_conjunctions_from_tle_catalog_serial as core_screen_conjunctions, TcaCandidate,
-    TcaConjunction, TcaFinderOptions, TcaPcCovariances, TcaPcOptions, TcaScreeningConjunctionHit,
-    TcaScreeningHit, TcaTle, TcaWindow, DEFAULT_TCA_POSITION_COVARIANCE_KM2,
+    screen_tca_conjunctions_from_tle_catalog_serial as core_screen_conjunctions,
+    screen_tca_conjunctions_with_propagated_covariance_from_tle_catalog_serial as core_screen_conjunctions_with_propagated_covariance,
+    TcaCandidate, TcaConjunction, TcaFinderOptions, TcaPcCovariances, TcaPcOptions,
+    TcaPropagatedCovarianceOptions, TcaPropagatedCovariancePcOptions, TcaScreeningConjunctionHit,
+    TcaScreeningHit, TcaTle, TcaTleWithCovariance, TcaWindow, DEFAULT_TCA_POSITION_COVARIANCE_KM2,
 };
 
 use crate::conjunction::PyPcMethod;
-use crate::marshal::{matrix3_from_array, FinitePolicy};
+use crate::covariance::PyProcessNoise;
+use crate::marshal::{
+    covariance6_from_array, matrix3_from_array, option_py_or_default, FinitePolicy,
+};
+use crate::propagation::{PyForceModel, PyIntegrator};
 use crate::{np_array, to_solve_err};
 
 fn julian_date(jd: (f64, f64)) -> JulianDate {
@@ -33,6 +44,31 @@ fn finder_options(coarse_step_seconds: f64, time_tolerance_seconds: f64) -> TcaF
     TcaFinderOptions {
         coarse_step_seconds,
         time_tolerance_seconds,
+    }
+}
+
+fn force_model_kind(force_model: PyForceModel, mu_km3_s2: Option<f64>) -> ForceModelKind {
+    match force_model {
+        PyForceModel::TWO_BODY => match mu_km3_s2 {
+            Some(mu_km3_s2) => ForceModelKind::TwoBody { mu_km3_s2 },
+            None => ForceModelKind::two_body(),
+        },
+        PyForceModel::TWO_BODY_J2 => {
+            let mut kind = ForceModelKind::two_body_j2();
+            if let Some(mu) = mu_km3_s2 {
+                if let ForceModelKind::TwoBodyJ2 { mu_km3_s2, .. } = &mut kind {
+                    *mu_km3_s2 = mu;
+                }
+            }
+            kind
+        }
+    }
+}
+
+fn integrator_kind(integrator: PyIntegrator) -> CoreIntegratorKind {
+    match integrator {
+        PyIntegrator::DP54 => CoreIntegratorKind::Dp54,
+        PyIntegrator::RK4 => CoreIntegratorKind::Rk4,
     }
 }
 
@@ -345,6 +381,103 @@ fn find_tca_conjunctions(
         .collect())
 }
 
+/// Find TCA conjunctions and propagate each object's initial 6x6 covariance to TCA.
+#[pyfunction]
+#[pyo3(signature = (
+    primary_line1,
+    primary_line2,
+    secondary_line1,
+    secondary_line2,
+    primary_covariance0,
+    secondary_covariance0,
+    window_start_jd,
+    window_end_jd,
+    hard_body_radius_km,
+    method=PyPcMethod::FOSTER_EQUAL_AREA,
+    force_model=PyForceModel::TWO_BODY_J2,
+    integrator=PyIntegrator::DP54,
+    abs_tol=1.0e-9,
+    rel_tol=1.0e-12,
+    initial_step_s=60.0,
+    min_step_s=1.0e-6,
+    max_step_s=3600.0,
+    max_steps=1_000_000,
+    mu_km3_s2=None,
+    process_noise=None,
+    coarse_step_seconds=60.0,
+    time_tolerance_seconds=1.0e-3,
+))]
+#[allow(clippy::too_many_arguments)]
+fn find_tca_conjunctions_with_propagated_covariance(
+    py: Python<'_>,
+    primary_line1: &str,
+    primary_line2: &str,
+    secondary_line1: &str,
+    secondary_line2: &str,
+    primary_covariance0: PyReadonlyArray2<'_, f64>,
+    secondary_covariance0: PyReadonlyArray2<'_, f64>,
+    window_start_jd: (f64, f64),
+    window_end_jd: (f64, f64),
+    hard_body_radius_km: f64,
+    method: PyPcMethod,
+    force_model: PyForceModel,
+    integrator: PyIntegrator,
+    abs_tol: f64,
+    rel_tol: f64,
+    initial_step_s: f64,
+    min_step_s: f64,
+    max_step_s: f64,
+    max_steps: u32,
+    mu_km3_s2: Option<f64>,
+    process_noise: Option<Py<PyProcessNoise>>,
+    coarse_step_seconds: f64,
+    time_tolerance_seconds: f64,
+) -> PyResult<Vec<PyTcaConjunction>> {
+    let primary_covariance0 = covariance6_from_array(&primary_covariance0, "primary_covariance0")?;
+    let secondary_covariance0 =
+        covariance6_from_array(&secondary_covariance0, "secondary_covariance0")?;
+    let process_noise = option_py_or_default(
+        py,
+        process_noise.as_ref(),
+        PyProcessNoise::inner,
+        ProcessNoise::default,
+    );
+    let pc_options = TcaPropagatedCovariancePcOptions::new(
+        hard_body_radius_km,
+        method.into(),
+        primary_covariance0,
+        secondary_covariance0,
+    )
+    .with_covariance_propagator(
+        force_model_kind(force_model, mu_km3_s2),
+        integrator_kind(integrator),
+        IntegratorOptions {
+            abs_tol,
+            rel_tol,
+            initial_step: initial_step_s,
+            min_step: min_step_s,
+            max_step: max_step_s,
+            max_steps,
+            dense_output: false,
+        },
+    )
+    .with_process_noise(process_noise);
+
+    let conjunctions = core_find_tca_conjunctions_with_propagated_covariance_from_tles(
+        TcaTle::new(primary_line1, primary_line2),
+        TcaTle::new(secondary_line1, secondary_line2),
+        julian_date(window_start_jd),
+        julian_date(window_end_jd),
+        finder_options(coarse_step_seconds, time_tolerance_seconds),
+        pc_options,
+    )
+    .map_err(to_solve_err)?;
+    Ok(conjunctions
+        .into_iter()
+        .map(|inner| PyTcaConjunction { inner })
+        .collect())
+}
+
 /// Screen a primary TLE against a catalog of secondary TLEs, keeping TCAs at or
 /// below `miss_distance_threshold_km`.
 ///
@@ -452,6 +585,98 @@ fn screen_tca_conjunctions(
         .collect())
 }
 
+/// Screen a TLE catalog and propagate each object's initial 6x6 covariance to TCA.
+#[pyfunction]
+#[pyo3(signature = (
+    primary_line1,
+    primary_line2,
+    primary_covariance0,
+    secondaries,
+    window_start_jd,
+    window_end_jd,
+    miss_distance_threshold_km,
+    hard_body_radius_km,
+    method=PyPcMethod::FOSTER_EQUAL_AREA,
+    force_model=PyForceModel::TWO_BODY_J2,
+    integrator=PyIntegrator::DP54,
+    abs_tol=1.0e-9,
+    rel_tol=1.0e-12,
+    initial_step_s=60.0,
+    min_step_s=1.0e-6,
+    max_step_s=3600.0,
+    max_steps=1_000_000,
+    mu_km3_s2=None,
+    process_noise=None,
+    coarse_step_seconds=60.0,
+    time_tolerance_seconds=1.0e-3,
+))]
+#[allow(clippy::too_many_arguments)]
+fn screen_tca_conjunctions_with_propagated_covariance(
+    py: Python<'_>,
+    primary_line1: &str,
+    primary_line2: &str,
+    primary_covariance0: PyReadonlyArray2<'_, f64>,
+    secondaries: Vec<(String, String, PyReadonlyArray2<'_, f64>)>,
+    window_start_jd: (f64, f64),
+    window_end_jd: (f64, f64),
+    miss_distance_threshold_km: f64,
+    hard_body_radius_km: f64,
+    method: PyPcMethod,
+    force_model: PyForceModel,
+    integrator: PyIntegrator,
+    abs_tol: f64,
+    rel_tol: f64,
+    initial_step_s: f64,
+    min_step_s: f64,
+    max_step_s: f64,
+    max_steps: u32,
+    mu_km3_s2: Option<f64>,
+    process_noise: Option<Py<PyProcessNoise>>,
+    coarse_step_seconds: f64,
+    time_tolerance_seconds: f64,
+) -> PyResult<Vec<PyTcaScreeningConjunctionHit>> {
+    let primary_covariance0 = covariance6_from_array(&primary_covariance0, "primary_covariance0")?;
+    let mut secondary_tles = Vec::with_capacity(secondaries.len());
+    for (index, (line1, line2, covariance0)) in secondaries.iter().enumerate() {
+        let covariance0 = covariance6_from_array(covariance0, &format!("secondaries[{index}][2]"))?;
+        secondary_tles.push(TcaTleWithCovariance::new(line1, line2, covariance0));
+    }
+    let process_noise = option_py_or_default(
+        py,
+        process_noise.as_ref(),
+        PyProcessNoise::inner,
+        ProcessNoise::default,
+    );
+    let pc_options = TcaPropagatedCovarianceOptions::new(hard_body_radius_km, method.into())
+        .with_covariance_propagator(
+            force_model_kind(force_model, mu_km3_s2),
+            integrator_kind(integrator),
+            IntegratorOptions {
+                abs_tol,
+                rel_tol,
+                initial_step: initial_step_s,
+                min_step: min_step_s,
+                max_step: max_step_s,
+                max_steps,
+                dense_output: false,
+            },
+        )
+        .with_process_noise(process_noise);
+    let hits = core_screen_conjunctions_with_propagated_covariance(
+        TcaTleWithCovariance::new(primary_line1, primary_line2, primary_covariance0),
+        &secondary_tles,
+        TcaWindow::new(julian_date(window_start_jd), julian_date(window_end_jd)),
+        miss_distance_threshold_km,
+        finder_options(coarse_step_seconds, time_tolerance_seconds),
+        pc_options,
+    )
+    .map_err(to_solve_err)?;
+    Ok(hits
+        .into_iter()
+        .map(|inner| PyTcaScreeningConjunctionHit { inner })
+        .collect())
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTcaCandidate>()?;
     m.add_class::<PyTcaConjunction>()?;
@@ -459,7 +684,15 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTcaScreeningConjunctionHit>()?;
     m.add_function(wrap_pyfunction!(find_tca_candidates, m)?)?;
     m.add_function(wrap_pyfunction!(find_tca_conjunctions, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        find_tca_conjunctions_with_propagated_covariance,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(screen_tca_candidates, m)?)?;
     m.add_function(wrap_pyfunction!(screen_tca_conjunctions, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        screen_tca_conjunctions_with_propagated_covariance,
+        m
+    )?)?;
     Ok(())
 }

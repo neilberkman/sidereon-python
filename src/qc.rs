@@ -18,6 +18,11 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
 use sidereon_core::positioning::ReceiverSolution;
+use sidereon_core::qc_obs::{
+    observation_qc_with_options as core_observation_qc_with_options, IntervalSource,
+    ObservationDataGap, ObservationQcNote, ObservationQcOptions, ObservationQcReport,
+    SatelliteObservationQc, SatelliteSignalQc, SnrStats, SsiHistogram, SystemSignalQc,
+};
 use sidereon_core::quality::{
     self, fde_spp, raim_fde_design as core_raim_fde_design, FdeError, FdeOptions, FdeSppError,
     FdeSppOptions, RaimInput, RaimOptions, RaimWeights, RangeChiSquareTest, RangeFdeOptions,
@@ -25,6 +30,8 @@ use sidereon_core::quality::{
     DEFAULT_P_FA,
 };
 
+use crate::marshal::PyGnssSystem;
+use crate::rinex::{PyObsEpochTime, PyRinexObs};
 use crate::spp::{PySppConfig, PySppRobustConfig};
 use crate::{np_array, PySp3, SolveError};
 
@@ -605,6 +612,416 @@ fn chi2_inv(p: f64, dof: usize) -> PyResult<f64> {
     quality::chi2_inv(p, dof).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+/// Source of the interval used by observation QC gap detection.
+#[pyclass(module = "sidereon._sidereon", name = "IntervalSource", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PyIntervalSource {
+    OVERRIDE,
+    HEADER,
+    INFERRED,
+    UNRESOLVED,
+}
+
+impl From<IntervalSource> for PyIntervalSource {
+    fn from(value: IntervalSource) -> Self {
+        match value {
+            IntervalSource::Override => Self::OVERRIDE,
+            IntervalSource::Header => Self::HEADER,
+            IntervalSource::Inferred => Self::INFERRED,
+            IntervalSource::Unresolved => Self::UNRESOLVED,
+        }
+    }
+}
+
+#[pymethods]
+impl PyIntervalSource {
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::OVERRIDE => "override",
+            Self::HEADER => "header",
+            Self::INFERRED => "inferred",
+            Self::UNRESOLVED => "unresolved",
+        }
+    }
+}
+
+/// RINEX SSI digit histogram.
+#[pyclass(module = "sidereon._sidereon", name = "SsiHistogram")]
+#[derive(Clone, Copy)]
+pub struct PySsiHistogram {
+    inner: SsiHistogram,
+}
+
+impl From<SsiHistogram> for PySsiHistogram {
+    fn from(inner: SsiHistogram) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySsiHistogram {
+    #[getter]
+    fn counts(&self) -> Vec<u64> {
+        self.inner.counts.to_vec()
+    }
+}
+
+/// Raw S-code signal-strength statistics.
+#[pyclass(module = "sidereon._sidereon", name = "SnrStats")]
+#[derive(Clone, Copy)]
+pub struct PySnrStats {
+    inner: SnrStats,
+}
+
+impl From<SnrStats> for PySnrStats {
+    fn from(inner: SnrStats) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySnrStats {
+    #[getter]
+    fn n(&self) -> usize {
+        self.inner.n
+    }
+
+    #[getter]
+    fn mean(&self) -> f64 {
+        self.inner.mean
+    }
+
+    #[getter]
+    fn min(&self) -> f64 {
+        self.inner.min
+    }
+
+    #[getter]
+    fn max(&self) -> f64 {
+        self.inner.max
+    }
+
+    #[getter]
+    fn std(&self) -> Option<f64> {
+        self.inner.std
+    }
+}
+
+/// One detected observation data gap.
+#[pyclass(module = "sidereon._sidereon", name = "ObservationDataGap")]
+#[derive(Clone)]
+pub struct PyObservationDataGap {
+    inner: ObservationDataGap,
+}
+
+impl From<ObservationDataGap> for PyObservationDataGap {
+    fn from(inner: ObservationDataGap) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyObservationDataGap {
+    #[getter]
+    fn start_epoch(&self) -> PyObsEpochTime {
+        self.inner.start_epoch.into()
+    }
+
+    #[getter]
+    fn end_epoch(&self) -> PyObsEpochTime {
+        self.inner.end_epoch.into()
+    }
+
+    #[getter]
+    fn nominal_interval_s(&self) -> f64 {
+        self.inner.nominal_interval_s
+    }
+
+    #[getter]
+    fn observed_delta_s(&self) -> f64 {
+        self.inner.observed_delta_s
+    }
+
+    #[getter]
+    fn missing_epochs(&self) -> usize {
+        self.inner.missing_epochs
+    }
+}
+
+/// Per-satellite observation QC counts.
+#[pyclass(module = "sidereon._sidereon", name = "SatelliteObservationQc")]
+#[derive(Clone)]
+pub struct PySatelliteObservationQc {
+    inner: SatelliteObservationQc,
+}
+
+impl From<SatelliteObservationQc> for PySatelliteObservationQc {
+    fn from(inner: SatelliteObservationQc) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySatelliteObservationQc {
+    #[getter]
+    fn satellite(&self) -> String {
+        self.inner.satellite.to_string()
+    }
+
+    #[getter]
+    fn epochs_with_observations(&self) -> usize {
+        self.inner.epochs_with_observations
+    }
+
+    #[getter]
+    fn value_observations(&self) -> usize {
+        self.inner.value_observations
+    }
+}
+
+/// Per-satellite, per-code observation QC counts.
+#[pyclass(module = "sidereon._sidereon", name = "SatelliteSignalQc")]
+#[derive(Clone)]
+pub struct PySatelliteSignalQc {
+    inner: SatelliteSignalQc,
+}
+
+impl From<SatelliteSignalQc> for PySatelliteSignalQc {
+    fn from(inner: SatelliteSignalQc) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySatelliteSignalQc {
+    #[getter]
+    fn satellite(&self) -> String {
+        self.inner.satellite.to_string()
+    }
+
+    #[getter]
+    fn code(&self) -> &str {
+        &self.inner.code
+    }
+
+    #[getter]
+    fn value_observations(&self) -> usize {
+        self.inner.value_observations
+    }
+
+    #[getter]
+    fn ssi(&self) -> Option<PySsiHistogram> {
+        self.inner.ssi.map(Into::into)
+    }
+
+    #[getter]
+    fn snr(&self) -> Option<PySnrStats> {
+        self.inner.snr.map(Into::into)
+    }
+}
+
+/// Per-system, per-code observation QC counts.
+#[pyclass(module = "sidereon._sidereon", name = "SystemSignalQc")]
+#[derive(Clone)]
+pub struct PySystemSignalQc {
+    inner: SystemSignalQc,
+}
+
+impl From<SystemSignalQc> for PySystemSignalQc {
+    fn from(inner: SystemSignalQc) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySystemSignalQc {
+    #[getter]
+    fn system(&self) -> PyGnssSystem {
+        self.inner.system.into()
+    }
+
+    #[getter]
+    fn code(&self) -> &str {
+        &self.inner.code
+    }
+
+    #[getter]
+    fn value_observations(&self) -> usize {
+        self.inner.value_observations
+    }
+
+    #[getter]
+    fn ssi(&self) -> Option<PySsiHistogram> {
+        self.inner.ssi.map(Into::into)
+    }
+
+    #[getter]
+    fn snr(&self) -> Option<PySnrStats> {
+        self.inner.snr.map(Into::into)
+    }
+}
+
+/// Non-fatal observation QC note.
+#[pyclass(module = "sidereon._sidereon", name = "ObservationQcNote")]
+#[derive(Clone, Copy)]
+pub struct PyObservationQcNote {
+    inner: ObservationQcNote,
+}
+
+impl From<ObservationQcNote> for PyObservationQcNote {
+    fn from(inner: ObservationQcNote) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyObservationQcNote {
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match self.inner {
+            ObservationQcNote::NonMonotonicEpoch { .. } => "non_monotonic_epoch",
+            ObservationQcNote::IntervalUnresolved => "interval_unresolved",
+        }
+    }
+
+    #[getter]
+    fn epoch_index(&self) -> Option<usize> {
+        match self.inner {
+            ObservationQcNote::NonMonotonicEpoch { epoch_index } => Some(epoch_index),
+            ObservationQcNote::IntervalUnresolved => None,
+        }
+    }
+}
+
+/// Aggregate RINEX observation QC report.
+#[pyclass(module = "sidereon._sidereon", name = "ObservationQcReport")]
+#[derive(Clone)]
+pub struct PyObservationQcReport {
+    inner: ObservationQcReport,
+}
+
+impl From<ObservationQcReport> for PyObservationQcReport {
+    fn from(inner: ObservationQcReport) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyObservationQcReport {
+    #[getter]
+    fn total_epoch_records(&self) -> usize {
+        self.inner.total_epoch_records
+    }
+
+    #[getter]
+    fn observation_epochs(&self) -> usize {
+        self.inner.observation_epochs
+    }
+
+    #[getter]
+    fn event_records(&self) -> usize {
+        self.inner.event_records
+    }
+
+    #[getter]
+    fn power_failure_epochs(&self) -> usize {
+        self.inner.power_failure_epochs
+    }
+
+    #[getter]
+    fn skipped_records(&self) -> usize {
+        self.inner.skipped_records
+    }
+
+    #[getter]
+    fn interval_s(&self) -> Option<f64> {
+        self.inner.interval_s
+    }
+
+    #[getter]
+    fn interval_source(&self) -> PyIntervalSource {
+        self.inner.interval_source.into()
+    }
+
+    #[getter]
+    fn missing_epochs(&self) -> usize {
+        self.inner.missing_epochs
+    }
+
+    #[getter]
+    fn data_gaps(&self) -> Vec<PyObservationDataGap> {
+        self.inner
+            .data_gaps
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect()
+    }
+
+    #[getter]
+    fn satellites(&self) -> Vec<PySatelliteObservationQc> {
+        self.inner
+            .satellites
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect()
+    }
+
+    #[getter]
+    fn satellite_signals(&self) -> Vec<PySatelliteSignalQc> {
+        self.inner
+            .satellite_signals
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect()
+    }
+
+    #[getter]
+    fn system_signals(&self) -> Vec<PySystemSignalQc> {
+        self.inner
+            .system_signals
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect()
+    }
+
+    #[getter]
+    fn notes(&self) -> Vec<PyObservationQcNote> {
+        self.inner.notes.iter().copied().map(Into::into).collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ObservationQcReport(observation_epochs={}, satellites={})",
+            self.inner.observation_epochs,
+            self.inner.satellites.len()
+        )
+    }
+}
+
+/// Run RINEX observation quality-control rollups.
+#[pyfunction]
+#[pyo3(signature = (obs, interval_override_s=None, gap_factor=1.5))]
+fn observation_qc(
+    obs: &PyRinexObs,
+    interval_override_s: Option<f64>,
+    gap_factor: f64,
+) -> PyResult<PyObservationQcReport> {
+    let report = core_observation_qc_with_options(
+        obs.inner(),
+        ObservationQcOptions {
+            interval_override_s,
+            gap_factor,
+        },
+    )
+    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+    Ok(report.into())
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRaimResult>()?;
     m.add_class::<PyFdeResult>()?;
@@ -612,11 +1029,21 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRangeChiSquareTest>()?;
     m.add_class::<PyRangeMeasurementDiagnostic>()?;
     m.add_class::<PyRangeFdeResult>()?;
+    m.add_class::<PyIntervalSource>()?;
+    m.add_class::<PySsiHistogram>()?;
+    m.add_class::<PySnrStats>()?;
+    m.add_class::<PyObservationDataGap>()?;
+    m.add_class::<PySatelliteObservationQc>()?;
+    m.add_class::<PySatelliteSignalQc>()?;
+    m.add_class::<PySystemSignalQc>()?;
+    m.add_class::<PyObservationQcNote>()?;
+    m.add_class::<PyObservationQcReport>()?;
     m.add_function(wrap_pyfunction!(qc_raim, m)?)?;
     m.add_function(wrap_pyfunction!(qc_fde, m)?)?;
     m.add_function(wrap_pyfunction!(solve_spp_robust_fde, m)?)?;
     m.add_function(wrap_pyfunction!(spp_robust_fde_driver, m)?)?;
     m.add_function(wrap_pyfunction!(qc_raim_fde_design, m)?)?;
     m.add_function(wrap_pyfunction!(chi2_inv, m)?)?;
+    m.add_function(wrap_pyfunction!(observation_qc, m)?)?;
     Ok(())
 }

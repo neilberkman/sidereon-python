@@ -109,3 +109,67 @@ def test_screen_tca_conjunctions_returns_hits():
     for hit in hits:
         assert hit.secondary_index == 0
         assert 0.0 <= hit.conjunction.pc <= 1.0
+
+
+def test_find_tca_conjunctions_with_propagated_covariance_is_pinned():
+    sl1, sl2 = _secondary()
+    covariance0 = np.diag([1.0e-6, 1.2e-6, 1.4e-6, 1.0e-10, 1.1e-10, 1.2e-10])
+
+    conjunctions = sidereon.find_tca_conjunctions_with_propagated_covariance(
+        PRIMARY_L1,
+        PRIMARY_L2,
+        sl1,
+        sl2,
+        covariance0,
+        covariance0,
+        WINDOW_START,
+        WINDOW_END,
+        hard_body_radius_km=0.02,
+    )
+
+    assert len(conjunctions) == 32
+    first = conjunctions[0]
+    assert first.pc == 0.0
+    assert first.miss_km == pytest.approx(2902.655685608501)
+    assert first.sigma_x_km == pytest.approx(0.7295172470964373)
+    assert first.sigma_z_km == pytest.approx(0.013630286161606853)
+
+
+def test_screen_tca_conjunctions_with_propagated_covariance_matches_pairwise():
+    sl1, sl2 = _secondary()
+    covariance0 = np.diag([1.0e-6, 1.2e-6, 1.4e-6, 1.0e-10, 1.1e-10, 1.2e-10])
+
+    pairwise = sidereon.find_tca_conjunctions_with_propagated_covariance(
+        PRIMARY_L1,
+        PRIMARY_L2,
+        sl1,
+        sl2,
+        covariance0,
+        covariance0,
+        WINDOW_START,
+        WINDOW_END,
+        hard_body_radius_km=0.02,
+    )
+    hits = sidereon.screen_tca_conjunctions_with_propagated_covariance(
+        PRIMARY_L1,
+        PRIMARY_L2,
+        covariance0,
+        [(sl1, sl2, covariance0)],
+        WINDOW_START,
+        WINDOW_END,
+        miss_distance_threshold_km=3000.0,
+        hard_body_radius_km=0.02,
+    )
+
+    assert len(hits) == len(pairwise) == 32
+    hit = hits[0]
+    assert hit.secondary_index == 0
+    assert hit.conjunction.pc == pairwise[0].pc
+    assert hit.conjunction.miss_km == pytest.approx(2902.655685608501)
+    assert (
+        hit.conjunction.candidate.tca_seconds_since_window_start
+        == pairwise[0].candidate.tca_seconds_since_window_start
+    )
+    assert hit.conjunction.candidate.tca_seconds_since_window_start == pytest.approx(
+        214.80561343396204
+    )

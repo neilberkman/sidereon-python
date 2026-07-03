@@ -14,9 +14,12 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyByteArray, PyBytes, PyModule};
 
 use sidereon_core::ephemeris::{
-    is_beidou_geo, satellite_state, BroadcastEphemeris as CoreBroadcastEphemeris, BroadcastRecord,
-    ClockPolynomial, GlonassRecord, IonoCorrections, KeplerianElements, KlobucharAlphaBeta,
-    NavMessage, SatelliteState,
+    cnav_ura_ned_m as core_cnav_ura_ned_m, cnav_ura_nominal_m as core_cnav_ura_nominal_m,
+    is_beidou_geo, satellite_state, satellite_state_cnav,
+    BroadcastEphemeris as CoreBroadcastEphemeris, BroadcastGroupDelayTerm, BroadcastGroupDelays,
+    BroadcastRecord, ClockPolynomial, CnavParameters, CnavRates, CnavSignal, GlonassRecord,
+    IonoCorrections, KeplerianElements, KlobucharAlphaBeta, NavMessage, NavMessagePreference,
+    SatelliteState,
 };
 use sidereon_core::rinex::clock::{
     civil_to_gps_seconds as core_civil_to_gps_seconds, ClockEpoch as CoreClockEpoch,
@@ -27,7 +30,8 @@ use sidereon_core::rinex::crinex::{
     encode_crinex as core_encode_crinex,
 };
 use sidereon_core::rinex::nav::{
-    encode_nav, parse_glonass, parse_iono_corrections, parse_leap_seconds, parse_nav, NavParseError,
+    encode_nav, parse_glonass, parse_iono_corrections, parse_leap_seconds, parse_nav,
+    parse_nav_lenient, NavParse, NavParseError, SkippedNavBlock,
 };
 use sidereon_core::rinex::observations::{
     carrier_phase_rows, observation_values, pseudoranges, CarrierPhaseRow as CoreCarrierPhaseRow,
@@ -35,6 +39,14 @@ use sidereon_core::rinex::observations::{
     ObsPhaseShift as CoreObsPhaseShift, ObservationFilter as CoreObservationFilter,
     ObservationKind as CoreObservationKind, ObservationValueRow as CoreObservationValueRow,
     RinexObs as CoreRinexObs, SignalPolicy as CoreSignalPolicy,
+};
+use sidereon_core::rinex::qc::{
+    lint_nav_text as core_lint_nav_text, lint_obs_text as core_lint_obs_text,
+    repair_nav_text as core_repair_nav_text, repair_obs_text as core_repair_obs_text,
+    repair_obs_to_crinex_string as core_repair_obs_to_crinex_string, Finding as CoreRinexFinding,
+    FindingRef as CoreFindingRef, LintReport as CoreLintReport, NavRepair as CoreNavRepair,
+    ObsRepair as CoreObsRepair, RepairAction as CoreRepairAction,
+    RepairOptions as CoreRepairOptions, Severity as CoreRinexSeverity,
 };
 use sidereon_core::{GnssSatelliteId, GnssSystem};
 
@@ -191,6 +203,14 @@ fn obs_entries_from_py(
 pub enum PyNavMessage {
     /// GPS legacy LNAV.
     GPS_LNAV,
+    /// GPS CNAV.
+    GPS_CNAV,
+    /// GPS CNAV-2.
+    GPS_CNAV2,
+    /// QZSS CNAV.
+    QZSS_CNAV,
+    /// QZSS CNAV-2.
+    QZSS_CNAV2,
     /// Galileo I/NAV.
     GALILEO_INAV,
     /// Galileo F/NAV.
@@ -205,10 +225,30 @@ impl From<NavMessage> for PyNavMessage {
     fn from(message: NavMessage) -> Self {
         match message {
             NavMessage::GpsLnav => Self::GPS_LNAV,
+            NavMessage::GpsCnav => Self::GPS_CNAV,
+            NavMessage::GpsCnav2 => Self::GPS_CNAV2,
+            NavMessage::QzssCnav => Self::QZSS_CNAV,
+            NavMessage::QzssCnav2 => Self::QZSS_CNAV2,
             NavMessage::GalileoInav => Self::GALILEO_INAV,
             NavMessage::GalileoFnav => Self::GALILEO_FNAV,
             NavMessage::BeidouD1 => Self::BEIDOU_D1,
             NavMessage::BeidouD2 => Self::BEIDOU_D2,
+        }
+    }
+}
+
+impl From<PyNavMessage> for NavMessage {
+    fn from(message: PyNavMessage) -> Self {
+        match message {
+            PyNavMessage::GPS_LNAV => Self::GpsLnav,
+            PyNavMessage::GPS_CNAV => Self::GpsCnav,
+            PyNavMessage::GPS_CNAV2 => Self::GpsCnav2,
+            PyNavMessage::QZSS_CNAV => Self::QzssCnav,
+            PyNavMessage::QZSS_CNAV2 => Self::QzssCnav2,
+            PyNavMessage::GALILEO_INAV => Self::GalileoInav,
+            PyNavMessage::GALILEO_FNAV => Self::GalileoFnav,
+            PyNavMessage::BEIDOU_D1 => Self::BeidouD1,
+            PyNavMessage::BEIDOU_D2 => Self::BeidouD2,
         }
     }
 }
@@ -220,6 +260,10 @@ impl PyNavMessage {
     fn label(&self) -> &'static str {
         match self {
             Self::GPS_LNAV => "gps_lnav",
+            Self::GPS_CNAV => "gps_cnav",
+            Self::GPS_CNAV2 => "gps_cnav2",
+            Self::QZSS_CNAV => "qzss_cnav",
+            Self::QZSS_CNAV2 => "qzss_cnav2",
             Self::GALILEO_INAV => "galileo_inav",
             Self::GALILEO_FNAV => "galileo_fnav",
             Self::BEIDOU_D1 => "beidou_d1",
@@ -230,10 +274,334 @@ impl PyNavMessage {
     fn __repr__(&self) -> &'static str {
         match self {
             Self::GPS_LNAV => "NavMessage.GPS_LNAV",
+            Self::GPS_CNAV => "NavMessage.GPS_CNAV",
+            Self::GPS_CNAV2 => "NavMessage.GPS_CNAV2",
+            Self::QZSS_CNAV => "NavMessage.QZSS_CNAV",
+            Self::QZSS_CNAV2 => "NavMessage.QZSS_CNAV2",
             Self::GALILEO_INAV => "NavMessage.GALILEO_INAV",
             Self::GALILEO_FNAV => "NavMessage.GALILEO_FNAV",
             Self::BEIDOU_D1 => "NavMessage.BEIDOU_D1",
             Self::BEIDOU_D2 => "NavMessage.BEIDOU_D2",
+        }
+    }
+}
+
+/// GPS/QZSS signal selector for CNAV-family group-delay correction.
+#[pyclass(module = "sidereon._sidereon", name = "CnavSignal", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyCnavSignal {
+    L1_CA,
+    L2C,
+    L5_I5,
+    L5_Q5,
+    L1C_PILOT,
+    L1C_DATA,
+}
+
+impl From<PyCnavSignal> for CnavSignal {
+    fn from(signal: PyCnavSignal) -> Self {
+        match signal {
+            PyCnavSignal::L1_CA => Self::L1Ca,
+            PyCnavSignal::L2C => Self::L2C,
+            PyCnavSignal::L5_I5 => Self::L5I5,
+            PyCnavSignal::L5_Q5 => Self::L5Q5,
+            PyCnavSignal::L1C_PILOT => Self::L1Cp,
+            PyCnavSignal::L1C_DATA => Self::L1Cd,
+        }
+    }
+}
+
+#[pymethods]
+impl PyCnavSignal {
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::L1_CA => "l1_ca",
+            Self::L2C => "l2c",
+            Self::L5_I5 => "l5_i5",
+            Self::L5_Q5 => "l5_q5",
+            Self::L1C_PILOT => "l1c_pilot",
+            Self::L1C_DATA => "l1c_data",
+        }
+    }
+}
+
+/// Broadcast group-delay term selector.
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "BroadcastGroupDelayTerm",
+    eq,
+    eq_int
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyBroadcastGroupDelayTerm {
+    GPS_TGD,
+    GALILEO_BGD_E5A_E1,
+    GALILEO_BGD_E5B_E1,
+    BEIDOU_TGD1,
+    BEIDOU_TGD2,
+    CNAV_ISC_L1_CA,
+    CNAV_ISC_L2C,
+    CNAV_ISC_L5_I5,
+    CNAV_ISC_L5_Q5,
+    CNAV_ISC_L1C_DATA,
+    CNAV_ISC_L1C_PILOT,
+}
+
+impl From<PyBroadcastGroupDelayTerm> for BroadcastGroupDelayTerm {
+    fn from(term: PyBroadcastGroupDelayTerm) -> Self {
+        match term {
+            PyBroadcastGroupDelayTerm::GPS_TGD => Self::GpsTgd,
+            PyBroadcastGroupDelayTerm::GALILEO_BGD_E5A_E1 => Self::GalileoBgdE5aE1,
+            PyBroadcastGroupDelayTerm::GALILEO_BGD_E5B_E1 => Self::GalileoBgdE5bE1,
+            PyBroadcastGroupDelayTerm::BEIDOU_TGD1 => Self::BeidouTgd1,
+            PyBroadcastGroupDelayTerm::BEIDOU_TGD2 => Self::BeidouTgd2,
+            PyBroadcastGroupDelayTerm::CNAV_ISC_L1_CA => Self::CnavIscL1Ca,
+            PyBroadcastGroupDelayTerm::CNAV_ISC_L2C => Self::CnavIscL2C,
+            PyBroadcastGroupDelayTerm::CNAV_ISC_L5_I5 => Self::CnavIscL5I5,
+            PyBroadcastGroupDelayTerm::CNAV_ISC_L5_Q5 => Self::CnavIscL5Q5,
+            PyBroadcastGroupDelayTerm::CNAV_ISC_L1C_DATA => Self::CnavIscL1Cd,
+            PyBroadcastGroupDelayTerm::CNAV_ISC_L1C_PILOT => Self::CnavIscL1Cp,
+        }
+    }
+}
+
+#[pymethods]
+impl PyBroadcastGroupDelayTerm {
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::GPS_TGD => "gps_tgd",
+            Self::GALILEO_BGD_E5A_E1 => "galileo_bgd_e5a_e1",
+            Self::GALILEO_BGD_E5B_E1 => "galileo_bgd_e5b_e1",
+            Self::BEIDOU_TGD1 => "beidou_tgd1",
+            Self::BEIDOU_TGD2 => "beidou_tgd2",
+            Self::CNAV_ISC_L1_CA => "cnav_isc_l1_ca",
+            Self::CNAV_ISC_L2C => "cnav_isc_l2c",
+            Self::CNAV_ISC_L5_I5 => "cnav_isc_l5_i5",
+            Self::CNAV_ISC_L5_Q5 => "cnav_isc_l5_q5",
+            Self::CNAV_ISC_L1C_DATA => "cnav_isc_l1c_data",
+            Self::CNAV_ISC_L1C_PILOT => "cnav_isc_l1c_pilot",
+        }
+    }
+}
+
+/// Per-signal broadcast group delays from one NAV record.
+#[pyclass(module = "sidereon._sidereon", name = "BroadcastGroupDelays")]
+#[derive(Clone, Copy)]
+pub struct PyBroadcastGroupDelays {
+    inner: BroadcastGroupDelays,
+}
+
+impl From<BroadcastGroupDelays> for PyBroadcastGroupDelays {
+    fn from(inner: BroadcastGroupDelays) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyBroadcastGroupDelays {
+    #[getter]
+    fn gps_tgd_s(&self) -> Option<f64> {
+        self.inner.gps_tgd_s
+    }
+
+    #[getter]
+    fn galileo_bgd_e5a_e1_s(&self) -> Option<f64> {
+        self.inner.galileo_bgd_e5a_e1_s
+    }
+
+    #[getter]
+    fn galileo_bgd_e5b_e1_s(&self) -> Option<f64> {
+        self.inner.galileo_bgd_e5b_e1_s
+    }
+
+    #[getter]
+    fn beidou_tgd1_s(&self) -> Option<f64> {
+        self.inner.beidou_tgd1_s
+    }
+
+    #[getter]
+    fn beidou_tgd2_s(&self) -> Option<f64> {
+        self.inner.beidou_tgd2_s
+    }
+
+    #[getter]
+    fn cnav_isc_l1ca_s(&self) -> Option<f64> {
+        self.inner.cnav_isc_l1ca_s
+    }
+
+    #[getter]
+    fn cnav_isc_l2c_s(&self) -> Option<f64> {
+        self.inner.cnav_isc_l2c_s
+    }
+
+    #[getter]
+    fn cnav_isc_l5i5_s(&self) -> Option<f64> {
+        self.inner.cnav_isc_l5i5_s
+    }
+
+    #[getter]
+    fn cnav_isc_l5q5_s(&self) -> Option<f64> {
+        self.inner.cnav_isc_l5q5_s
+    }
+
+    #[getter]
+    fn cnav_isc_l1cd_s(&self) -> Option<f64> {
+        self.inner.cnav_isc_l1cd_s
+    }
+
+    #[getter]
+    fn cnav_isc_l1cp_s(&self) -> Option<f64> {
+        self.inner.cnav_isc_l1cp_s
+    }
+
+    fn get(&self, term: PyBroadcastGroupDelayTerm) -> Option<f64> {
+        self.inner.get(term.into())
+    }
+
+    fn cnav_single_frequency_correction_s(&self, signal: PyCnavSignal) -> Option<f64> {
+        self.inner.cnav_single_frequency_correction_s(signal.into())
+    }
+
+    fn __repr__(&self) -> &'static str {
+        "BroadcastGroupDelays(...)"
+    }
+}
+
+/// CNAV/CNAV-2 parameters carried by a NAV record.
+#[pyclass(module = "sidereon._sidereon", name = "CnavParameters")]
+#[derive(Clone, Copy)]
+pub struct PyCnavParameters {
+    inner: CnavParameters,
+}
+
+impl From<CnavParameters> for PyCnavParameters {
+    fn from(inner: CnavParameters) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyCnavParameters {
+    #[getter]
+    fn adot_m_s(&self) -> f64 {
+        self.inner.adot_m_s
+    }
+
+    #[getter]
+    fn delta_n0_dot_rad_s2(&self) -> f64 {
+        self.inner.delta_n0_dot_rad_s2
+    }
+
+    #[getter]
+    fn top_week(&self) -> u32 {
+        self.inner.top.week
+    }
+
+    #[getter]
+    fn top_tow_s(&self) -> f64 {
+        self.inner.top.tow_s
+    }
+
+    #[getter]
+    fn top_time_scale(&self) -> PyTimeScale {
+        self.inner.top.system.into()
+    }
+
+    #[getter]
+    fn ura_ed_index(&self) -> i8 {
+        self.inner.ura_ed_index
+    }
+
+    #[getter]
+    fn ura_ned0_index(&self) -> i8 {
+        self.inner.ura_ned0_index
+    }
+
+    #[getter]
+    fn ura_ned1_index(&self) -> u8 {
+        self.inner.ura_ned1_index
+    }
+
+    #[getter]
+    fn ura_ned2_index(&self) -> u8 {
+        self.inner.ura_ned2_index
+    }
+
+    #[getter]
+    fn transmission_time_sow(&self) -> f64 {
+        self.inner.transmission_time_sow
+    }
+
+    #[getter]
+    fn flags(&self) -> Option<u32> {
+        self.inner.flags
+    }
+
+    #[getter]
+    fn ura_ed_m(&self) -> Option<f64> {
+        core_cnav_ura_nominal_m(self.inner.ura_ed_index)
+    }
+
+    fn ura_ned_m(&self, week: u32, tow_s: f64) -> Option<f64> {
+        let t = sidereon_core::astro::time::GnssWeekTow {
+            system: self.inner.top.system,
+            week,
+            tow_s,
+        };
+        core_cnav_ura_ned_m(&self.inner, t)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CnavParameters(ura_ed_index={}, top_week={}, top_tow_s={})",
+            self.inner.ura_ed_index, self.inner.top.week, self.inner.top.tow_s
+        )
+    }
+}
+
+/// GPS/QZSS legacy-vs-CNAV selection preference for mixed stores.
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "NavMessagePreference",
+    eq,
+    eq_int
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyNavMessagePreference {
+    PREFER_LEGACY,
+    PREFER_MODERN,
+}
+
+impl From<PyNavMessagePreference> for NavMessagePreference {
+    fn from(value: PyNavMessagePreference) -> Self {
+        match value {
+            PyNavMessagePreference::PREFER_LEGACY => Self::PreferLegacy,
+            PyNavMessagePreference::PREFER_MODERN => Self::PreferModern,
+        }
+    }
+}
+
+impl From<NavMessagePreference> for PyNavMessagePreference {
+    fn from(value: NavMessagePreference) -> Self {
+        match value {
+            NavMessagePreference::PreferLegacy => Self::PREFER_LEGACY,
+            NavMessagePreference::PreferModern => Self::PREFER_MODERN,
+        }
+    }
+}
+
+#[pymethods]
+impl PyNavMessagePreference {
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::PREFER_LEGACY => "prefer_legacy",
+            Self::PREFER_MODERN => "prefer_modern",
         }
     }
 }
@@ -1182,6 +1550,16 @@ pub struct PyRinexObs {
     inner: CoreRinexObs,
 }
 
+impl PyRinexObs {
+    pub(crate) fn from_inner(inner: CoreRinexObs) -> Self {
+        Self { inner }
+    }
+
+    pub(crate) fn inner(&self) -> &CoreRinexObs {
+        &self.inner
+    }
+}
+
 #[pymethods]
 impl PyRinexObs {
     /// Parsed RINEX OBS header.
@@ -1595,6 +1973,73 @@ impl PyBroadcastRecord {
         self.inner.fit_interval_s
     }
 
+    /// Broadcast time scale for this record.
+    #[getter]
+    fn time_scale(&self) -> PyTimeScale {
+        self.inner.time_scale().into()
+    }
+
+    /// Native issue-of-data value.
+    #[getter]
+    fn issue(&self) -> u32 {
+        self.inner.issue_of_data.issue
+    }
+
+    /// Navigation message associated with the issue-of-data value.
+    #[getter]
+    fn issue_message(&self) -> PyNavMessage {
+        self.inner.issue_of_data.message.into()
+    }
+
+    /// Ephemeris reference week number.
+    #[getter]
+    fn toe_week(&self) -> u32 {
+        self.inner.toe.week
+    }
+
+    /// Ephemeris reference seconds of week.
+    #[getter]
+    fn toe_tow_s(&self) -> f64 {
+        self.inner.toe.tow_s
+    }
+
+    /// Clock reference week number.
+    #[getter]
+    fn toc_week(&self) -> u32 {
+        self.inner.toc.week
+    }
+
+    /// Clock reference seconds of week.
+    #[getter]
+    fn toc_tow_s(&self) -> f64 {
+        self.inner.toc.tow_s
+    }
+
+    /// Full record group-delay set.
+    #[getter]
+    fn group_delays(&self) -> PyBroadcastGroupDelays {
+        self.inner.group_delays.into()
+    }
+
+    /// CNAV/CNAV-2 extension, if this is a CNAV-family record.
+    #[getter]
+    fn cnav(&self) -> Option<PyCnavParameters> {
+        self.inner.cnav.map(Into::into)
+    }
+
+    /// Whether this record is a GPS/QZSS CNAV-family message.
+    #[getter]
+    fn is_cnav_family(&self) -> bool {
+        self.inner.message.is_cnav_family()
+    }
+
+    /// CNAV single-frequency clock correction `TGD - ISC`, if available.
+    fn cnav_single_frequency_correction_s(&self, signal: PyCnavSignal) -> Option<f64> {
+        self.inner
+            .group_delays
+            .cnav_single_frequency_correction_s(signal.into())
+    }
+
     /// Evaluate the broadcast record at a seconds-of-week epoch.
     ///
     /// `t_sow_s` is seconds of week in this record's broadcast time scale
@@ -1604,14 +2049,28 @@ impl PyBroadcastRecord {
         if !t_sow_s.is_finite() {
             return Err(PyValueError::new_err("t_sow_s must be finite"));
         }
-        let inner = satellite_state(
-            &self.inner.elements,
-            &self.inner.clock,
-            &self.inner.constants(),
-            t_sow_s,
-            self.inner.broadcast_clock_group_delay_s(),
-            is_beidou_geo(self.inner.satellite_id),
-        )
+        let inner = if let Some(cnav) = self.inner.cnav {
+            satellite_state_cnav(
+                &self.inner.elements,
+                &CnavRates {
+                    adot_m_s: cnav.adot_m_s,
+                    delta_n0_dot_rad_s2: cnav.delta_n0_dot_rad_s2,
+                },
+                &self.inner.clock,
+                &self.inner.constants(),
+                t_sow_s,
+                self.inner.broadcast_clock_group_delay_s(),
+            )
+        } else {
+            satellite_state(
+                &self.inner.elements,
+                &self.inner.clock,
+                &self.inner.constants(),
+                t_sow_s,
+                self.inner.broadcast_clock_group_delay_s(),
+                is_beidou_geo(self.inner.satellite_id),
+            )
+        }
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
         Ok(PyBroadcastEvaluation { inner, t_sow_s })
     }
@@ -1829,6 +2288,23 @@ impl PyBroadcastEphemeris {
         self.leap_seconds
     }
 
+    /// GPS/QZSS message-family selection preference.
+    #[getter]
+    fn message_preference(&self) -> PyNavMessagePreference {
+        self.inner.message_preference().into()
+    }
+
+    /// Set the GPS/QZSS legacy-vs-CNAV selection preference.
+    fn set_message_preference(&mut self, preference: PyNavMessagePreference) {
+        self.inner.set_message_preference(preference.into());
+    }
+
+    /// GLONASS FDMA channels from retained broadcast records, keyed by slot.
+    #[getter]
+    fn glonass_frequency_channels(&self) -> BTreeMap<u8, i8> {
+        self.inner.glonass_frequency_channels()
+    }
+
     /// Number of usable GPS, Galileo, and BeiDou records.
     #[getter]
     fn record_count(&self) -> usize {
@@ -1847,6 +2323,449 @@ impl PyBroadcastEphemeris {
             self.inner.records().len(),
             self.inner.glonass_records().len()
         )
+    }
+}
+
+/// A malformed supported NAV block skipped by lenient parsing.
+#[pyclass(module = "sidereon._sidereon", name = "SkippedNavBlock")]
+#[derive(Clone)]
+pub struct PySkippedNavBlock {
+    inner: SkippedNavBlock,
+}
+
+impl From<SkippedNavBlock> for PySkippedNavBlock {
+    fn from(inner: SkippedNavBlock) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySkippedNavBlock {
+    #[getter]
+    fn satellite(&self) -> &str {
+        &self.inner.satellite
+    }
+
+    #[getter]
+    fn message(&self) -> &str {
+        &self.inner.message
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SkippedNavBlock(satellite={:?}, message={:?})",
+            self.inner.satellite, self.inner.message
+        )
+    }
+}
+
+/// Result of lenient RINEX NAV parsing.
+#[pyclass(module = "sidereon._sidereon", name = "RinexNavParse")]
+#[derive(Clone)]
+pub struct PyRinexNavParse {
+    inner: NavParse,
+}
+
+#[pymethods]
+impl PyRinexNavParse {
+    #[getter]
+    fn records(&self) -> Vec<PyBroadcastRecord> {
+        self.inner.records.iter().copied().map(Into::into).collect()
+    }
+
+    #[getter]
+    fn skipped(&self) -> Vec<PySkippedNavBlock> {
+        self.inner.skipped.iter().cloned().map(Into::into).collect()
+    }
+
+    #[getter]
+    fn record_count(&self) -> usize {
+        self.inner.records.len()
+    }
+
+    #[getter]
+    fn skipped_count(&self) -> usize {
+        self.inner.skipped.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RinexNavParse(record_count={}, skipped_count={})",
+            self.inner.records.len(),
+            self.inner.skipped.len()
+        )
+    }
+}
+
+/// RINEX lint severity.
+#[pyclass(module = "sidereon._sidereon", name = "RinexLintSeverity", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PyRinexLintSeverity {
+    FATAL,
+    ERROR,
+    WARNING,
+    INFO,
+}
+
+impl From<CoreRinexSeverity> for PyRinexLintSeverity {
+    fn from(value: CoreRinexSeverity) -> Self {
+        match value {
+            CoreRinexSeverity::Fatal => Self::FATAL,
+            CoreRinexSeverity::Error => Self::ERROR,
+            CoreRinexSeverity::Warning => Self::WARNING,
+            CoreRinexSeverity::Info => Self::INFO,
+        }
+    }
+}
+
+impl From<PyRinexLintSeverity> for CoreRinexSeverity {
+    fn from(value: PyRinexLintSeverity) -> Self {
+        match value {
+            PyRinexLintSeverity::FATAL => Self::Fatal,
+            PyRinexLintSeverity::ERROR => Self::Error,
+            PyRinexLintSeverity::WARNING => Self::Warning,
+            PyRinexLintSeverity::INFO => Self::Info,
+        }
+    }
+}
+
+#[pymethods]
+impl PyRinexLintSeverity {
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::FATAL => "fatal",
+            Self::ERROR => "error",
+            Self::WARNING => "warning",
+            Self::INFO => "info",
+        }
+    }
+}
+
+/// Source location for a RINEX lint finding.
+#[pyclass(module = "sidereon._sidereon", name = "RinexFindingRef")]
+#[derive(Clone)]
+pub struct PyRinexFindingRef {
+    inner: CoreFindingRef,
+}
+
+impl From<CoreFindingRef> for PyRinexFindingRef {
+    fn from(inner: CoreFindingRef) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyRinexFindingRef {
+    #[getter]
+    fn epoch_index(&self) -> Option<usize> {
+        self.inner.epoch_index
+    }
+
+    #[getter]
+    fn satellite(&self) -> Option<String> {
+        self.inner.satellite.clone()
+    }
+
+    #[getter]
+    fn field(&self) -> Option<&'static str> {
+        self.inner.field
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RinexFindingRef(epoch_index={:?}, satellite={:?}, field={:?})",
+            self.inner.epoch_index, self.inner.satellite, self.inner.field
+        )
+    }
+}
+
+fn finding_kind(finding: &CoreRinexFinding) -> &'static str {
+    match finding {
+        CoreRinexFinding::ObsFatalParse { .. } => "ObsFatalParse",
+        CoreRinexFinding::ObsUnpublishedVersion { .. } => "ObsUnpublishedVersion",
+        CoreRinexFinding::ObsMissingHeader { .. } => "ObsMissingHeader",
+        CoreRinexFinding::ObsMissingObsTypes { .. } => "ObsMissingObsTypes",
+        CoreRinexFinding::ObsInvalidObsCode { .. } => "ObsInvalidObsCode",
+        CoreRinexFinding::ObsDuplicateObsCode { .. } => "ObsDuplicateObsCode",
+        CoreRinexFinding::ObsTimeOfFirstMismatch { .. } => "ObsTimeOfFirstMismatch",
+        CoreRinexFinding::ObsTimeOfLastMismatch { .. } => "ObsTimeOfLastMismatch",
+        CoreRinexFinding::ObsIntervalMismatch { .. } => "ObsIntervalMismatch",
+        CoreRinexFinding::ObsSatelliteCountMismatch { .. } => "ObsSatelliteCountMismatch",
+        CoreRinexFinding::ObsPrnObsCountMismatch { .. } => "ObsPrnObsCountMismatch",
+        CoreRinexFinding::ObsGlonassSlotIssue { .. } => "ObsGlonassSlotIssue",
+        CoreRinexFinding::ObsPhaseShiftUndeclaredCode { .. } => "ObsPhaseShiftUndeclaredCode",
+        CoreRinexFinding::ObsScaleFactorIssue { .. } => "ObsScaleFactorIssue",
+        CoreRinexFinding::ObsMarkerTypeIssue { .. } => "ObsMarkerTypeIssue",
+        CoreRinexFinding::ObsIdentityFieldIssue { .. } => "ObsIdentityFieldIssue",
+        CoreRinexFinding::ObsImplausibleApproxPosition { .. } => "ObsImplausibleApproxPosition",
+        CoreRinexFinding::ObsImplausibleAntennaDelta { .. } => "ObsImplausibleAntennaDelta",
+        CoreRinexFinding::ObsEpochOrder { .. } => "ObsEpochOrder",
+        CoreRinexFinding::ObsDuplicateEpoch { .. } => "ObsDuplicateEpoch",
+        CoreRinexFinding::ObsSkippedRecords { .. } => "ObsSkippedRecords",
+        CoreRinexFinding::ObsEpochSatCountMismatch { .. } => "ObsEpochSatCountMismatch",
+        CoreRinexFinding::ObsEventSpecialRecords { .. } => "ObsEventSpecialRecords",
+        CoreRinexFinding::ObsUnretainedHeader { .. } => "ObsUnretainedHeader",
+        CoreRinexFinding::ObsPseudorangeOutOfRange { .. } => "ObsPseudorangeOutOfRange",
+        CoreRinexFinding::ObsLossOfLockOutOfRange { .. } => "ObsLossOfLockOutOfRange",
+        CoreRinexFinding::ObsEventEpoch { .. } => "ObsEventEpoch",
+        CoreRinexFinding::ObsEmptySatelliteRecord { .. } => "ObsEmptySatelliteRecord",
+        CoreRinexFinding::ObsEpochGap { .. } => "ObsEpochGap",
+        CoreRinexFinding::NavFatalParse { .. } => "NavFatalParse",
+        CoreRinexFinding::NavLeapSecondsAbsent { .. } => "NavLeapSecondsAbsent",
+        CoreRinexFinding::NavIonoMalformed { .. } => "NavIonoMalformed",
+        CoreRinexFinding::NavDroppedBlock { .. } => "NavDroppedBlock",
+        CoreRinexFinding::NavDuplicateRecord { .. } => "NavDuplicateRecord",
+        CoreRinexFinding::NavUnsortedRecords { .. } => "NavUnsortedRecords",
+        CoreRinexFinding::NavImplausibleRecord { .. } => "NavImplausibleRecord",
+        CoreRinexFinding::NavUnhealthyRecords { .. } => "NavUnhealthyRecords",
+        CoreRinexFinding::NavOutOfScopeRecords { .. } => "NavOutOfScopeRecords",
+        _ => "Unknown",
+    }
+}
+
+/// One RINEX lint finding from the core QC suite.
+#[pyclass(module = "sidereon._sidereon", name = "RinexLintFinding")]
+#[derive(Clone)]
+pub struct PyRinexLintFinding {
+    inner: CoreRinexFinding,
+}
+
+impl From<CoreRinexFinding> for PyRinexLintFinding {
+    fn from(inner: CoreRinexFinding) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyRinexLintFinding {
+    #[getter]
+    fn kind(&self) -> &'static str {
+        finding_kind(&self.inner)
+    }
+
+    #[getter]
+    fn code(&self) -> &'static str {
+        self.inner.code()
+    }
+
+    #[getter]
+    fn severity(&self) -> PyRinexLintSeverity {
+        self.inner.severity().into()
+    }
+
+    #[getter]
+    fn spec_ref(&self) -> &'static str {
+        self.inner.spec_ref()
+    }
+
+    #[getter]
+    fn at(&self) -> PyRinexFindingRef {
+        self.inner.at().clone().into()
+    }
+
+    #[getter]
+    fn is_repairable(&self) -> bool {
+        self.inner.is_repairable()
+    }
+
+    #[getter]
+    fn detail(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RinexLintFinding(kind={}, code={}, severity={})",
+            self.kind(),
+            self.inner.code(),
+            self.severity().label()
+        )
+    }
+}
+
+/// RINEX lint report.
+#[pyclass(module = "sidereon._sidereon", name = "RinexLintReport")]
+#[derive(Clone)]
+pub struct PyRinexLintReport {
+    inner: CoreLintReport,
+}
+
+impl From<CoreLintReport> for PyRinexLintReport {
+    fn from(inner: CoreLintReport) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyRinexLintReport {
+    #[getter]
+    fn findings(&self) -> Vec<PyRinexLintFinding> {
+        self.inner
+            .findings
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect()
+    }
+
+    #[getter]
+    fn decoded_from_crinex(&self) -> bool {
+        self.inner.decoded_from_crinex
+    }
+
+    #[getter]
+    fn is_clean(&self) -> bool {
+        self.inner.is_clean()
+    }
+
+    fn count(&self, severity: PyRinexLintSeverity) -> usize {
+        self.inner.count(severity.into())
+    }
+
+    fn __repr__(&self) -> String {
+        format!("RinexLintReport(findings={})", self.inner.findings.len())
+    }
+}
+
+/// RINEX mechanical repair options.
+#[pyclass(module = "sidereon._sidereon", name = "RinexRepairOptions")]
+#[derive(Clone)]
+pub struct PyRinexRepairOptions {
+    inner: CoreRepairOptions,
+}
+
+impl PyRinexRepairOptions {
+    fn inner(&self) -> CoreRepairOptions {
+        self.inner.clone()
+    }
+}
+
+#[pymethods]
+impl PyRinexRepairOptions {
+    #[new]
+    #[pyo3(signature = (
+        set_interval=false,
+        set_time_of_last_obs=false,
+        set_obs_counts=false,
+        drop_empty_records=false,
+        sort_records=true,
+        drop_unsupported=false,
+    ))]
+    fn new(
+        set_interval: bool,
+        set_time_of_last_obs: bool,
+        set_obs_counts: bool,
+        drop_empty_records: bool,
+        sort_records: bool,
+        drop_unsupported: bool,
+    ) -> Self {
+        Self {
+            inner: CoreRepairOptions {
+                file_stamp: None,
+                set_interval,
+                set_time_of_last_obs,
+                set_obs_counts,
+                drop_empty_records,
+                sort_records,
+                drop_unsupported,
+            },
+        }
+    }
+}
+
+/// One RINEX repair action.
+#[pyclass(module = "sidereon._sidereon", name = "RinexRepairAction")]
+#[derive(Clone)]
+pub struct PyRinexRepairAction {
+    inner: CoreRepairAction,
+}
+
+impl From<CoreRepairAction> for PyRinexRepairAction {
+    fn from(inner: CoreRepairAction) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyRinexRepairAction {
+    #[getter]
+    fn id(&self) -> &'static str {
+        self.inner.id
+    }
+
+    #[getter]
+    fn message(&self) -> &str {
+        &self.inner.message
+    }
+}
+
+/// Observation repair result.
+#[pyclass(module = "sidereon._sidereon", name = "RinexObsRepair")]
+#[derive(Clone)]
+pub struct PyRinexObsRepair {
+    inner: CoreObsRepair,
+}
+
+#[pymethods]
+impl PyRinexObsRepair {
+    #[getter]
+    fn repaired(&self) -> PyRinexObs {
+        PyRinexObs::from_inner(self.inner.repaired.clone())
+    }
+
+    #[getter]
+    fn actions(&self) -> Vec<PyRinexRepairAction> {
+        self.inner.actions.iter().cloned().map(Into::into).collect()
+    }
+
+    #[getter]
+    fn remaining(&self) -> PyRinexLintReport {
+        self.inner.remaining.clone().into()
+    }
+
+    #[getter]
+    fn decoded_from_crinex(&self) -> bool {
+        self.inner.decoded_from_crinex
+    }
+
+    fn to_crinex_string(&self) -> PyResult<String> {
+        core_repair_obs_to_crinex_string(&self.inner).map_err(to_crinex_err)
+    }
+}
+
+/// Navigation repair result.
+#[pyclass(module = "sidereon._sidereon", name = "RinexNavRepair")]
+#[derive(Clone)]
+pub struct PyRinexNavRepair {
+    inner: CoreNavRepair,
+}
+
+#[pymethods]
+impl PyRinexNavRepair {
+    #[getter]
+    fn records(&self) -> Vec<PyBroadcastRecord> {
+        self.inner.records.iter().copied().map(Into::into).collect()
+    }
+
+    #[getter]
+    fn iono_corrections(&self) -> Option<PyIonoCorrections> {
+        self.inner.iono.map(Into::into)
+    }
+
+    #[getter]
+    fn leap_seconds(&self) -> Option<f64> {
+        self.inner.leap_seconds
+    }
+
+    #[getter]
+    fn actions(&self) -> Vec<PyRinexRepairAction> {
+        self.inner.actions.iter().cloned().map(Into::into).collect()
+    }
+
+    #[getter]
+    fn remaining(&self) -> PyRinexLintReport {
+        self.inner.remaining.clone().into()
     }
 }
 
@@ -1879,6 +2798,78 @@ fn parse_rinex_nav_records(text: &str) -> PyResult<Vec<PyBroadcastRecord>> {
         .into_iter()
         .map(Into::into)
         .collect())
+}
+
+/// Parse supported NAV records while reporting malformed blocks that were skipped.
+#[pyfunction]
+fn parse_rinex_nav_lenient(text: &str) -> PyResult<PyRinexNavParse> {
+    Ok(PyRinexNavParse {
+        inner: parse_nav_lenient(text).map_err(to_nav_err)?,
+    })
+}
+
+/// CNAV nominal URA bound in metres for an ED/NED0 index.
+#[pyfunction]
+fn cnav_ura_nominal_m(index: i8) -> Option<f64> {
+    core_cnav_ura_nominal_m(index)
+}
+
+/// CNAV time-dependent NED URA bound in metres.
+#[pyfunction]
+fn cnav_ura_ned_m(params: &PyCnavParameters, week: u32, tow_s: f64) -> Option<f64> {
+    params.ura_ned_m(week, tow_s)
+}
+
+fn repair_options_from_optional(
+    py: Python<'_>,
+    options: Option<Py<PyRinexRepairOptions>>,
+) -> CoreRepairOptions {
+    option_py_or_default(
+        py,
+        options.as_ref(),
+        PyRinexRepairOptions::inner,
+        CoreRepairOptions::default,
+    )
+}
+
+/// Lint RINEX observation text, including CRINEX input.
+#[pyfunction]
+fn lint_rinex_obs(text: &str) -> PyRinexLintReport {
+    core_lint_obs_text(text).into()
+}
+
+/// Lint RINEX navigation text.
+#[pyfunction]
+fn lint_rinex_nav(text: &str) -> PyRinexLintReport {
+    core_lint_nav_text(text).into()
+}
+
+/// Repair RINEX observation text, including CRINEX input.
+#[pyfunction]
+#[pyo3(signature = (text, options=None))]
+fn repair_rinex_obs(
+    py: Python<'_>,
+    text: &str,
+    options: Option<Py<PyRinexRepairOptions>>,
+) -> PyResult<PyRinexObsRepair> {
+    let options = repair_options_from_optional(py, options);
+    Ok(PyRinexObsRepair {
+        inner: core_repair_obs_text(text, &options).map_err(to_obs_err)?,
+    })
+}
+
+/// Repair RINEX navigation text.
+#[pyfunction]
+#[pyo3(signature = (text, options=None))]
+fn repair_rinex_nav(
+    py: Python<'_>,
+    text: &str,
+    options: Option<Py<PyRinexRepairOptions>>,
+) -> PyResult<PyRinexNavRepair> {
+    let options = repair_options_from_optional(py, options);
+    Ok(PyRinexNavRepair {
+        inner: core_repair_nav_text(text, &options).map_err(to_nav_err)?,
+    })
 }
 
 /// Serialize broadcast navigation records to standard RINEX 3 navigation text.
@@ -2010,6 +3001,11 @@ fn load_crinex(source: &Bound<'_, PyAny>) -> PyResult<String> {
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyNavMessage>()?;
+    m.add_class::<PyCnavSignal>()?;
+    m.add_class::<PyBroadcastGroupDelayTerm>()?;
+    m.add_class::<PyBroadcastGroupDelays>()?;
+    m.add_class::<PyCnavParameters>()?;
+    m.add_class::<PyNavMessagePreference>()?;
     m.add_class::<PyGnssSystem>()?;
     m.add_class::<PyObservationKind>()?;
     m.add_class::<PyObsEpochTime>()?;
@@ -2033,9 +3029,26 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyKlobucharAlphaBeta>()?;
     m.add_class::<PyIonoCorrections>()?;
     m.add_class::<PyBroadcastEphemeris>()?;
+    m.add_class::<PySkippedNavBlock>()?;
+    m.add_class::<PyRinexNavParse>()?;
+    m.add_class::<PyRinexLintSeverity>()?;
+    m.add_class::<PyRinexFindingRef>()?;
+    m.add_class::<PyRinexLintFinding>()?;
+    m.add_class::<PyRinexLintReport>()?;
+    m.add_class::<PyRinexRepairOptions>()?;
+    m.add_class::<PyRinexRepairAction>()?;
+    m.add_class::<PyRinexObsRepair>()?;
+    m.add_class::<PyRinexNavRepair>()?;
     m.add_function(wrap_pyfunction!(parse_rinex_nav, m)?)?;
     m.add_function(wrap_pyfunction!(load_rinex_nav, m)?)?;
     m.add_function(wrap_pyfunction!(parse_rinex_nav_records, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_rinex_nav_lenient, m)?)?;
+    m.add_function(wrap_pyfunction!(cnav_ura_nominal_m, m)?)?;
+    m.add_function(wrap_pyfunction!(cnav_ura_ned_m, m)?)?;
+    m.add_function(wrap_pyfunction!(lint_rinex_obs, m)?)?;
+    m.add_function(wrap_pyfunction!(lint_rinex_nav, m)?)?;
+    m.add_function(wrap_pyfunction!(repair_rinex_obs, m)?)?;
+    m.add_function(wrap_pyfunction!(repair_rinex_nav, m)?)?;
     m.add_function(wrap_pyfunction!(encode_rinex_nav, m)?)?;
     m.add_function(wrap_pyfunction!(parse_rinex_glonass_records, m)?)?;
     m.add_function(wrap_pyfunction!(parse_rinex_iono_corrections, m)?)?;

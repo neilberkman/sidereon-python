@@ -13,6 +13,10 @@ from _helpers import CORE_FIXTURES, FIXTURES
 NAV_FIXTURES = os.path.join(FIXTURES, "nav")
 MESSAGE_BY_GOLDEN = {
     "GPS_LNAV": sidereon.NavMessage.GPS_LNAV,
+    "GPS_CNAV": sidereon.NavMessage.GPS_CNAV,
+    "GPS_CNAV2": sidereon.NavMessage.GPS_CNAV2,
+    "QZSS_CNAV": sidereon.NavMessage.QZSS_CNAV,
+    "QZSS_CNAV2": sidereon.NavMessage.QZSS_CNAV2,
     "GAL_INAV": sidereon.NavMessage.GALILEO_INAV,
     "GAL_FNAV": sidereon.NavMessage.GALILEO_FNAV,
     "BDS_D1": sidereon.NavMessage.BEIDOU_D1,
@@ -39,6 +43,13 @@ def _float_bits(value):
 
 def _golden_case(name):
     path = os.path.join(CORE_FIXTURES, "broadcast_golden.json")
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    return next(case for case in doc["cases"] if case["name"] == name)
+
+
+def _cnav_golden_case(name):
+    path = os.path.join(CORE_FIXTURES, "cnav_broadcast_golden.json")
     with open(path, encoding="utf-8") as fh:
         doc = json.load(fh)
     return next(case for case in doc["cases"] if case["name"] == name)
@@ -206,6 +217,60 @@ def test_broadcast_record_evaluate_rejects_non_finite_epoch():
 
     with pytest.raises(ValueError):
         record.evaluate(float("nan"))
+
+
+def test_cnav_rinex4_eval_and_accessors_match_core_golden():
+    path = os.path.join(CORE_FIXTURES, "nav", "BRD400DLR_S_20261800000_01H_MN_trim.rnx")
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    records = sidereon.parse_rinex_nav_records(text)
+    case = _cnav_golden_case("g01_gps_cnav_toe")
+    record = _matching_record(records, case)
+
+    assert record.is_cnav_family
+    assert record.cnav is not None
+    assert record.cnav.ura_ed_index == 0
+    assert record.cnav.ura_ed_m == pytest.approx(2.0)
+    assert record.cnav.ura_ned_m(
+        record.cnav.top_week, record.cnav.top_tow_s
+    ) == pytest.approx(1.0)
+    assert record.group_delays.cnav_isc_l1ca_s == pytest.approx(-2.910383045673e-10)
+    assert record.cnav_single_frequency_correction_s(
+        sidereon.CnavSignal.L1_CA
+    ) == pytest.approx(record.group_delay_s)
+    assert sidereon.cnav_ura_nominal_m(1) == pytest.approx(2.8)
+    assert sidereon.cnav_ura_ned_m(
+        record.cnav, record.cnav.top_week, record.cnav.top_tow_s
+    ) == pytest.approx(1.0)
+
+    state = record.evaluate(_float_from_hex_bits(case["t_sow_hex"]))
+    expected = case["expect_hex"]
+    assert _float_bits(state.x_m) == int(expected["x_m"], 16)
+    assert _float_bits(state.y_m) == int(expected["y_m"], 16)
+    assert _float_bits(state.z_m) == int(expected["z_m"], 16)
+    assert _float_bits(state.clock_s) == int(expected["dt_clock_total_s"], 16)
+
+
+def test_rinex4_lenient_parse_lint_and_message_preference_are_exposed():
+    path = os.path.join(CORE_FIXTURES, "nav", "BRD400DLR_S_20261800000_01H_MN_trim.rnx")
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+
+    parsed = sidereon.parse_rinex_nav_lenient(text)
+    assert parsed.record_count == 2
+    assert parsed.skipped_count == 4
+    assert {skipped.satellite for skipped in parsed.skipped} == {"G01", "G03", "J02"}
+
+    report = sidereon.lint_rinex_nav(text)
+    assert not report.is_clean
+    assert report.count(sidereon.RinexLintSeverity.ERROR) == 4
+    assert [finding.code for finding in report.findings[:4]] == ["NAV-B01"] * 4
+    assert all(finding.kind == "NavDroppedBlock" for finding in report.findings[:4])
+
+    store = sidereon.parse_rinex_nav(text)
+    assert store.message_preference == sidereon.NavMessagePreference.PREFER_LEGACY
+    store.set_message_preference(sidereon.NavMessagePreference.PREFER_MODERN)
+    assert store.message_preference == sidereon.NavMessagePreference.PREFER_MODERN
 
 
 def test_rinex_nav_parse_error_is_typed():

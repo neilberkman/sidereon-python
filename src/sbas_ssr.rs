@@ -28,6 +28,7 @@ use sidereon_core::GnssSatelliteId;
 use crate::frames::PyTimeScale;
 use crate::marshal::PyGnssSystem;
 use crate::rinex::PyBroadcastEphemeris;
+use crate::rtcm::PyRtcmMessage;
 use crate::RtcmParseError;
 
 fn to_rtcm_err<E: std::fmt::Display>(err: E) -> PyErr {
@@ -1318,6 +1319,21 @@ impl PySsrCorrectionStore {
         let epoch = gnss_week_tow(time_scale, week, tow_s)?;
         self.inner
             .ingest_ssr(&message.inner, epoch)
+            .map_err(to_rtcm_err)
+    }
+
+    /// Ingest one decoded RTCM message. Non-SSR RTCM messages are ignored.
+    #[pyo3(signature = (message, week, tow_s, time_scale=PyTimeScale::GPST))]
+    fn ingest(
+        &mut self,
+        message: &PyRtcmMessage,
+        week: u32,
+        tow_s: f64,
+        time_scale: PyTimeScale,
+    ) -> PyResult<()> {
+        let epoch = gnss_week_tow(time_scale, week, tow_s)?;
+        self.inner
+            .ingest(&message.inner, epoch)
             .map_err(to_rtcm_err)
     }
 

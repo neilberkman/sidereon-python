@@ -53,7 +53,9 @@ mod leap;
 mod least_squares;
 mod lnav;
 mod marshal;
+mod nmea;
 mod normality;
+mod ntrip;
 mod observables;
 mod observation;
 mod oem;
@@ -72,6 +74,7 @@ mod rtcm;
 mod rtk;
 mod sbas_ssr;
 mod sky;
+mod space_weather;
 mod spk;
 mod spp;
 mod staleness;
@@ -203,6 +206,13 @@ create_exception!(
 
 create_exception!(
     _sidereon,
+    SpaceWeatherError,
+    SidereonError,
+    "Raised when a space-weather product cannot be parsed or queried."
+);
+
+create_exception!(
+    _sidereon,
     ConstellationError,
     SidereonError,
     "Raised when the GNSS constellation catalog cannot be built or validated:\nan object name without a PRN, malformed NAVCEN status bytes, or an SP3\nvalidation finding."
@@ -274,6 +284,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("IonexParseError", py.get_type::<IonexParseError>())?;
     m.add("SpkParseError", py.get_type::<SpkParseError>())?;
     m.add("RtcmParseError", py.get_type::<RtcmParseError>())?;
+    m.add("SpaceWeatherError", py.get_type::<SpaceWeatherError>())?;
     m.add("ConstellationError", py.get_type::<ConstellationError>())?;
     m.add("SelectionError", py.get_type::<SelectionError>())?;
     m.add("FallbackError", py.get_type::<FallbackError>())?;
@@ -336,5 +347,8 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     terrain::register(m)?;
     sbas_ssr::register(m)?;
     rtcm::register(m)?;
+    space_weather::register(m)?;
+    nmea::register(m)?;
+    ntrip::register(m)?;
     Ok(())
 }

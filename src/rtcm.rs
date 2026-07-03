@@ -19,10 +19,14 @@ use pyo3::types::{PyBytes, PyModule};
 use pyo3::Bound;
 
 use sidereon_core::rtcm::{
-    decode_messages as core_decode_messages, encode_frame as core_encode_frame,
-    message_number as core_message_number, AntennaDescriptor, GlonassEphemeris, GpsEphemeris,
-    Message, MsmHeader, MsmKind, MsmMessage, MsmSatellite, MsmSignal, StationCoordinates,
-    UnsupportedMessage,
+    decode_messages as core_decode_messages, decode_stream as core_decode_stream,
+    derive_lli as core_derive_lli, encode_frame as core_encode_frame,
+    message_number as core_message_number, minimum_lock_time_ms as core_minimum_lock_time_ms,
+    msm_epoch_dt_ms as core_msm_epoch_dt_ms, msm_signal_rinex_code as core_msm_signal_rinex_code,
+    AntennaDescriptor, CellLli, FrameSkip, FrameSkipReason, GlonassEphemeris, GpsEphemeris,
+    LockTimeTracker, Message, MsmHeader, MsmKind, MsmMessage, MsmSatellite, MsmSignal,
+    PreviousLock, StationCoordinates, StreamDiagnostics, UnsupportedMessage, LLI_HALF_CYCLE,
+    LLI_LOSS_OF_LOCK,
 };
 
 use pyo3::exceptions::PyValueError;
@@ -32,6 +36,27 @@ use crate::RtcmParseError;
 
 fn to_rtcm_err<E: std::fmt::Display>(err: E) -> PyErr {
     RtcmParseError::new_err(err.to_string())
+}
+
+fn parse_msm_kind(kind: &str) -> PyResult<MsmKind> {
+    match kind {
+        "msm4" => Ok(MsmKind::Msm4),
+        "msm7" => Ok(MsmKind::Msm7),
+        other => Err(PyValueError::new_err(format!(
+            "unknown RTCM MSM kind {other:?}; expected \"msm4\" or \"msm7\""
+        ))),
+    }
+}
+
+fn parse_system(system: &str) -> PyResult<GnssSystem> {
+    let mut letters = system.chars();
+    let (Some(letter), None) = (letters.next(), letters.next()) else {
+        return Err(PyValueError::new_err(format!(
+            "invalid RTCM MSM system {system:?}; expected a single letter"
+        )));
+    };
+    GnssSystem::from_letter(letter)
+        .ok_or_else(|| PyValueError::new_err(format!("unknown RTCM MSM system letter {letter:?}")))
 }
 
 /// A 1005 / 1006 station antenna reference point. Each coordinate is the raw
@@ -1000,6 +1025,14 @@ impl PyRtcmMsmSignal {
         self.inner.fine_phase_range_rate
     }
 
+    /// Minimum continuous-lock time encoded by this cell's raw lock indicator.
+    ///
+    /// `kind` is `"msm4"` or `"msm7"` because the two MSM variants use
+    /// different RTCM lock-time fields.
+    fn minimum_lock_time_ms(&self, kind: &str) -> PyResult<Option<u32>> {
+        Ok(self.inner.minimum_lock_time_ms(parse_msm_kind(kind)?))
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "RtcmMsmSignal(satellite_id={}, signal_id={})",
@@ -1035,24 +1068,8 @@ impl PyRtcmMsmMessage {
         satellites: Vec<Py<PyRtcmMsmSatellite>>,
         signals: Vec<Py<PyRtcmMsmSignal>>,
     ) -> PyResult<Self> {
-        let mut letters = system.chars();
-        let (Some(letter), None) = (letters.next(), letters.next()) else {
-            return Err(PyValueError::new_err(format!(
-                "invalid RTCM MSM system {system:?}; expected a single letter"
-            )));
-        };
-        let system = GnssSystem::from_letter(letter).ok_or_else(|| {
-            PyValueError::new_err(format!("unknown RTCM MSM system letter {letter:?}"))
-        })?;
-        let kind = match kind {
-            "msm4" => MsmKind::Msm4,
-            "msm7" => MsmKind::Msm7,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "unknown RTCM MSM kind {other:?}; expected \"msm4\" or \"msm7\""
-                )))
-            }
-        };
+        let system = parse_system(system)?;
+        let kind = parse_msm_kind(kind)?;
         let satellites = satellites.iter().map(|s| s.borrow(py).inner).collect();
         let signals = signals.iter().map(|s| s.borrow(py).inner).collect();
         Ok(Self {
@@ -1148,6 +1165,196 @@ impl PyRtcmUnsupportedMessage {
     }
 }
 
+/// Derived RINEX LLI for one RTCM MSM signal cell.
+#[pyclass(module = "sidereon._sidereon", name = "RtcmCellLli")]
+#[derive(Clone, Copy)]
+pub struct PyRtcmCellLli {
+    inner: CellLli,
+}
+
+#[pymethods]
+impl PyRtcmCellLli {
+    /// Satellite id, as carried by the MSM signal cell.
+    #[getter]
+    fn satellite_id(&self) -> u8 {
+        self.inner.satellite_id
+    }
+    /// Signal id, as carried by the MSM signal cell.
+    #[getter]
+    fn signal_id(&self) -> u8 {
+        self.inner.signal_id
+    }
+    /// Derived RINEX LLI digit. This binding exposes core bits 0 and 1 only.
+    #[getter]
+    fn lli(&self) -> u8 {
+        self.inner.lli
+    }
+    /// Current normalized minimum lock time in milliseconds.
+    #[getter]
+    fn min_lock_time_ms(&self) -> Option<u32> {
+        self.inner.min_lock_time_ms
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtcmCellLli(satellite_id={}, signal_id={}, lli={})",
+            self.inner.satellite_id, self.inner.signal_id, self.inner.lli
+        )
+    }
+}
+
+/// Per-stream lock-time continuity tracker for RTCM MSM LLI derivation.
+#[pyclass(module = "sidereon._sidereon", name = "RtcmLockTimeTracker")]
+#[derive(Clone, Default)]
+pub struct PyRtcmLockTimeTracker {
+    inner: LockTimeTracker,
+}
+
+#[pymethods]
+impl PyRtcmLockTimeTracker {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: LockTimeTracker::new(),
+        }
+    }
+
+    /// Derive LLI values for every signal cell in `message` and advance state.
+    fn observe(&mut self, message: &PyRtcmMsmMessage) -> Vec<PyRtcmCellLli> {
+        self.inner
+            .observe(&message.inner)
+            .into_iter()
+            .map(|inner| PyRtcmCellLli { inner })
+            .collect()
+    }
+
+    /// Drop all per-cell lock history.
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    fn __repr__(&self) -> &'static str {
+        "RtcmLockTimeTracker()"
+    }
+}
+
+/// One CRC-valid RTCM frame whose body did not decode.
+#[pyclass(module = "sidereon._sidereon", name = "RtcmFrameSkip")]
+#[derive(Clone)]
+pub struct PyRtcmFrameSkip {
+    inner: FrameSkip,
+}
+
+#[pymethods]
+impl PyRtcmFrameSkip {
+    /// Byte offset of the skipped frame's preamble.
+    #[getter]
+    fn offset(&self) -> usize {
+        self.inner.offset
+    }
+    /// RTCM message number when the frame body was long enough to carry one.
+    #[getter]
+    fn message_number(&self) -> Option<u16> {
+        self.inner.message_number
+    }
+    /// Stable reason tag: `"truncated"` or `"malformed"`.
+    #[getter]
+    fn reason(&self) -> &'static str {
+        match &self.inner.reason {
+            FrameSkipReason::Truncated => "truncated",
+            FrameSkipReason::Malformed(_) => "malformed",
+        }
+    }
+    /// Error detail for malformed frames.
+    #[getter]
+    fn detail(&self) -> Option<String> {
+        match &self.inner.reason {
+            FrameSkipReason::Truncated => None,
+            FrameSkipReason::Malformed(detail) => Some(detail.clone()),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtcmFrameSkip(offset={}, message_number={:?}, reason={:?})",
+            self.inner.offset,
+            self.inner.message_number,
+            self.reason()
+        )
+    }
+}
+
+/// Diagnostics collected while scanning an RTCM byte stream.
+#[pyclass(module = "sidereon._sidereon", name = "RtcmStreamDiagnostics")]
+#[derive(Clone)]
+pub struct PyRtcmStreamDiagnostics {
+    inner: StreamDiagnostics,
+}
+
+#[pymethods]
+impl PyRtcmStreamDiagnostics {
+    /// Bytes skipped while resynchronizing on the next valid frame.
+    #[getter]
+    fn resync_bytes(&self) -> usize {
+        self.inner.resync_bytes
+    }
+    /// CRC-valid frames whose bodies failed typed decode.
+    #[getter]
+    fn skipped_frames(&self) -> Vec<PyRtcmFrameSkip> {
+        self.inner
+            .skipped_frames
+            .iter()
+            .cloned()
+            .map(|inner| PyRtcmFrameSkip { inner })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtcmStreamDiagnostics(resync_bytes={}, skipped_frames={})",
+            self.inner.resync_bytes,
+            self.inner.skipped_frames.len()
+        )
+    }
+}
+
+/// A decoded RTCM byte stream plus forgiving-parse diagnostics.
+#[pyclass(module = "sidereon._sidereon", name = "RtcmStream")]
+#[derive(Clone)]
+pub struct PyRtcmStream {
+    messages: Vec<Message>,
+    diagnostics: StreamDiagnostics,
+}
+
+#[pymethods]
+impl PyRtcmStream {
+    /// Every decoded message, in stream order.
+    #[getter]
+    fn messages(&self) -> Vec<PyRtcmMessage> {
+        self.messages
+            .iter()
+            .cloned()
+            .map(|inner| PyRtcmMessage { inner })
+            .collect()
+    }
+    /// Stream diagnostics for resynchronization and skipped frames.
+    #[getter]
+    fn diagnostics(&self) -> PyRtcmStreamDiagnostics {
+        PyRtcmStreamDiagnostics {
+            inner: self.diagnostics.clone(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtcmStream(messages={}, resync_bytes={}, skipped_frames={})",
+            self.messages.len(),
+            self.diagnostics.resync_bytes,
+            self.diagnostics.skipped_frames.len()
+        )
+    }
+}
+
 /// One decoded RTCM 3 message.
 ///
 /// Inspect [`kind`](Self::kind) to discover the variant, then read the typed
@@ -1158,7 +1365,13 @@ impl PyRtcmUnsupportedMessage {
 #[pyclass(module = "sidereon._sidereon", name = "RtcmMessage")]
 #[derive(Clone)]
 pub struct PyRtcmMessage {
-    inner: Message,
+    pub(crate) inner: Message,
+}
+
+impl PyRtcmMessage {
+    pub(crate) fn from_inner(inner: Message) -> Self {
+        Self { inner }
+    }
 }
 
 #[pymethods]
@@ -1318,6 +1531,17 @@ fn decode_rtcm(data: &[u8]) -> Vec<PyRtcmMessage> {
         .collect()
 }
 
+/// Decode every CRC-valid frame and return both messages and stream
+/// diagnostics. This is the diagnostics-bearing counterpart to `decode_rtcm`.
+#[pyfunction]
+fn decode_rtcm_stream(data: &[u8]) -> PyRtcmStream {
+    let stream = core_decode_stream(data);
+    PyRtcmStream {
+        messages: stream.messages,
+        diagnostics: stream.diagnostics,
+    }
+}
+
 /// Decode a single RTCM 3 message body (the bytes between a frame's length word
 /// and its CRC). Raises `RtcmParseError` on a truncated body of a recognized
 /// type; an unrecognized message number decodes to the `"unsupported"` variant.
@@ -1343,6 +1567,52 @@ fn rtcm_message_number(body: &[u8]) -> PyResult<u16> {
     core_message_number(body).map_err(to_rtcm_err)
 }
 
+/// Minimum continuous-lock time for an MSM lock indicator, in milliseconds.
+#[pyfunction]
+fn rtcm_minimum_lock_time_ms(kind: &str, indicator: u16) -> PyResult<Option<u32>> {
+    Ok(core_minimum_lock_time_ms(parse_msm_kind(kind)?, indicator))
+}
+
+/// Derive the RINEX LLI digit for one signal cell.
+///
+/// Pass `elapsed_ms=None` for the first observation. When `elapsed_ms` is set,
+/// `previous_min_lock_time_ms=None` represents a previous reserved indicator.
+#[pyfunction]
+#[pyo3(signature = (
+    previous_min_lock_time_ms,
+    elapsed_ms,
+    current_min_lock_time_ms,
+    half_cycle_ambiguity,
+))]
+fn rtcm_derive_lli(
+    previous_min_lock_time_ms: Option<u32>,
+    elapsed_ms: Option<u64>,
+    current_min_lock_time_ms: Option<u32>,
+    half_cycle_ambiguity: bool,
+) -> u8 {
+    let previous = elapsed_ms.map(|elapsed_ms| PreviousLock {
+        min_lock_time_ms: previous_min_lock_time_ms,
+        elapsed_ms,
+    });
+    core_derive_lli(previous, current_min_lock_time_ms, half_cycle_ambiguity)
+}
+
+/// Elapsed milliseconds between two raw MSM epoch-time fields for one system.
+#[pyfunction]
+fn rtcm_msm_epoch_dt_ms(system: &str, previous: u32, current: u32) -> PyResult<u64> {
+    Ok(core_msm_epoch_dt_ms(
+        parse_system(system)?,
+        previous,
+        current,
+    ))
+}
+
+/// RINEX observation-code suffix for an MSM signal id, or `None` if reserved.
+#[pyfunction]
+fn rtcm_msm_signal_rinex_code(system: &str, signal_id: u8) -> PyResult<Option<&'static str>> {
+    Ok(core_msm_signal_rinex_code(parse_system(system)?, signal_id))
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRtcmStationCoordinates>()?;
     m.add_class::<PyRtcmAntennaDescriptor>()?;
@@ -1353,10 +1623,22 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRtcmMsmSignal>()?;
     m.add_class::<PyRtcmMsmMessage>()?;
     m.add_class::<PyRtcmUnsupportedMessage>()?;
+    m.add_class::<PyRtcmCellLli>()?;
+    m.add_class::<PyRtcmLockTimeTracker>()?;
+    m.add_class::<PyRtcmFrameSkip>()?;
+    m.add_class::<PyRtcmStreamDiagnostics>()?;
+    m.add_class::<PyRtcmStream>()?;
     m.add_class::<PyRtcmMessage>()?;
+    m.add("RTCM_LLI_LOSS_OF_LOCK", LLI_LOSS_OF_LOCK)?;
+    m.add("RTCM_LLI_HALF_CYCLE", LLI_HALF_CYCLE)?;
     m.add_function(wrap_pyfunction!(decode_rtcm, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_rtcm_stream, m)?)?;
     m.add_function(wrap_pyfunction!(decode_rtcm_message, m)?)?;
     m.add_function(wrap_pyfunction!(encode_rtcm_frame, m)?)?;
     m.add_function(wrap_pyfunction!(rtcm_message_number, m)?)?;
+    m.add_function(wrap_pyfunction!(rtcm_minimum_lock_time_ms, m)?)?;
+    m.add_function(wrap_pyfunction!(rtcm_derive_lli, m)?)?;
+    m.add_function(wrap_pyfunction!(rtcm_msm_epoch_dt_ms, m)?)?;
+    m.add_function(wrap_pyfunction!(rtcm_msm_signal_rinex_code, m)?)?;
     Ok(())
 }
