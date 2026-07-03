@@ -19,9 +19,12 @@ use pyo3::types::PyModule;
 
 use sidereon_core::positioning::ReceiverSolution;
 use sidereon_core::qc_obs::{
-    observation_qc_with_options as core_observation_qc_with_options, IntervalSource,
-    ObservationDataGap, ObservationQcNote, ObservationQcOptions, ObservationQcReport,
-    SatelliteObservationQc, SatelliteSignalQc, SnrStats, SsiHistogram, SystemSignalQc,
+    observation_qc_with_options as core_observation_qc_with_options,
+    render_html as core_observation_qc_render_html, render_text as core_observation_qc_render_text,
+    ClockJump, CycleSlipQc, IntervalSource, MpStats, MultipathReport, ObservationDataGap,
+    ObservationQcNote, ObservationQcOptions, ObservationQcReport, SatelliteMultipathQc,
+    SatelliteObservationQc, SatelliteSignalQc, SnrStats, SsiHistogram, SystemCycleSlipQc,
+    SystemMultipathQc, SystemSignalQc,
 };
 use sidereon_core::quality::{
     self, fde_spp, raim_fde_design as core_raim_fde_design, FdeError, FdeOptions, FdeSppError,
@@ -862,6 +865,233 @@ impl PySystemSignalQc {
     }
 }
 
+/// One detected receiver-clock jump.
+#[pyclass(module = "sidereon._sidereon", name = "ClockJump")]
+#[derive(Clone, Copy)]
+pub struct PyClockJump {
+    inner: ClockJump,
+}
+
+impl From<ClockJump> for PyClockJump {
+    fn from(inner: ClockJump) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyClockJump {
+    #[getter]
+    fn epoch_index(&self) -> usize {
+        self.inner.epoch_index
+    }
+
+    #[getter]
+    fn epoch(&self) -> PyObsEpochTime {
+        self.inner.epoch.into()
+    }
+
+    #[getter]
+    fn delta_s(&self) -> f64 {
+        self.inner.delta_s
+    }
+}
+
+/// RMS statistics for one multipath series.
+#[pyclass(module = "sidereon._sidereon", name = "MpStats")]
+#[derive(Clone, Copy)]
+pub struct PyMpStats {
+    inner: MpStats,
+}
+
+impl From<MpStats> for PyMpStats {
+    fn from(inner: MpStats) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyMpStats {
+    #[getter]
+    fn n(&self) -> usize {
+        self.inner.n
+    }
+
+    #[getter]
+    fn rms_m(&self) -> f64 {
+        self.inner.rms_m
+    }
+}
+
+/// Per-satellite MP1/MP2 multipath RMS.
+#[pyclass(module = "sidereon._sidereon", name = "SatelliteMultipathQc")]
+#[derive(Clone)]
+pub struct PySatelliteMultipathQc {
+    inner: SatelliteMultipathQc,
+}
+
+impl From<SatelliteMultipathQc> for PySatelliteMultipathQc {
+    fn from(inner: SatelliteMultipathQc) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySatelliteMultipathQc {
+    #[getter]
+    fn satellite(&self) -> String {
+        self.inner.satellite.to_string()
+    }
+
+    #[getter]
+    fn mp1(&self) -> Option<PyMpStats> {
+        self.inner.mp1.map(Into::into)
+    }
+
+    #[getter]
+    fn mp2(&self) -> Option<PyMpStats> {
+        self.inner.mp2.map(Into::into)
+    }
+}
+
+/// Per-system MP1/MP2 multipath RMS.
+#[pyclass(module = "sidereon._sidereon", name = "SystemMultipathQc")]
+#[derive(Clone)]
+pub struct PySystemMultipathQc {
+    inner: SystemMultipathQc,
+}
+
+impl From<SystemMultipathQc> for PySystemMultipathQc {
+    fn from(inner: SystemMultipathQc) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySystemMultipathQc {
+    #[getter]
+    fn system(&self) -> PyGnssSystem {
+        self.inner.system.into()
+    }
+
+    #[getter]
+    fn mp1(&self) -> Option<PyMpStats> {
+        self.inner.mp1.map(Into::into)
+    }
+
+    #[getter]
+    fn mp2(&self) -> Option<PyMpStats> {
+        self.inner.mp2.map(Into::into)
+    }
+}
+
+/// MP1/MP2 multipath RMS report.
+#[pyclass(module = "sidereon._sidereon", name = "MultipathReport")]
+#[derive(Clone)]
+pub struct PyMultipathReport {
+    inner: MultipathReport,
+}
+
+impl From<MultipathReport> for PyMultipathReport {
+    fn from(inner: MultipathReport) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyMultipathReport {
+    #[getter]
+    fn satellites(&self) -> Vec<PySatelliteMultipathQc> {
+        self.inner
+            .satellites
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect()
+    }
+
+    #[getter]
+    fn systems(&self) -> Vec<PySystemMultipathQc> {
+        self.inner.systems.iter().cloned().map(Into::into).collect()
+    }
+}
+
+/// Per-constellation cycle-slip counts.
+#[pyclass(module = "sidereon._sidereon", name = "SystemCycleSlipQc")]
+#[derive(Clone, Copy)]
+pub struct PySystemCycleSlipQc {
+    inner: SystemCycleSlipQc,
+}
+
+impl From<SystemCycleSlipQc> for PySystemCycleSlipQc {
+    fn from(inner: SystemCycleSlipQc) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySystemCycleSlipQc {
+    #[getter]
+    fn system(&self) -> PyGnssSystem {
+        self.inner.system.into()
+    }
+
+    #[getter]
+    fn observations(&self) -> usize {
+        self.inner.observations
+    }
+
+    #[getter]
+    fn slips(&self) -> usize {
+        self.inner.slips
+    }
+
+    #[getter]
+    fn observations_per_slip(&self) -> Option<f64> {
+        self.inner.observations_per_slip
+    }
+}
+
+/// Aggregate dual-frequency cycle-slip counts.
+#[pyclass(module = "sidereon._sidereon", name = "CycleSlipQc")]
+#[derive(Clone)]
+pub struct PyCycleSlipQc {
+    inner: CycleSlipQc,
+}
+
+impl From<CycleSlipQc> for PyCycleSlipQc {
+    fn from(inner: CycleSlipQc) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyCycleSlipQc {
+    #[getter]
+    fn observations(&self) -> usize {
+        self.inner.observations
+    }
+
+    #[getter]
+    fn total_slips(&self) -> usize {
+        self.inner.total_slips
+    }
+
+    #[getter]
+    fn observations_per_slip(&self) -> Option<f64> {
+        self.inner.observations_per_slip
+    }
+
+    #[getter]
+    fn by_system(&self) -> Vec<PySystemCycleSlipQc> {
+        self.inner
+            .by_system
+            .iter()
+            .copied()
+            .map(Into::into)
+            .collect()
+    }
+}
+
 /// Non-fatal observation QC note.
 #[pyclass(module = "sidereon._sidereon", name = "ObservationQcNote")]
 #[derive(Clone, Copy)]
@@ -960,6 +1190,26 @@ impl PyObservationQcReport {
     }
 
     #[getter]
+    fn clock_jumps(&self) -> Vec<PyClockJump> {
+        self.inner
+            .clock_jumps
+            .iter()
+            .copied()
+            .map(Into::into)
+            .collect()
+    }
+
+    #[getter]
+    fn cycle_slips(&self) -> PyCycleSlipQc {
+        self.inner.cycle_slips.clone().into()
+    }
+
+    #[getter]
+    fn multipath(&self) -> PyMultipathReport {
+        self.inner.multipath.clone().into()
+    }
+
+    #[getter]
     fn satellites(&self) -> Vec<PySatelliteObservationQc> {
         self.inner
             .satellites
@@ -994,6 +1244,18 @@ impl PyObservationQcReport {
         self.inner.notes.iter().copied().map(Into::into).collect()
     }
 
+    fn render_text(&self) -> String {
+        core_observation_qc_render_text(&self.inner)
+    }
+
+    fn render_html(&self) -> String {
+        core_observation_qc_render_html(&self.inner)
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner).map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "ObservationQcReport(observation_epochs={}, satellites={})",
@@ -1016,6 +1278,7 @@ fn observation_qc(
         ObservationQcOptions {
             interval_override_s,
             gap_factor,
+            ..ObservationQcOptions::default()
         },
     )
     .map_err(|err| PyValueError::new_err(err.to_string()))?;
@@ -1036,6 +1299,13 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySatelliteObservationQc>()?;
     m.add_class::<PySatelliteSignalQc>()?;
     m.add_class::<PySystemSignalQc>()?;
+    m.add_class::<PyClockJump>()?;
+    m.add_class::<PyMpStats>()?;
+    m.add_class::<PySatelliteMultipathQc>()?;
+    m.add_class::<PySystemMultipathQc>()?;
+    m.add_class::<PyMultipathReport>()?;
+    m.add_class::<PySystemCycleSlipQc>()?;
+    m.add_class::<PyCycleSlipQc>()?;
     m.add_class::<PyObservationQcNote>()?;
     m.add_class::<PyObservationQcReport>()?;
     m.add_function(wrap_pyfunction!(qc_raim, m)?)?;
