@@ -93,7 +93,7 @@ def test_observation_qc_matches_real_oracle_summary():
     assert "MP1 RMS" in rendered
     assert "MP2 RMS" in rendered
     assert "SLIPS" in rendered
-    assert "<td class=\"text\">GPS</td>" in report.render_html()
+    assert '<td class="text">GPS</td>' in report.render_html()
 
     encoded = json.loads(report.to_json())
     assert encoded["cycle_slips"]["total_slips"] == 27
