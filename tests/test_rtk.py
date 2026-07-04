@@ -132,6 +132,7 @@ def test_rtk_float_matches_reference():
     assert sol.baseline.dtype == np.float64
     assert np.array_equal(sol.baseline, expected)
     assert sol.converged
+    assert isinstance(sol.geometry_quality, sidereon.GeometryQuality)
     assert "RtkFloatSolution(" in repr(sol)
 
 
@@ -255,6 +256,7 @@ def test_solve_static_rtk_arc_smoke():
         sol.fixed_solution.fixed_baseline,
         np.array(fx["expected"]["fixed_baseline_m"]),
     )
+    assert isinstance(sol.geometry_quality, sidereon.GeometryQuality)
     assert "RtkStaticArcSolution(" in repr(sol)
 
 
@@ -272,6 +274,7 @@ def test_rtk_arc_converges_to_static_fixed_baseline():
     assert last.reported_baseline.dtype == np.float64
     # The sequential arc resolves the integers and rides the static reference.
     assert last.integer_fixed is True
+    assert isinstance(last.geometry_quality, sidereon.GeometryQuality)
     expected_fixed = np.array(fx["expected"]["fixed_baseline_m"])
     assert np.allclose(last.reported_baseline_m, expected_fixed, atol=1e-6)
     assert "RtkArcSolution(" in repr(sol)
@@ -520,6 +523,7 @@ def test_fix_wide_lane_rtk_arc_smoke():
     assert len(sol.epochs) == 3
     assert sol.dropped_sats == []
     assert sol.split_cycle_slip_arcs == []
+    assert isinstance(sol.geometry_quality, sidereon.GeometryQuality)
     assert "RtkWideLaneArcSolution(" in repr(sol)
 
 

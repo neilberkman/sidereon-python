@@ -12,12 +12,12 @@ use pyo3::types::PyModule;
 use sidereon_core::source_localization::{
     chan_ho_initial_guess as core_chan_ho_initial_guess, locate_source as core_locate_source,
     source_crlb as core_source_crlb, source_dop as core_source_dop, Loss, Sensor, SourceCovariance,
-    SourceCrlb, SourceGeometryQuality, SourceInitialGuess,
-    SourceLocalizationError as CoreSourceLocalizationError, SourceLocateOptions, SourceResidual,
-    SourceSensorInfluence, SourceSolution, SourceSolveMode,
+    SourceCrlb, SourceInitialGuess, SourceLocalizationError as CoreSourceLocalizationError,
+    SourceLocateOptions, SourceResidual, SourceSensorInfluence, SourceSolution, SourceSolveMode,
 };
 
 use crate::events::PyDop;
+use crate::geometry_quality::PyGeometryQuality;
 use crate::propagation::PyLoss;
 use crate::SourceLocalizationError;
 
@@ -511,62 +511,6 @@ impl PySourceCovariance {
     }
 }
 
-/// Geometry rank and redundancy diagnostics for a source solve.
-#[pyclass(module = "sidereon._sidereon", name = "SourceGeometryQuality")]
-#[derive(Clone)]
-pub struct PySourceGeometryQuality {
-    inner: SourceGeometryQuality,
-}
-
-impl From<SourceGeometryQuality> for PySourceGeometryQuality {
-    fn from(inner: SourceGeometryQuality) -> Self {
-        Self { inner }
-    }
-}
-
-#[pymethods]
-impl PySourceGeometryQuality {
-    /// Number of residual rows used by the solve.
-    #[getter]
-    fn residual_count(&self) -> usize {
-        self.inner.residual_count
-    }
-
-    /// Number of estimated state parameters.
-    #[getter]
-    fn parameter_count(&self) -> usize {
-        self.inner.parameter_count
-    }
-
-    /// Redundant residual count, saturated at zero.
-    #[getter]
-    fn redundancy(&self) -> usize {
-        self.inner.redundancy
-    }
-
-    /// Whether covariance was available from the normal matrix.
-    #[getter]
-    fn covariance_available(&self) -> bool {
-        self.inner.covariance_available
-    }
-
-    /// Whether the final normal matrix was rank deficient.
-    #[getter]
-    fn rank_deficient(&self) -> bool {
-        self.inner.rank_deficient
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "SourceGeometryQuality(residual_count={}, parameter_count={}, redundancy={}, rank_deficient={})",
-            self.inner.residual_count,
-            self.inner.parameter_count,
-            self.inner.redundancy,
-            self.inner.rank_deficient
-        )
-    }
-}
-
 /// Source-location solution.
 #[pyclass(module = "sidereon._sidereon", name = "SourceSolution")]
 #[derive(Clone)]
@@ -628,10 +572,10 @@ impl PySourceSolution {
             .collect()
     }
 
-    /// Geometry rank and redundancy diagnostics.
+    /// Geometry observability and covariance-validation diagnostics.
     #[getter]
-    fn geometry_quality(&self) -> PySourceGeometryQuality {
-        self.inner.geometry_quality.clone().into()
+    fn geometry_quality(&self) -> PyGeometryQuality {
+        self.inner.geometry_quality.into()
     }
 
     /// Closed-form seed used by the iterative solve.
@@ -814,7 +758,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySourceResidual>()?;
     m.add_class::<PySourceSensorInfluence>()?;
     m.add_class::<PySourceCovariance>()?;
-    m.add_class::<PySourceGeometryQuality>()?;
     m.add_class::<PySourceSolution>()?;
     m.add_class::<PySourceCrlb>()?;
     m.add_function(wrap_pyfunction!(locate_source, m)?)?;

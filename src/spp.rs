@@ -20,6 +20,7 @@ use sidereon_core::quality::SolutionValidationOptions;
 use sidereon_core::GnssSatelliteId;
 
 use crate::events::PyDop;
+use crate::geometry_quality::PyGeometryQuality;
 use crate::marshal::{option_py_or_default, PyGnssSystem};
 use crate::{np_array, to_solve_err, PySp3, SolveError};
 
@@ -617,6 +618,24 @@ impl PySppSolution {
     #[getter]
     fn dop(&self) -> Option<PyDop> {
         self.inner.dop.clone().map(PyDop::from)
+    }
+
+    /// Geometry observability and covariance-validation diagnostics.
+    #[getter]
+    fn geometry_quality(&self) -> PyGeometryQuality {
+        self.inner.geometry_quality.into()
+    }
+
+    /// Solution degrees of freedom, `used_count - (3 + systems)`.
+    #[getter]
+    fn redundancy(&self) -> isize {
+        self.inner.metadata.redundancy
+    }
+
+    /// Whether residual-based RAIM can test the accepted solution.
+    #[getter]
+    fn raim_checkable(&self) -> bool {
+        self.inner.metadata.raim_checkable
     }
 
     fn __repr__(&self) -> String {

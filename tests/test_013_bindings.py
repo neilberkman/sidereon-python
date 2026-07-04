@@ -50,9 +50,7 @@ def _arrivals(sensors, source, origin, speed):
 def test_observable_state_batch_and_interpolant_parity():
     samples = _sample_rows()
     source = sidereon.PreciseEphemerisSamples.from_samples(samples)
-    handle = sidereon.PreciseEphemerisInterpolant.from_precise_ephemeris_samples(
-        source
-    )
+    handle = sidereon.PreciseEphemerisInterpolant.from_precise_ephemeris_samples(source)
     direct_handle = sidereon.PreciseEphemerisInterpolant.from_samples(samples)
 
     assert handle.time_scale == sidereon.TimeScale.GPST
@@ -80,8 +78,7 @@ def test_observable_state_batch_and_interpolant_parity():
 
     scalar = handle.position_at_j2000_seconds("G01", float(epochs[0]))
     assert (
-        scalar.position_m.tobytes()
-        == source_batch.positions_ecef_m[0].copy().tobytes()
+        scalar.position_m.tobytes() == source_batch.positions_ecef_m[0].copy().tobytes()
     )
     assert scalar.clock_s == source_batch.clocks_s[0]
 
@@ -204,7 +201,9 @@ def test_source_localization_known_vectors():
     assert solution.crlb is not None
     assert len(solution.residuals) == len(sensors_3d)
     assert len(solution.per_sensor_influence) == len(sensors_3d)
-    assert solution.geometry_quality.residual_count == len(sensors_3d)
+    assert solution.geometry_quality.rank == 4
+    assert solution.geometry_quality.redundancy == 1
+    assert solution.geometry_quality.raim_checkable is True
 
     sensors_2d = [
         sidereon.Sensor([0.0, 0.0]),

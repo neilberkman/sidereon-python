@@ -35,6 +35,7 @@ use sidereon_core::rtk_filter::{
     ValidatedFixedBaselineSolution, ValidatedFixedSolveOpts, WideLaneOptions,
 };
 
+use crate::geometry_quality::PyGeometryQuality;
 use crate::marshal::option_py_or_default;
 use crate::{np_array, to_solve_err};
 
@@ -852,6 +853,12 @@ impl PyRtkFloatSolution {
     #[getter]
     fn n_observations(&self) -> usize {
         self.inner.n_observations
+    }
+
+    /// Geometry observability and covariance-validation diagnostics.
+    #[getter]
+    fn geometry_quality(&self) -> PyGeometryQuality {
+        self.inner.geometry_quality.into()
     }
 
     fn __repr__(&self) -> String {
@@ -1971,6 +1978,12 @@ impl PyRtkArcEpochSolution {
             .map(|inner| PyRtkArcInnovationScreen { inner })
     }
 
+    /// Geometry observability and covariance-validation diagnostics.
+    #[getter]
+    fn geometry_quality(&self) -> PyGeometryQuality {
+        self.inner.geometry_quality.into()
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "RtkArcEpochSolution(reported_baseline=[{:.4}, {:.4}, {:.4}], integer_fixed={})",
@@ -2322,6 +2335,12 @@ impl PyRtkStaticArcSolution {
     #[getter]
     fn elevation_masked_sats(&self) -> Vec<String> {
         self.inner.elevation_masked_sats.clone()
+    }
+
+    /// Geometry observability and covariance-validation diagnostics.
+    #[getter]
+    fn geometry_quality(&self) -> PyGeometryQuality {
+        self.inner.geometry_quality.into()
     }
 
     fn __repr__(&self) -> String {
@@ -2822,6 +2841,12 @@ impl PyRtkWideLaneArcSolution {
                 inner: inner.clone(),
             })
             .collect()
+    }
+
+    /// Geometry observability and covariance-validation diagnostics.
+    #[getter]
+    fn geometry_quality(&self) -> PyGeometryQuality {
+        self.inner.geometry_quality.into()
     }
 
     fn __repr__(&self) -> String {

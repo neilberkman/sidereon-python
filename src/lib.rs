@@ -48,6 +48,7 @@ mod forces;
 mod frames;
 mod geoid;
 mod geometry;
+mod geometry_quality;
 mod ils;
 mod iod;
 mod ionex;
@@ -316,6 +317,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     estimation::register(m)?;
     products::register(m)?;
     bodies::register(m)?;
+    geometry_quality::register(m)?;
     spp::register(m)?;
     spk::register(m)?;
     rtk::register(m)?;
