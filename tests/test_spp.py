@@ -106,6 +106,13 @@ def test_spp_solution_exposes_dop():
     assert len(clocks) >= 1
     assert clocks[0][1] == sol.rx_clock_s
 
+    quality = sol.geometry_quality
+    assert isinstance(quality, sidereon.GeometryQuality)
+    assert quality.tier == sidereon.ObservabilityTier.NOMINAL
+    assert quality.redundancy == sol.redundancy
+    assert quality.raim_checkable == sol.raim_checkable
+    assert quality.covariance_validated is True
+
 
 def _bits(x):
     return np.float64(x).view(np.int64)

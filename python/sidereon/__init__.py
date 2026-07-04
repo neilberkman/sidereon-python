@@ -130,6 +130,8 @@ from ._sidereon import (
     Antex,
     Antenna,
     SunMoon,
+    ObservabilityTier,
+    GeometryQuality,
     SppSolution,
     RtkFloatSolution,
     RtkFixedSolution,
@@ -822,7 +824,6 @@ from ._sidereon import (
     SourceResidual,
     SourceSensorInfluence,
     SourceCovariance,
-    SourceGeometryQuality,
     SourceSolution,
     SourceCrlb,
     locate_source,
@@ -908,6 +909,8 @@ __all__ = [
     "Antex",
     "Antenna",
     "SunMoon",
+    "ObservabilityTier",
+    "GeometryQuality",
     "SppSolution",
     "RtkFloatSolution",
     "RtkFixedSolution",
@@ -1732,6 +1735,8 @@ from ._sidereon import (
     satellite_id_to_sbas_prn,
     decode_ssr_message,
 )
+
+SourceGeometryQuality = GeometryQuality
 
 _PHASE_B_API = [
     "KeplerSolution",
