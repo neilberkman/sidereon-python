@@ -20,19 +20,22 @@ use std::path::PathBuf;
 const DEG_TO_RAD: f64 = PI / 180.0;
 
 use numpy::ndarray::Array3;
-use numpy::{IntoPyArray, PyArray1, PyArray3};
+use numpy::{IntoPyArray, PyArray1, PyArray3, PyReadonlyArray1, PyReadonlyArray3};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyBytes, PyModule};
 
-use sidereon_core::astro::time::model::Instant;
+use sidereon_core::astro::time::{
+    j2000_seconds_from_split, split_julian_date_from_j2000_seconds, Instant, InstantRepr,
+    JulianDateSplit, TimeScale,
+};
 use sidereon_core::atmosphere::ionosphere::{
     galileo_nequick_g_native as core_galileo_nequick_g_native,
     ionosphere_delay as core_ionosphere_delay, klobuchar_native as core_klobuchar_native,
     nequick_g_delay_m as core_nequick_g_delay_m, nequick_g_stec_tecu as core_nequick_g_stec_tecu,
     GalileoNequickCoeffs, GalileoNequickEval, IonoModel, KlobucharParams, NequickGRayEval,
 };
-use sidereon_core::atmosphere::{ionex_slant_delay, Ionex};
+use sidereon_core::atmosphere::{ionex_slant_delay, Ionex, TecGridSamples, TecSample};
 use sidereon_core::Wgs84Geodetic;
 
 use crate::{np_array, to_solve_err};
@@ -63,6 +66,287 @@ fn maps_to_array3<'py>(py: Python<'py>, maps: &[Vec<Vec<f64>>]) -> Bound<'py, Py
     array.into_pyarray(py)
 }
 
+fn maps_from_array3(values: PyReadonlyArray3<'_, f64>) -> Vec<Vec<Vec<f64>>> {
+    let view = values.as_array();
+    let dims = view.dim();
+    let mut maps = vec![vec![vec![0.0; dims.2]; dims.1]; dims.0];
+    for map_index in 0..dims.0 {
+        for lat_index in 0..dims.1 {
+            for lon_index in 0..dims.2 {
+                maps[map_index][lat_index][lon_index] = view[[map_index, lat_index, lon_index]];
+            }
+        }
+    }
+    maps
+}
+
+fn ionex_epoch_from_j2000_seconds(seconds: i64) -> PyResult<Instant> {
+    let (jd_whole, fraction) = split_julian_date_from_j2000_seconds(seconds);
+    let split = JulianDateSplit::new(jd_whole, fraction)
+        .map_err(|err| PyValueError::new_err(format!("invalid epoch_j2000_s: {err}")))?;
+    Ok(Instant::from_julian_date(TimeScale::Utc, split))
+}
+
+fn ionex_epoch_to_j2000_seconds(epoch: Instant) -> Option<i64> {
+    match epoch.repr {
+        InstantRepr::JulianDate(split) => {
+            let seconds = j2000_seconds_from_split(split.jd_whole, split.fraction);
+            if seconds.is_finite() && seconds >= i64::MIN as f64 && seconds <= i64::MAX as f64 {
+                Some(seconds.round() as i64)
+            } else {
+                None
+            }
+        }
+        InstantRepr::Nanos(nanos) => {
+            const NANOS_PER_SECOND: i128 = 1_000_000_000;
+            if nanos % NANOS_PER_SECOND != 0 {
+                return None;
+            }
+            i64::try_from(nanos / NANOS_PER_SECOND).ok()
+        }
+    }
+}
+
+/// One IONEX vertical-TEC sample at one grid node.
+#[pyclass(module = "sidereon._sidereon", name = "TecSample")]
+#[derive(Clone, Copy)]
+pub struct PyTecSample {
+    inner: TecSample,
+}
+
+impl From<TecSample> for PyTecSample {
+    fn from(inner: TecSample) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyTecSample {
+    /// Build one IONEX vertical-TEC sample.
+    ///
+    /// `epoch_j2000_s` is an integer UTC second on the IONEX map axis.
+    /// Latitude and longitude are node coordinates in degrees. VTEC and RMS are
+    /// in TECU.
+    #[new]
+    #[pyo3(signature = (epoch_j2000_s, lat_deg, lon_deg, vtec_tecu, rms_tecu=None))]
+    fn new(
+        epoch_j2000_s: i64,
+        lat_deg: f64,
+        lon_deg: f64,
+        vtec_tecu: f64,
+        rms_tecu: Option<f64>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: TecSample {
+                epoch: ionex_epoch_from_j2000_seconds(epoch_j2000_s)?,
+                lat_deg,
+                lon_deg,
+                vtec_tecu,
+                rms_tecu,
+            },
+        })
+    }
+
+    /// Map epoch as integer UTC seconds since J2000.
+    #[getter]
+    fn epoch_j2000_s(&self) -> PyResult<i64> {
+        ionex_epoch_to_j2000_seconds(self.inner.epoch)
+            .ok_or_else(|| PyValueError::new_err("TEC sample epoch is not an integer J2000 second"))
+    }
+
+    /// Latitude node in degrees.
+    #[getter]
+    fn lat_deg(&self) -> f64 {
+        self.inner.lat_deg
+    }
+
+    /// Longitude node in degrees.
+    #[getter]
+    fn lon_deg(&self) -> f64 {
+        self.inner.lon_deg
+    }
+
+    /// Vertical TEC in TECU.
+    #[getter]
+    fn vtec_tecu(&self) -> f64 {
+        self.inner.vtec_tecu
+    }
+
+    /// Optional RMS value in TECU.
+    #[getter]
+    fn rms_tecu(&self) -> Option<f64> {
+        self.inner.rms_tecu
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!(
+            "TecSample(epoch_j2000_s={}, lat_deg={}, lon_deg={}, vtec_tecu={})",
+            self.epoch_j2000_s()?,
+            self.inner.lat_deg,
+            self.inner.lon_deg,
+            self.inner.vtec_tecu
+        ))
+    }
+}
+
+/// Whole-grid IONEX vertical-TEC samples.
+#[pyclass(module = "sidereon._sidereon", name = "TecGridSamples")]
+#[derive(Clone)]
+pub struct PyTecGridSamples {
+    inner: TecGridSamples,
+}
+
+impl From<TecGridSamples> for PyTecGridSamples {
+    fn from(inner: TecGridSamples) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyTecGridSamples {
+    /// Build whole-grid IONEX vertical-TEC samples.
+    ///
+    /// `map_epochs_j2000_s` are integer UTC seconds since J2000. Latitude nodes
+    /// are degrees descending, longitude nodes are degrees ascending, shell and
+    /// base radius are kilometres, and map values are TECU.
+    #[new]
+    #[pyo3(signature = (
+        map_epochs_j2000_s,
+        lat_nodes_deg,
+        lon_nodes_deg,
+        dlat_deg,
+        dlon_deg,
+        shell_height_km,
+        base_radius_km,
+        exponent,
+        tec_maps,
+        rms_maps=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        map_epochs_j2000_s: PyReadonlyArray1<'_, i64>,
+        lat_nodes_deg: PyReadonlyArray1<'_, f64>,
+        lon_nodes_deg: PyReadonlyArray1<'_, f64>,
+        dlat_deg: f64,
+        dlon_deg: f64,
+        shell_height_km: f64,
+        base_radius_km: f64,
+        exponent: i32,
+        tec_maps: PyReadonlyArray3<'_, f64>,
+        rms_maps: Option<PyReadonlyArray3<'_, f64>>,
+    ) -> PyResult<Self> {
+        let epochs = map_epochs_j2000_s
+            .as_slice()
+            .map_err(|err| PyValueError::new_err(err.to_string()))?
+            .iter()
+            .copied()
+            .map(ionex_epoch_from_j2000_seconds)
+            .collect::<PyResult<Vec<_>>>()?;
+        let lat_nodes_deg = lat_nodes_deg
+            .as_slice()
+            .map_err(|err| PyValueError::new_err(err.to_string()))?
+            .to_vec();
+        let lon_nodes_deg = lon_nodes_deg
+            .as_slice()
+            .map_err(|err| PyValueError::new_err(err.to_string()))?
+            .to_vec();
+        Ok(Self {
+            inner: TecGridSamples {
+                map_epochs: epochs,
+                lat_nodes_deg,
+                lon_nodes_deg,
+                dlat_deg,
+                dlon_deg,
+                shell_height_km,
+                base_radius_km,
+                exponent,
+                tec_maps: maps_from_array3(tec_maps),
+                rms_maps: rms_maps.map(maps_from_array3).unwrap_or_default(),
+            },
+        })
+    }
+
+    /// Map epochs as a numpy `(n_epoch,)` `int64` array, UTC seconds since J2000.
+    #[getter]
+    fn map_epochs_j2000_s<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<i64>>> {
+        let epochs = self
+            .inner
+            .map_epochs
+            .iter()
+            .copied()
+            .map(|epoch| {
+                ionex_epoch_to_j2000_seconds(epoch).ok_or_else(|| {
+                    PyValueError::new_err("IONEX epoch is not an integer J2000 second")
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(PyArray1::from_vec(py, epochs))
+    }
+
+    /// Latitude node values in degrees, descending.
+    #[getter]
+    fn lat_nodes_deg<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.lat_nodes_deg)
+    }
+
+    /// Longitude node values in degrees, ascending.
+    #[getter]
+    fn lon_nodes_deg<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.lon_nodes_deg)
+    }
+
+    /// Signed latitude step in degrees.
+    #[getter]
+    fn dlat_deg(&self) -> f64 {
+        self.inner.dlat_deg
+    }
+
+    /// Signed longitude step in degrees.
+    #[getter]
+    fn dlon_deg(&self) -> f64 {
+        self.inner.dlon_deg
+    }
+
+    /// Single-layer shell height in kilometres.
+    #[getter]
+    fn shell_height_km(&self) -> f64 {
+        self.inner.shell_height_km
+    }
+
+    /// Mean earth radius used by the geometry, in kilometres.
+    #[getter]
+    fn base_radius_km(&self) -> f64 {
+        self.inner.base_radius_km
+    }
+
+    /// The IONEX `EXPONENT` header field.
+    #[getter]
+    fn exponent(&self) -> i32 {
+        self.inner.exponent
+    }
+
+    /// Per-map vertical-TEC grids as a numpy `(epoch, lat, lon)` cube, TECU.
+    #[getter]
+    fn tec_maps<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        maps_to_array3(py, &self.inner.tec_maps)
+    }
+
+    /// Per-map RMS grids as a numpy `(epoch, lat, lon)` cube, TECU.
+    #[getter]
+    fn rms_maps<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        maps_to_array3(py, &self.inner.rms_maps)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TecGridSamples(epochs={}, lat_nodes={}, lon_nodes={})",
+            self.inner.map_epochs.len(),
+            self.inner.lat_nodes_deg.len(),
+            self.inner.lon_nodes_deg.len()
+        )
+    }
+}
+
 /// A parsed IONEX vertical-TEC product.
 ///
 /// Construct with [`load_ionex`]. Read the grid geometry with the
@@ -86,6 +370,37 @@ impl PyIonex {
 
 #[pymethods]
 impl PyIonex {
+    /// Build an IONEX product directly from whole-grid TEC samples.
+    ///
+    /// Map epochs are integer UTC seconds since J2000. Latitude and longitude
+    /// nodes are degrees, shell geometry is kilometres, and TEC/RMS map values
+    /// are TECU.
+    #[staticmethod]
+    fn from_samples(samples: &PyTecGridSamples) -> PyResult<Self> {
+        Ionex::from_samples(samples.inner.clone())
+            .map(|inner| Self { inner })
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    /// Build an IONEX product from a flat stream of node TEC samples.
+    ///
+    /// `shell_height_km` and `base_radius_km` are kilometres. Each
+    /// [`TecSample`] carries latitude and longitude in degrees and VTEC/RMS in
+    /// TECU.
+    #[staticmethod]
+    fn from_node_samples(
+        py: Python<'_>,
+        samples: Vec<Py<PyTecSample>>,
+        shell_height_km: f64,
+        base_radius_km: f64,
+        exponent: i32,
+    ) -> PyResult<Self> {
+        let samples = samples.iter().map(|sample| sample.borrow(py).inner);
+        Ionex::from_node_samples(samples, shell_height_km, base_radius_km, exponent)
+            .map(|inner| Self { inner })
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
     /// Latitude node values in degrees as a numpy `(n_lat,)` `float64` array,
     /// descending (north-to-south).
     #[getter]
@@ -194,6 +509,20 @@ impl PyIonex {
     /// axes, geometry, exponent, map epochs, and every TEC / RMS value).
     fn to_ionex_string(&self) -> String {
         self.inner.to_ionex_string()
+    }
+
+    /// Extract this product as whole-grid IONEX samples.
+    fn tec_grid_samples(&self) -> PyTecGridSamples {
+        self.inner.tec_grid_samples().into()
+    }
+
+    /// Extract this product as one [`TecSample`] per grid node.
+    fn tec_samples(&self) -> Vec<PyTecSample> {
+        self.inner
+            .tec_samples()
+            .into_iter()
+            .map(Into::into)
+            .collect()
     }
 
     fn __repr__(&self) -> String {
@@ -577,6 +906,8 @@ fn ionosphere_delay_nequick(
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyTecSample>()?;
+    m.add_class::<PyTecGridSamples>()?;
     m.add_class::<PyIonex>()?;
     m.add_function(wrap_pyfunction!(load_ionex, m)?)?;
     m.add_function(wrap_pyfunction!(klobuchar_native, m)?)?;

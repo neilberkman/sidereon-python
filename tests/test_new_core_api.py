@@ -336,7 +336,7 @@ def test_angles_beta_and_relative_frames_round_trip():
     assert sidereon.angular_separation(
         [1.0, 0.0, 0.0], (0.0, 1.0, 0.0)
     ) == pytest.approx(90.0)
-    assert sidereon.position_angle(0.0, 0.0, np.pi / 2.0, 0.0) == pytest.approx(90.0)
+    assert sidereon.position_angle(0.0, 0.0, 90.0, 0.0) == pytest.approx(90.0)
     beta = sidereon.beta_angle_from_state(
         [7000.0, 0.0, 0.0],
         (0.0, 7.5, 0.0),

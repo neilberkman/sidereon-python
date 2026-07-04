@@ -25,28 +25,30 @@ fn angular_separation(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<f6
 #[pyfunction]
 /// Return the great-circle angular separation between two lon/lat coordinate pairs.
 ///
-/// Longitudes and latitudes are supplied in radians; the result is in degrees.
+/// Longitudes and latitudes are supplied in degrees in `(lon, lat)` order; the
+/// result is in degrees.
 fn angular_separation_coords(
-    lon1_rad: f64,
-    lat1_rad: f64,
-    lon2_rad: f64,
-    lat2_rad: f64,
+    lon1_deg: f64,
+    lat1_deg: f64,
+    lon2_deg: f64,
+    lat2_deg: f64,
 ) -> PyResult<f64> {
-    core::angular_separation_coords((lon1_rad, lat1_rad), (lon2_rad, lat2_rad))
+    core::angular_separation_coords((lon1_deg, lat1_deg), (lon2_deg, lat2_deg))
         .map_err(to_angles_err)
 }
 
 #[pyfunction]
 /// Return the position angle from one lon/lat coordinate to another, in degrees.
 ///
-/// The angle is measured eastward from north at the starting coordinate.
+/// Inputs are supplied in degrees in `(lon, lat)` order. The angle is measured
+/// eastward from north at the starting coordinate.
 fn position_angle(
-    from_lon_rad: f64,
-    from_lat_rad: f64,
-    to_lon_rad: f64,
-    to_lat_rad: f64,
+    from_lon_deg: f64,
+    from_lat_deg: f64,
+    to_lon_deg: f64,
+    to_lat_deg: f64,
 ) -> PyResult<f64> {
-    core::position_angle((from_lon_rad, from_lat_rad), (to_lon_rad, to_lat_rad))
+    core::position_angle((from_lon_deg, from_lat_deg), (to_lon_deg, to_lat_deg))
         .map_err(to_angles_err)
 }
 

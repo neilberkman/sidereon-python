@@ -2,11 +2,14 @@
 
 use std::path::PathBuf;
 
+use numpy::{PyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
 use sidereon_core::terrain::{DtedInterpolation, DtedLookupOptions, DtedTerrain, DtedTile};
+
+use crate::np_array;
 
 fn to_terrain_err<E: std::fmt::Display>(err: E) -> PyErr {
     PyValueError::new_err(err.to_string())
@@ -65,7 +68,7 @@ pub struct PyDtedLookupOptions {
 }
 
 impl PyDtedLookupOptions {
-    fn inner(&self) -> DtedLookupOptions {
+    pub(crate) fn inner(&self) -> DtedLookupOptions {
         self.inner
     }
 }
@@ -112,7 +115,7 @@ impl PyDtedTerrain {
         }
     }
 
-    /// Return terrain height in metres at latitude and longitude in degrees.
+    /// Return ORTHOMETRIC terrain height in metres at latitude and longitude in degrees.
     ///
     /// Missing tiles use the core sea-level fallback.
     #[pyo3(signature = (latitude_deg, longitude_deg, options=None))]
@@ -130,6 +133,46 @@ impl PyDtedTerrain {
             None => self.inner.height_m(longitude_deg, latitude_deg),
         }
         .map_err(to_terrain_err)
+    }
+
+    /// Return ORTHOMETRIC terrain heights in metres for `(longitude, latitude)` rows.
+    ///
+    /// `points_lon_lat_deg` is a numpy `(n, 2)` array with longitude in column 0
+    /// and latitude in column 1, both in degrees. Missing tiles use the core
+    /// sea-level fallback. If any point is invalid, raises `ValueError` with the
+    /// failing row index.
+    #[pyo3(signature = (points_lon_lat_deg, options=None))]
+    fn height_batch<'py>(
+        &mut self,
+        py: Python<'py>,
+        points_lon_lat_deg: PyReadonlyArray2<'_, f64>,
+        options: Option<&PyDtedLookupOptions>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let view = points_lon_lat_deg.as_array();
+        if view.ncols() != 2 {
+            return Err(PyValueError::new_err(
+                "points_lon_lat_deg must have two columns",
+            ));
+        }
+        let points = view
+            .outer_iter()
+            .map(|row| (row[0], row[1]))
+            .collect::<Vec<_>>();
+        let options = options.map(PyDtedLookupOptions::inner).unwrap_or_default();
+        let mut heights = Vec::with_capacity(points.len());
+        for (index, result) in self
+            .inner
+            .height_batch(&points, options)
+            .into_iter()
+            .enumerate()
+        {
+            heights.push(
+                result.map_err(|err| {
+                    PyValueError::new_err(format!("terrain point {index}: {err}"))
+                })?,
+            );
+        }
+        Ok(np_array(py, &heights))
     }
 
     fn __repr__(&self) -> &'static str {
@@ -153,7 +196,7 @@ impl PyDtedTile {
             .map_err(to_terrain_err)
     }
 
-    /// Return the nearest-posting height in metres at latitude and longitude in degrees.
+    /// Return nearest-posting ORTHOMETRIC height in metres at latitude and longitude in degrees.
     fn height_m(&self, latitude_deg: f64, longitude_deg: f64) -> PyResult<f64> {
         self.inner
             .get_elevation(longitude_deg, latitude_deg)
