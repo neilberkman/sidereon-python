@@ -1638,8 +1638,8 @@ impl PyTle {
     /// Re-encode the parsed elements as the two 69-character TLE lines (with
     /// checksums), via the engine's `tle::encode`. For a well-formed input the
     /// round-trip is character-exact.
-    fn to_lines(&self) -> (String, String) {
-        encode_tle_lines(&self.elements)
+    fn to_lines(&self) -> PyResult<(String, String)> {
+        encode_tle_lines(&self.elements).map_err(to_tle_err)
     }
 
     /// Advisory checksum discrepancies found while parsing, as a list of

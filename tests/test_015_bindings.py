@@ -5,6 +5,56 @@ import pytest
 import sidereon
 
 
+def _protection_geometry_from_az_el(az_el_deg):
+    receiver = sidereon.Wgs84Geodetic(0.0, 0.0, 0.0)
+    rows = []
+    for index, (az_deg, el_deg) in enumerate(az_el_deg, start=1):
+        rows.append(
+            sidereon.ProtectionRow(
+                f"G{index:02d}",
+                _los_from_az_el_deg(az_deg, el_deg, receiver),
+                math.radians(el_deg),
+            )
+        )
+    return sidereon.ProtectionGeometry(rows, receiver, [sidereon.GnssSystem.GPS])
+
+
+def _los_from_az_el_deg(az_deg, el_deg, receiver):
+    az = math.radians(az_deg)
+    el = math.radians(el_deg)
+    cos_el = math.cos(el)
+    east = cos_el * math.sin(az)
+    north = cos_el * math.cos(az)
+    up = math.sin(el)
+
+    sphi = math.sin(receiver.lat_rad)
+    cphi = math.cos(receiver.lat_rad)
+    slam = math.sin(receiver.lon_rad)
+    clam = math.cos(receiver.lon_rad)
+    r = (
+        (-slam, clam, 0.0),
+        (-sphi * clam, -sphi * slam, cphi),
+        (cphi * clam, cphi * slam, sphi),
+    )
+    return np.asarray(
+        [
+            r[0][0] * east + r[1][0] * north + r[2][0] * up,
+            r[0][1] * east + r[1][1] * north + r[2][1] * up,
+            r[0][2] * east + r[1][2] * north + r[2][2] * up,
+        ],
+        dtype=np.float64,
+    )
+
+
+def _sbas_model_from_sigmas(sigmas_m):
+    return sidereon.SbasErrorModel(
+        [
+            sidereon.SbasSisError(f"G{index:02d}", sigma)
+            for index, sigma in enumerate(sigmas_m, start=1)
+        ]
+    )
+
+
 def test_015_position_metrics_isotropic_cep_and_non_psd_error():
     sigma = 3.25
     covariance = np.eye(3, dtype=np.float64) * sigma * sigma
@@ -186,3 +236,68 @@ def test_015_composite_force_selection_matches_two_body_bits():
 
     assert composite.states.tobytes() == legacy.states.tobytes()
     assert sidereon.ForceModelKind.earth_phase_a().label == "composite"
+
+
+def test_015_reliability_baarda_wtest_constants_are_pinned():
+    constants = sidereon.wtest_noncentrality(0.001, 0.80)
+
+    assert constants.delta0 == pytest.approx(4.132147965064809, rel=1.0e-14)
+    assert constants.lambda0 == constants.delta0 * constants.delta0
+
+
+def test_015_reliability_design_redundancy_sum_and_uncheckable_none():
+    rows = [
+        sidereon.RangeReliabilityRow("x-only", [1.0, 0.0], 1.0),
+        sidereon.RangeReliabilityRow("y-a", [0.0, 1.0], 1.0),
+        sidereon.RangeReliabilityRow("y-b", [0.0, 1.0], 1.0),
+    ]
+
+    report = sidereon.reliability_design(rows)
+    first = report.per_observation[0]
+
+    assert report.summary.dof == 1
+    assert report.summary.sum_redundancy == pytest.approx(report.summary.dof)
+    assert first.uncheckable is True
+    assert first.mdb_m is None
+    assert first.external_enu_m is None
+    assert first.bias_to_noise is None
+
+
+def test_015_sbas_k_multipliers_defaults_are_pinned_bits():
+    default = sidereon.SbasKMultipliers()
+    precision = sidereon.SbasKMultipliers.precision_approach()
+    en_route = sidereon.SbasKMultipliers.en_route_npa()
+
+    assert default.k_h.hex() == (6.0).hex()
+    assert default.k_v.hex() == (5.33).hex()
+    assert precision.k_h.hex() == (6.0).hex()
+    assert precision.k_v.hex() == (5.33).hex()
+    assert en_route.k_h.hex() == (6.18).hex()
+    assert en_route.k_v.hex() == (5.33).hex()
+
+
+def test_015_sbas_protection_levels_match_rust_reference_geometry():
+    geometry = _protection_geometry_from_az_el(
+        [
+            (15.0, 15.0),
+            (80.0, 70.0),
+            (155.0, 25.0),
+            (230.0, 55.0),
+            (310.0, 35.0),
+        ]
+    )
+    model = _sbas_model_from_sigmas([2.0, 1.0, 1.5, 1.2, 1.8])
+
+    pl = sidereon.sbas_protection_levels(
+        geometry,
+        model,
+        sidereon.SbasKMultipliers.precision_approach(),
+    )
+
+    assert pl.d_east_m == pytest.approx(1.500300322250245, rel=1.0e-12)
+    assert pl.d_north_m == pytest.approx(1.214969186420138, rel=1.0e-12)
+    assert pl.sigma_u_m == pytest.approx(2.563615538395546, rel=1.0e-12)
+    assert pl.d_en_m2 == pytest.approx(0.15925883957300666, rel=1.0e-12)
+    assert pl.d_major_m == pytest.approx(1.510748501734169, rel=1.0e-12)
+    assert pl.hpl_m == pytest.approx(9.064491010405014, rel=1.0e-12)
+    assert pl.vpl_m == pytest.approx(13.664070819648263, rel=1.0e-12)

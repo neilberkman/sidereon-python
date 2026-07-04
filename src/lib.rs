@@ -75,10 +75,12 @@ mod propagation;
 mod qc;
 mod reduced_orbit;
 mod relative;
+mod reliability;
 mod rf;
 mod rinex;
 mod rtcm;
 mod rtk;
+mod sbas_pl;
 mod sbas_ssr;
 mod sidereal;
 mod sky;
@@ -358,6 +360,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     leap::register(m)?;
     clock_stability::register(m)?;
     sidereal::register(m)?;
+    reliability::register(m)?;
     araim::register(m)?;
     sky::register(m)?;
     iod::register(m)?;
@@ -384,6 +387,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     tca::register(m)?;
     terrain::register(m)?;
     terrain_store::register(m)?;
+    sbas_pl::register(m)?;
     sbas_ssr::register(m)?;
     rtcm::register(m)?;
     space_weather::register(m)?;
