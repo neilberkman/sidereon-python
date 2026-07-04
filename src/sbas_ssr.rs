@@ -14,9 +14,12 @@ use sidereon_core::rtcm::{SsrKind, SsrMessage};
 use sidereon_core::sbas::{
     parse_ems_lines as core_parse_sbas_ems_lines,
     parse_rtklib_lines as core_parse_sbas_rtklib_lines, sat_to_sbas_prn, sbas_prn_to_sat,
-    SbasBlock, SbasCorrectedEphemeris, SbasCorrectionStore, SbasFastCorrection, SbasGeoState,
-    SbasIgp, SbasIonoGrid, SbasLogBlock, SbasLongTermCorrection, SbasMessage, SbasSolveMode,
-    SbasWireForm,
+    SbasBlock, SbasCorrectedEphemeris, SbasCorrectionStore, SbasDoNotUse, SbasFastCorrection,
+    SbasFastCorrections, SbasFastDegradation, SbasGeoAlmanac, SbasGeoNav, SbasGeoState, SbasIgp,
+    SbasIgpDelay, SbasIgpMask, SbasIntegrity, SbasIonoDelays, SbasIonoGrid, SbasLogBlock,
+    SbasLongTermCorrection, SbasLongTermCorrections, SbasLongTermHalf, SbasLongTermRecord,
+    SbasMessage, SbasMixedCorrections, SbasMixedFastCorrections, SbasNetworkTime, SbasPrnMask,
+    SbasSolveMode, SbasUnsupported, SbasWireForm, SpareBits,
 };
 use sidereon_core::ssr::{
     MissingCorrectionAction, OrbitReferencePoint, RegionalPolicy, SsrClockCorrection,
@@ -86,6 +89,10 @@ fn sbas_wire_form_label(form: SbasWireForm) -> &'static str {
 
 fn py_satellite(sat: GnssSatelliteId) -> String {
     sat.to_string()
+}
+
+fn spare_bits(bits: &SpareBits) -> Vec<(u64, u8)> {
+    bits.0.clone()
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "SbasWireForm", eq, eq_int)]
@@ -244,6 +251,773 @@ impl PySbasMessageKind {
     }
 }
 
+/// Decoded SBAS message payload.
+#[pyclass(module = "sidereon._sidereon", name = "SbasMessage")]
+#[derive(Clone)]
+pub struct PySbasMessage {
+    inner: SbasMessage,
+}
+
+impl From<SbasMessage> for PySbasMessage {
+    fn from(inner: SbasMessage) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySbasMessage {
+    /// Numeric SBAS message type.
+    #[getter]
+    fn message_type(&self) -> u8 {
+        self.inner.message_type()
+    }
+
+    /// Decoded SBAS message family.
+    #[getter]
+    fn kind(&self) -> PySbasMessageKind {
+        sbas_message_kind(&self.inner)
+    }
+
+    /// Stable decoded message family label.
+    #[getter]
+    fn kind_label(&self) -> &'static str {
+        sbas_message_label(&self.inner)
+    }
+
+    /// Message type 0 payload, if this message is type 0.
+    #[getter]
+    fn do_not_use(&self) -> Option<PySbasDoNotUse> {
+        match &self.inner {
+            SbasMessage::DoNotUse(value) => Some((*value).clone().into()),
+            _ => None,
+        }
+    }
+
+    /// Message type 1 payload, if this message is type 1.
+    #[getter]
+    fn prn_mask(&self) -> Option<PySbasPrnMask> {
+        match &self.inner {
+            SbasMessage::PrnMask(value) => Some((*value).clone().into()),
+            _ => None,
+        }
+    }
+
+    /// Message type 2 through 5 payload, if present.
+    #[getter]
+    fn fast_corrections(&self) -> Option<PySbasFastCorrections> {
+        match &self.inner {
+            SbasMessage::FastCorrections(value) => Some((*value).clone().into()),
+            _ => None,
+        }
+    }
+
+    /// Message type 6 payload, if present.
+    #[getter]
+    fn integrity(&self) -> Option<PySbasIntegrity> {
+        match &self.inner {
+            SbasMessage::Integrity(value) => Some((*value).clone().into()),
+            _ => None,
+        }
+    }
+
+    /// Message type 7 payload, if present.
+    #[getter]
+    fn fast_degradation(&self) -> Option<PySbasFastDegradation> {
+        match &self.inner {
+            SbasMessage::FastDegradation(value) => Some((*value).clone().into()),
+            _ => None,
+        }
+    }
+
+    /// Message type 9 payload, if present.
+    #[getter]
+    fn geo_nav(&self) -> Option<PySbasGeoNav> {
+        match &self.inner {
+            SbasMessage::GeoNav(value) => Some((*value).clone().into()),
+            _ => None,
+        }
+    }
+
+    /// Message type 12 payload, if present.
+    #[getter]
+    fn network_time(&self) -> Option<PySbasNetworkTime> {
+        match &self.inner {
+            SbasMessage::NetworkTime(value) => Some((*value).clone().into()),
+            _ => None,
+        }
+    }
+
+    /// Message type 17 payload, if present.
+    #[getter]
+    fn geo_almanac(&self) -> Option<PySbasGeoAlmanac> {
+        match &self.inner {
+            SbasMessage::GeoAlmanac(value) => Some((*value).clone().into()),
+            _ => None,
+        }
+    }
+
+    /// Message type 18 payload, if present.
+    #[getter]
+    fn igp_mask(&self) -> Option<PySbasIgpMask> {
+        match &self.inner {
+            SbasMessage::IgpMask(value) => Some((*value).clone().into()),
+            _ => None,
+        }
+    }
+
+    /// Message type 24 payload, if present.
+    #[getter]
+    fn mixed_corrections(&self) -> Option<PySbasMixedCorrections> {
+        match &self.inner {
+            SbasMessage::MixedCorrections(value) => Some((*value).clone().into()),
+            _ => None,
+        }
+    }
+
+    /// Message type 25 payload, if present.
+    #[getter]
+    fn long_term_corrections(&self) -> Option<PySbasLongTermCorrections> {
+        match &self.inner {
+            SbasMessage::LongTermCorrections(value) => Some((*value).clone().into()),
+            _ => None,
+        }
+    }
+
+    /// Message type 26 payload, if present.
+    #[getter]
+    fn iono_delays(&self) -> Option<PySbasIonoDelays> {
+        match &self.inner {
+            SbasMessage::IonoDelays(value) => Some((*value).clone().into()),
+            _ => None,
+        }
+    }
+
+    /// Unsupported payload, if this message type is not decoded.
+    #[getter]
+    fn unsupported(&self) -> Option<PySbasUnsupported> {
+        match &self.inner {
+            SbasMessage::Unsupported(value) => Some((*value).clone().into()),
+            _ => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SbasMessage(message_type={}, kind={})",
+            self.inner.message_type(),
+            sbas_message_label(&self.inner)
+        )
+    }
+}
+
+macro_rules! sbas_payload {
+    ($py:ident, $core:ident, $name:literal) => {
+        #[pyclass(module = "sidereon._sidereon", name = $name)]
+        #[derive(Clone)]
+        /// Decoded SBAS payload wrapper.
+        pub struct $py {
+            inner: $core,
+        }
+
+        impl From<$core> for $py {
+            fn from(inner: $core) -> Self {
+                Self { inner }
+            }
+        }
+    };
+}
+
+sbas_payload!(PySbasDoNotUse, SbasDoNotUse, "SbasDoNotUse");
+sbas_payload!(PySbasPrnMask, SbasPrnMask, "SbasPrnMask");
+sbas_payload!(
+    PySbasFastCorrections,
+    SbasFastCorrections,
+    "SbasFastCorrections"
+);
+sbas_payload!(PySbasIntegrity, SbasIntegrity, "SbasIntegrity");
+sbas_payload!(
+    PySbasFastDegradation,
+    SbasFastDegradation,
+    "SbasFastDegradation"
+);
+sbas_payload!(PySbasGeoNav, SbasGeoNav, "SbasGeoNav");
+sbas_payload!(PySbasNetworkTime, SbasNetworkTime, "SbasNetworkTime");
+sbas_payload!(PySbasGeoAlmanac, SbasGeoAlmanac, "SbasGeoAlmanac");
+sbas_payload!(
+    PySbasMixedCorrections,
+    SbasMixedCorrections,
+    "SbasMixedCorrections"
+);
+sbas_payload!(
+    PySbasMixedFastCorrections,
+    SbasMixedFastCorrections,
+    "SbasMixedFastCorrections"
+);
+sbas_payload!(
+    PySbasLongTermCorrections,
+    SbasLongTermCorrections,
+    "SbasLongTermCorrections"
+);
+sbas_payload!(PySbasLongTermHalf, SbasLongTermHalf, "SbasLongTermHalf");
+sbas_payload!(
+    PySbasLongTermRecord,
+    SbasLongTermRecord,
+    "SbasLongTermRecord"
+);
+sbas_payload!(PySbasIgpMask, SbasIgpMask, "SbasIgpMask");
+sbas_payload!(PySbasIonoDelays, SbasIonoDelays, "SbasIonoDelays");
+sbas_payload!(PySbasIgpDelay, SbasIgpDelay, "SbasIgpDelay");
+sbas_payload!(PySbasUnsupported, SbasUnsupported, "SbasUnsupported");
+
+#[pymethods]
+impl PySbasDoNotUse {
+    /// SBAS preamble byte.
+    #[getter]
+    fn preamble(&self) -> u8 {
+        self.inner.preamble
+    }
+
+    /// Raw 212-bit message data packed into bytes.
+    #[getter]
+    fn data<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.inner.data)
+    }
+}
+
+#[pymethods]
+impl PySbasPrnMask {
+    /// SBAS preamble byte.
+    #[getter]
+    fn preamble(&self) -> u8 {
+        self.inner.preamble
+    }
+
+    /// Issue of data for the PRN mask.
+    #[getter]
+    fn iodp(&self) -> u8 {
+        self.inner.iodp
+    }
+
+    /// Active-state bits for the 210 monitored slots.
+    #[getter]
+    fn mask(&self) -> Vec<bool> {
+        self.inner.mask.to_vec()
+    }
+
+    /// Reserved spare-bit values as `(value, width)` pairs.
+    #[getter]
+    fn reserved(&self) -> Vec<(u64, u8)> {
+        spare_bits(&self.inner.reserved)
+    }
+}
+
+#[pymethods]
+impl PySbasFastCorrections {
+    /// SBAS preamble byte.
+    #[getter]
+    fn preamble(&self) -> u8 {
+        self.inner.preamble
+    }
+
+    /// Numeric SBAS message type.
+    #[getter]
+    fn message_type(&self) -> u8 {
+        self.inner.message_type
+    }
+
+    /// Issue of data for fast corrections.
+    #[getter]
+    fn iodf(&self) -> u8 {
+        self.inner.iodf
+    }
+
+    /// Issue of data for the PRN mask.
+    #[getter]
+    fn iodp(&self) -> u8 {
+        self.inner.iodp
+    }
+
+    /// Pseudorange corrections in raw message units.
+    #[getter]
+    fn prc(&self) -> Vec<i16> {
+        self.inner.prc.to_vec()
+    }
+
+    /// UDREI values for each correction slot.
+    #[getter]
+    fn udrei(&self) -> Vec<u8> {
+        self.inner.udrei.to_vec()
+    }
+
+    /// Reserved spare-bit values as `(value, width)` pairs.
+    #[getter]
+    fn reserved(&self) -> Vec<(u64, u8)> {
+        spare_bits(&self.inner.reserved)
+    }
+}
+
+#[pymethods]
+impl PySbasIntegrity {
+    /// SBAS preamble byte.
+    #[getter]
+    fn preamble(&self) -> u8 {
+        self.inner.preamble
+    }
+
+    /// Issue of data for fast corrections, one per block.
+    #[getter]
+    fn iodf(&self) -> Vec<u8> {
+        self.inner.iodf.to_vec()
+    }
+
+    /// UDREI values for monitored slots.
+    #[getter]
+    fn udrei(&self) -> Vec<u8> {
+        self.inner.udrei.to_vec()
+    }
+
+    /// Reserved spare-bit values as `(value, width)` pairs.
+    #[getter]
+    fn reserved(&self) -> Vec<(u64, u8)> {
+        spare_bits(&self.inner.reserved)
+    }
+}
+
+#[pymethods]
+impl PySbasFastDegradation {
+    /// SBAS preamble byte.
+    #[getter]
+    fn preamble(&self) -> u8 {
+        self.inner.preamble
+    }
+
+    /// System latency in seconds.
+    #[getter]
+    fn system_latency_s(&self) -> u8 {
+        self.inner.system_latency_s
+    }
+
+    /// Issue of data for the PRN mask.
+    #[getter]
+    fn iodp(&self) -> u8 {
+        self.inner.iodp
+    }
+
+    /// Degradation indicators for monitored slots.
+    #[getter]
+    fn ai(&self) -> Vec<u8> {
+        self.inner.ai.to_vec()
+    }
+
+    /// Reserved spare-bit values as `(value, width)` pairs.
+    #[getter]
+    fn reserved(&self) -> Vec<(u64, u8)> {
+        spare_bits(&self.inner.reserved)
+    }
+}
+
+#[pymethods]
+impl PySbasGeoNav {
+    /// SBAS preamble byte.
+    #[getter]
+    fn preamble(&self) -> u8 {
+        self.inner.preamble
+    }
+
+    /// Time of day in seconds.
+    #[getter]
+    fn time_of_day_s(&self) -> u16 {
+        self.inner.time_of_day_s
+    }
+
+    /// User range accuracy index.
+    #[getter]
+    fn ura(&self) -> u8 {
+        self.inner.ura
+    }
+
+    /// ECEF X position in raw message units.
+    #[getter]
+    fn x_m(&self) -> i32 {
+        self.inner.x_m
+    }
+
+    /// ECEF Y position in raw message units.
+    #[getter]
+    fn y_m(&self) -> i32 {
+        self.inner.y_m
+    }
+
+    /// ECEF Z position in raw message units.
+    #[getter]
+    fn z_m(&self) -> i32 {
+        self.inner.z_m
+    }
+
+    /// ECEF X velocity in raw message units.
+    #[getter]
+    fn x_rate_m_s(&self) -> i32 {
+        self.inner.x_rate_m_s
+    }
+
+    /// ECEF Y velocity in raw message units.
+    #[getter]
+    fn y_rate_m_s(&self) -> i32 {
+        self.inner.y_rate_m_s
+    }
+
+    /// ECEF Z velocity in raw message units.
+    #[getter]
+    fn z_rate_m_s(&self) -> i32 {
+        self.inner.z_rate_m_s
+    }
+
+    /// ECEF X acceleration in raw message units.
+    #[getter]
+    fn x_accel_m_s2(&self) -> i16 {
+        self.inner.x_accel_m_s2
+    }
+
+    /// ECEF Y acceleration in raw message units.
+    #[getter]
+    fn y_accel_m_s2(&self) -> i16 {
+        self.inner.y_accel_m_s2
+    }
+
+    /// ECEF Z acceleration in raw message units.
+    #[getter]
+    fn z_accel_m_s2(&self) -> i16 {
+        self.inner.z_accel_m_s2
+    }
+
+    /// GEO clock offset term in raw message units.
+    #[getter]
+    fn a_gf0_s(&self) -> i16 {
+        self.inner.a_gf0_s
+    }
+
+    /// GEO clock drift term in raw message units.
+    #[getter]
+    fn a_gf1_s_s(&self) -> i16 {
+        self.inner.a_gf1_s_s
+    }
+
+    /// Reserved spare-bit values as `(value, width)` pairs.
+    #[getter]
+    fn reserved(&self) -> Vec<(u64, u8)> {
+        spare_bits(&self.inner.reserved)
+    }
+}
+
+#[pymethods]
+impl PySbasNetworkTime {
+    /// SBAS preamble byte.
+    #[getter]
+    fn preamble(&self) -> u8 {
+        self.inner.preamble
+    }
+
+    /// Raw 212-bit message data packed into bytes.
+    #[getter]
+    fn data<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.inner.data)
+    }
+}
+
+#[pymethods]
+impl PySbasGeoAlmanac {
+    /// SBAS preamble byte.
+    #[getter]
+    fn preamble(&self) -> u8 {
+        self.inner.preamble
+    }
+
+    /// Raw 212-bit message data packed into bytes.
+    #[getter]
+    fn data<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.inner.data)
+    }
+}
+
+#[pymethods]
+impl PySbasMixedCorrections {
+    /// SBAS preamble byte.
+    #[getter]
+    fn preamble(&self) -> u8 {
+        self.inner.preamble
+    }
+
+    /// Fast-correction half of the mixed message.
+    #[getter]
+    fn fast(&self) -> PySbasMixedFastCorrections {
+        self.inner.fast.clone().into()
+    }
+
+    /// Long-term half of the mixed message.
+    #[getter]
+    fn long_term(&self) -> PySbasLongTermHalf {
+        self.inner.long_term.clone().into()
+    }
+}
+
+#[pymethods]
+impl PySbasMixedFastCorrections {
+    /// Issue of data for fast corrections.
+    #[getter]
+    fn iodf(&self) -> u8 {
+        self.inner.iodf
+    }
+
+    /// Issue of data for the PRN mask.
+    #[getter]
+    fn iodp(&self) -> u8 {
+        self.inner.iodp
+    }
+
+    /// Correction block id.
+    #[getter]
+    fn block_id(&self) -> u8 {
+        self.inner.block_id
+    }
+
+    /// Pseudorange corrections in raw message units.
+    #[getter]
+    fn prc(&self) -> Vec<i16> {
+        self.inner.prc.to_vec()
+    }
+
+    /// UDREI values for each correction slot.
+    #[getter]
+    fn udrei(&self) -> Vec<u8> {
+        self.inner.udrei.to_vec()
+    }
+
+    /// Reserved spare-bit values as `(value, width)` pairs.
+    #[getter]
+    fn reserved(&self) -> Vec<(u64, u8)> {
+        spare_bits(&self.inner.reserved)
+    }
+}
+
+#[pymethods]
+impl PySbasLongTermCorrections {
+    /// SBAS preamble byte.
+    #[getter]
+    fn preamble(&self) -> u8 {
+        self.inner.preamble
+    }
+
+    /// Two long-term correction halves.
+    #[getter]
+    fn halves(&self) -> Vec<PySbasLongTermHalf> {
+        self.inner.halves.iter().cloned().map(Into::into).collect()
+    }
+}
+
+#[pymethods]
+impl PySbasLongTermHalf {
+    /// Whether records include velocity fields.
+    #[getter]
+    fn velocity_code(&self) -> bool {
+        self.inner.velocity_code
+    }
+
+    /// Issue of data for the PRN mask.
+    #[getter]
+    fn iodp(&self) -> u8 {
+        self.inner.iodp
+    }
+
+    /// Long-term correction records.
+    #[getter]
+    fn records(&self) -> Vec<PySbasLongTermRecord> {
+        self.inner.records.iter().cloned().map(Into::into).collect()
+    }
+
+    /// Reserved spare-bit values as `(value, width)` pairs.
+    #[getter]
+    fn reserved(&self) -> Vec<(u64, u8)> {
+        spare_bits(&self.inner.reserved)
+    }
+}
+
+#[pymethods]
+impl PySbasLongTermRecord {
+    /// Monitored satellite index.
+    #[getter]
+    fn monitored_index(&self) -> u8 {
+        self.inner.monitored_index
+    }
+
+    /// Issue of data ephemeris.
+    #[getter]
+    fn iode(&self) -> u8 {
+        self.inner.iode
+    }
+
+    /// ECEF X correction in raw message units.
+    #[getter]
+    fn delta_x(&self) -> i32 {
+        self.inner.delta_x
+    }
+
+    /// ECEF Y correction in raw message units.
+    #[getter]
+    fn delta_y(&self) -> i32 {
+        self.inner.delta_y
+    }
+
+    /// ECEF Z correction in raw message units.
+    #[getter]
+    fn delta_z(&self) -> i32 {
+        self.inner.delta_z
+    }
+
+    /// ECEF X rate correction in raw message units.
+    #[getter]
+    fn delta_x_rate(&self) -> i32 {
+        self.inner.delta_x_rate
+    }
+
+    /// ECEF Y rate correction in raw message units.
+    #[getter]
+    fn delta_y_rate(&self) -> i32 {
+        self.inner.delta_y_rate
+    }
+
+    /// ECEF Z rate correction in raw message units.
+    #[getter]
+    fn delta_z_rate(&self) -> i32 {
+        self.inner.delta_z_rate
+    }
+
+    /// Clock offset correction in raw message units.
+    #[getter]
+    fn delta_a_f0(&self) -> i32 {
+        self.inner.delta_a_f0
+    }
+
+    /// Clock drift correction in raw message units.
+    #[getter]
+    fn delta_a_f1(&self) -> i32 {
+        self.inner.delta_a_f1
+    }
+
+    /// Optional time of day in seconds, scaled by the message definition.
+    #[getter]
+    fn time_of_day_s(&self) -> Option<u32> {
+        self.inner.time_of_day_s
+    }
+}
+
+#[pymethods]
+impl PySbasIgpMask {
+    /// SBAS preamble byte.
+    #[getter]
+    fn preamble(&self) -> u8 {
+        self.inner.preamble
+    }
+
+    /// IGP band number.
+    #[getter]
+    fn band_number(&self) -> u8 {
+        self.inner.band_number
+    }
+
+    /// Issue of data for ionosphere.
+    #[getter]
+    fn iodi(&self) -> u8 {
+        self.inner.iodi
+    }
+
+    /// Active-state bits for the 201 IGP slots.
+    #[getter]
+    fn mask(&self) -> Vec<bool> {
+        self.inner.mask.to_vec()
+    }
+
+    /// Reserved spare-bit values as `(value, width)` pairs.
+    #[getter]
+    fn reserved(&self) -> Vec<(u64, u8)> {
+        spare_bits(&self.inner.reserved)
+    }
+}
+
+#[pymethods]
+impl PySbasIonoDelays {
+    /// SBAS preamble byte.
+    #[getter]
+    fn preamble(&self) -> u8 {
+        self.inner.preamble
+    }
+
+    /// IGP band number.
+    #[getter]
+    fn band_number(&self) -> u8 {
+        self.inner.band_number
+    }
+
+    /// IGP block id.
+    #[getter]
+    fn block_id(&self) -> u8 {
+        self.inner.block_id
+    }
+
+    /// Issue of data for ionosphere.
+    #[getter]
+    fn iodi(&self) -> u8 {
+        self.inner.iodi
+    }
+
+    /// Ionospheric delay entries.
+    #[getter]
+    fn entries(&self) -> Vec<PySbasIgpDelay> {
+        self.inner.entries.iter().cloned().map(Into::into).collect()
+    }
+
+    /// Reserved spare-bit values as `(value, width)` pairs.
+    #[getter]
+    fn reserved(&self) -> Vec<(u64, u8)> {
+        spare_bits(&self.inner.reserved)
+    }
+}
+
+#[pymethods]
+impl PySbasIgpDelay {
+    /// Vertical delay in raw message units.
+    #[getter]
+    fn vertical_delay(&self) -> u16 {
+        self.inner.vertical_delay
+    }
+
+    /// GIVEI value.
+    #[getter]
+    fn givei(&self) -> u8 {
+        self.inner.givei
+    }
+}
+
+#[pymethods]
+impl PySbasUnsupported {
+    /// SBAS preamble byte.
+    #[getter]
+    fn preamble(&self) -> u8 {
+        self.inner.preamble
+    }
+
+    /// Numeric SBAS message type.
+    #[getter]
+    fn message_type(&self) -> u8 {
+        self.inner.message_type
+    }
+
+    /// Raw 212-bit message data packed into bytes.
+    #[getter]
+    fn data<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.inner.data)
+    }
+}
+
 #[pyclass(module = "sidereon._sidereon", name = "SbasBlock")]
 #[derive(Clone)]
 /// Decoded SBAS message block.
@@ -271,6 +1045,12 @@ impl PySbasBlock {
     #[getter]
     fn kind_label(&self) -> &'static str {
         sbas_message_label(&self.inner.message)
+    }
+
+    /// Decoded SBAS message payload.
+    #[getter]
+    fn message(&self) -> PySbasMessage {
+        self.inner.message.clone().into()
     }
 
     /// Encode the block back to its original wire form.
@@ -1474,6 +2254,24 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySbasWireForm>()?;
     m.add_class::<PySbasSolveMode>()?;
     m.add_class::<PySbasMessageKind>()?;
+    m.add_class::<PySbasMessage>()?;
+    m.add_class::<PySbasDoNotUse>()?;
+    m.add_class::<PySbasPrnMask>()?;
+    m.add_class::<PySbasFastCorrections>()?;
+    m.add_class::<PySbasIntegrity>()?;
+    m.add_class::<PySbasFastDegradation>()?;
+    m.add_class::<PySbasGeoNav>()?;
+    m.add_class::<PySbasNetworkTime>()?;
+    m.add_class::<PySbasGeoAlmanac>()?;
+    m.add_class::<PySbasMixedCorrections>()?;
+    m.add_class::<PySbasMixedFastCorrections>()?;
+    m.add_class::<PySbasLongTermCorrections>()?;
+    m.add_class::<PySbasLongTermHalf>()?;
+    m.add_class::<PySbasLongTermRecord>()?;
+    m.add_class::<PySbasIgpMask>()?;
+    m.add_class::<PySbasIonoDelays>()?;
+    m.add_class::<PySbasIgpDelay>()?;
+    m.add_class::<PySbasUnsupported>()?;
     m.add_class::<PySbasBlock>()?;
     m.add_class::<PySbasLogBlock>()?;
     m.add_class::<PySbasFastCorrection>()?;
