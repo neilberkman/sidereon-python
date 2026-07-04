@@ -197,6 +197,16 @@ pub struct PyIntegrityAllocation {
 impl PyIntegrityAllocation {
     /// Build an ARAIM integrity allocation.
     #[new]
+    #[pyo3(signature = (
+        phmi_total,
+        phmi_vert,
+        phmi_hor,
+        pfa_vert,
+        pfa_hor,
+        p_threshold_unmonitored,
+        max_fault_order,
+        p_emt=1.0e-5
+    ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         phmi_total: f64,
@@ -206,6 +216,7 @@ impl PyIntegrityAllocation {
         pfa_hor: f64,
         p_threshold_unmonitored: f64,
         max_fault_order: usize,
+        p_emt: f64,
     ) -> Self {
         Self {
             inner: IntegrityAllocation {
@@ -215,6 +226,7 @@ impl PyIntegrityAllocation {
                 pfa_vert,
                 pfa_hor,
                 p_threshold_unmonitored,
+                p_emt,
                 max_fault_order,
             },
         }
@@ -264,6 +276,12 @@ impl PyIntegrityAllocation {
         self.inner.p_threshold_unmonitored
     }
 
+    /// Fault-prior threshold used for the effective monitor threshold.
+    #[getter]
+    fn p_emt(&self) -> f64 {
+        self.inner.p_emt
+    }
+
     /// Maximum enumerated satellite-fault order.
     #[getter]
     fn max_fault_order(&self) -> usize {
@@ -289,9 +307,53 @@ pub struct PySatelliteIsmModel {
 impl PySatelliteIsmModel {
     /// Build a per-satellite ISM model.
     #[new]
-    fn new(sigma_ura_m: f64, sigma_ure_m: f64, b_nom_m: f64, p_sat: f64) -> Self {
+    #[pyo3(signature = (
+        sigma_ura_m,
+        sigma_ure_m,
+        b_nom_m,
+        p_sat,
+        effective_sigma_int_m=None,
+        effective_sigma_acc_m=None
+    ))]
+    fn new(
+        sigma_ura_m: f64,
+        sigma_ure_m: f64,
+        b_nom_m: f64,
+        p_sat: f64,
+        effective_sigma_int_m: Option<f64>,
+        effective_sigma_acc_m: Option<f64>,
+    ) -> Self {
         Self {
-            inner: SatelliteIsmModel::new(sigma_ura_m, sigma_ure_m, b_nom_m, p_sat),
+            inner: SatelliteIsmModel {
+                sigma_ura_m,
+                sigma_ure_m,
+                effective_sigma_int_m,
+                effective_sigma_acc_m,
+                b_nom_m,
+                p_sat,
+            },
+        }
+    }
+
+    /// Build a per-satellite ISM model with direct effective range sigmas.
+    #[staticmethod]
+    fn new_with_effective_sigmas(
+        sigma_ura_m: f64,
+        sigma_ure_m: f64,
+        b_nom_m: f64,
+        p_sat: f64,
+        effective_sigma_int_m: f64,
+        effective_sigma_acc_m: f64,
+    ) -> Self {
+        Self {
+            inner: SatelliteIsmModel::new_with_effective_sigmas(
+                sigma_ura_m,
+                sigma_ure_m,
+                b_nom_m,
+                p_sat,
+                effective_sigma_int_m,
+                effective_sigma_acc_m,
+            ),
         }
     }
 
@@ -305,6 +367,18 @@ impl PySatelliteIsmModel {
     #[getter]
     fn sigma_ure_m(&self) -> f64 {
         self.inner.sigma_ure_m
+    }
+
+    /// Effective integrity one-sigma range error after local terms, metres.
+    #[getter]
+    fn effective_sigma_int_m(&self) -> Option<f64> {
+        self.inner.effective_sigma_int_m
+    }
+
+    /// Effective accuracy one-sigma range error after local terms, metres.
+    #[getter]
+    fn effective_sigma_acc_m(&self) -> Option<f64> {
+        self.inner.effective_sigma_acc_m
     }
 
     /// Nominal SIS bias bound, metres.
@@ -331,20 +405,57 @@ pub struct PySatelliteIsm {
 impl PySatelliteIsm {
     /// Build a satellite-specific ISM model.
     #[new]
+    #[pyo3(signature = (
+        satellite_id,
+        sigma_ura_m,
+        sigma_ure_m,
+        b_nom_m,
+        p_sat,
+        effective_sigma_int_m=None,
+        effective_sigma_acc_m=None
+    ))]
     fn new(
         satellite_id: &str,
         sigma_ura_m: f64,
         sigma_ure_m: f64,
         b_nom_m: f64,
         p_sat: f64,
+        effective_sigma_int_m: Option<f64>,
+        effective_sigma_acc_m: Option<f64>,
     ) -> PyResult<Self> {
         Ok(Self {
-            inner: SatelliteIsm::new(
+            inner: SatelliteIsm {
+                id: parse_satellite(satellite_id)?,
+                sigma_ura_m,
+                sigma_ure_m,
+                effective_sigma_int_m,
+                effective_sigma_acc_m,
+                b_nom_m,
+                p_sat,
+            },
+        })
+    }
+
+    /// Build a satellite-specific ISM model with direct effective range sigmas.
+    #[staticmethod]
+    fn new_with_effective_sigmas(
+        satellite_id: &str,
+        sigma_ura_m: f64,
+        sigma_ure_m: f64,
+        b_nom_m: f64,
+        p_sat: f64,
+        effective_sigma_int_m: f64,
+        effective_sigma_acc_m: f64,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: SatelliteIsm::new_with_effective_sigmas(
                 parse_satellite(satellite_id)?,
                 sigma_ura_m,
                 sigma_ure_m,
                 b_nom_m,
                 p_sat,
+                effective_sigma_int_m,
+                effective_sigma_acc_m,
             ),
         })
     }
@@ -365,6 +476,18 @@ impl PySatelliteIsm {
     #[getter]
     fn sigma_ure_m(&self) -> f64 {
         self.inner.sigma_ure_m
+    }
+
+    /// Effective integrity one-sigma range error after local terms, metres.
+    #[getter]
+    fn effective_sigma_int_m(&self) -> Option<f64> {
+        self.inner.effective_sigma_int_m
+    }
+
+    /// Effective accuracy one-sigma range error after local terms, metres.
+    #[getter]
+    fn effective_sigma_acc_m(&self) -> Option<f64> {
+        self.inner.effective_sigma_acc_m
     }
 
     /// Nominal SIS bias bound, metres.
@@ -665,11 +788,14 @@ fn enumerate_fault_modes(
     geometry: &PyAraimGeometry,
     ism: &PyIsm,
     allocation: &PyIntegrityAllocation,
-) -> Vec<PyFaultHypothesis> {
-    core_enumerate_fault_modes(&geometry.inner, &ism.inner, &allocation.inner)
-        .into_iter()
-        .map(Into::into)
-        .collect()
+) -> PyResult<Vec<PyFaultHypothesis>> {
+    Ok(
+        core_enumerate_fault_modes(&geometry.inner, &ism.inner, &allocation.inner)
+            .map_err(to_araim_err)?
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+    )
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

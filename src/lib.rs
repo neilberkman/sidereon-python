@@ -82,6 +82,7 @@ mod spp;
 mod staleness;
 mod tca;
 mod terrain;
+mod terrain_store;
 mod tides;
 mod tropo;
 
@@ -349,6 +350,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     geoid::register(m)?;
     tca::register(m)?;
     terrain::register(m)?;
+    terrain_store::register(m)?;
     sbas_ssr::register(m)?;
     rtcm::register(m)?;
     space_weather::register(m)?;

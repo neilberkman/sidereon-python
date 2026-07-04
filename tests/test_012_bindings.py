@@ -7,6 +7,7 @@ Provenance:
   message examples bundled with the core test suite.
 """
 
+import json
 import math
 import os
 
@@ -90,6 +91,80 @@ def test_dted_height_batch_matches_single_point_orthometric_lookup():
     assert batch[0] == pytest.approx(hex_to_f64("0xc034000000000000"))
 
 
+def test_mmap_terrain_store_matches_dted_reader_and_missing_dac_is_typed(tmp_path):
+    root = os.path.join(CORE_FIXTURES, "dted", "tiles")
+    points_path = os.path.join(CORE_FIXTURES, "dted", "dted_points.json")
+    with open(points_path, encoding="utf-8") as handle:
+        cases = json.load(handle)["multi_tile_cases"]
+    points = np.asarray(
+        [
+            (hex_to_f64(case["longitude_bits"]), hex_to_f64(case["latitude_bits"]))
+            for case in cases
+        ]
+        + [(-104.5, 36.5)],
+        dtype=np.float64,
+    )
+
+    store_bytes = sidereon.dted_tree_to_mmap_store(root)
+    store_path = tmp_path / "terrain.tmm"
+    sidereon.write_dted_tree_to_mmap_store(root, store_path)
+    assert store_path.read_bytes() == store_bytes
+
+    mmap = sidereon.MmapTerrain.from_bytes(store_bytes)
+    from_vec = sidereon.MmapTerrain.from_vec(store_bytes)
+    from_path = sidereon.MmapTerrain.from_path(store_path)
+    assert mmap.to_bytes() == store_bytes
+    assert from_path.to_bytes() == store_bytes
+    assert mmap.checksum64() == sidereon.terrain_store_checksum64(store_bytes)
+    assert from_vec.vertical_datum == sidereon.VerticalDatum.EGM96_MSL_ORTHOMETRIC
+    assert len(mmap.tile_index) == 2
+    assert all(
+        tile.vertical_datum == sidereon.VerticalDatum.EGM96_MSL_ORTHOMETRIC
+        for tile in mmap.tile_index
+    )
+
+    dted = sidereon.DtedTerrain(root)
+    for interpolation in (
+        sidereon.DtedInterpolation.BILINEAR,
+        sidereon.DtedInterpolation.NEAREST_POSTING,
+    ):
+        opts = sidereon.DtedLookupOptions(interpolation)
+        got_batch = mmap.height_batch(points, opts)
+        want_batch = dted.height_batch(points, opts)
+        assert _bits_equal(got_batch, want_batch)
+        typed_batch = np.asarray(
+            [height.metres() for height in mmap.orthometric_height_batch(points, opts)],
+            dtype=np.float64,
+        )
+        assert _bits_equal(typed_batch, want_batch)
+
+        for lon, lat in points:
+            got = mmap.height_m_with_options(lon, lat, opts)
+            want = dted.height_m(lat, lon, opts)
+            assert got == want
+            typed = mmap.orthometric_height_m_with_options(lon, lat, opts)
+            assert typed.value_m == want
+
+    lon, lat = points[0]
+    ellipsoid_default = mmap.ellipsoidal_height_m(lon, lat)
+    ellipsoid_model = mmap.ellipsoidal_height_m_with_model(
+        lon,
+        lat,
+        sidereon.DtedLookupOptions(sidereon.DtedInterpolation.BILINEAR),
+        sidereon.TerrainGeoidModel.egm96_one_degree(),
+    )
+    assert ellipsoid_model.metres() == ellipsoid_default.metres()
+
+    with pytest.raises(ValueError) as excinfo:
+        sidereon.Egm96FifteenMinuteGeoid.from_ww15mgh_dac_path(
+            tmp_path / "WW15MGH.DAC"
+        )
+    message = str(excinfo.value)
+    assert message.startswith("MissingEgm96Dac:")
+    assert "WW15MGH.DAC" in message
+    assert "from_ww15mgh_dac_bytes" in message
+
+
 def test_ionex_sample_sources_round_trip_grid_bytes_and_slant_delay():
     path = os.path.join(CORE_FIXTURES, "ionex", "synthetic_2map_7x7.20i")
     parsed = sidereon.load_ionex(path)
@@ -142,32 +217,53 @@ def test_sbas_decoded_payload_and_store_accessors():
 
 
 def test_araim_wgc_add_v3_public_example_protection_levels():
-    def row(system, prn, design_enu, c_acc_m2):
-        sigma_ure_m = 0.5
-        variance_a_m = 0.3
-        variance_b_m = 0.3
-        local_variance_m2 = c_acc_m2 - sigma_ure_m * sigma_ure_m
-        scaled = local_variance_m2 - variance_a_m * variance_a_m
-        elevation_rad = math.asin(math.sqrt(variance_b_m * variance_b_m / scaled))
+    def sat_token(system, prn):
+        return f"{'G' if system is sidereon.GnssSystem.GPS else 'E'}{prn:02d}"
+
+    def row(system, prn, design_enu, _c_int_m2, _c_acc_m2):
         los = [-design_enu[2], -design_enu[0], -design_enu[1]]
         return sidereon.AraimRow(
-            f"{'G' if system is sidereon.GnssSystem.GPS else 'E'}{prn:02d}",
+            sat_token(system, prn),
             np.asarray(los, dtype=np.float64),
-            elevation_rad,
+            math.pi / 2.0,
             system,
         )
 
     rows = [
-        (sidereon.GnssSystem.GPS, 1, [0.0225, 0.9951, -0.0966], 3.5740),
-        (sidereon.GnssSystem.GPS, 2, [0.6750, -0.6900, -0.2612], 1.1252),
-        (sidereon.GnssSystem.GPS, 3, [0.0723, -0.6601, -0.7477], 0.5479),
-        (sidereon.GnssSystem.GPS, 4, [-0.9398, 0.2553, -0.2269], 1.3258),
-        (sidereon.GnssSystem.GPS, 5, [-0.5907, -0.7539, -0.2877], 1.0104),
-        (sidereon.GnssSystem.GALILEO, 1, [-0.3236, -0.0354, -0.9455], 0.5309),
-        (sidereon.GnssSystem.GALILEO, 2, [-0.6748, 0.4356, -0.5957], 0.5838),
-        (sidereon.GnssSystem.GALILEO, 3, [0.0938, -0.7004, -0.7075], 0.5544),
-        (sidereon.GnssSystem.GALILEO, 4, [0.5571, 0.3088, -0.7709], 0.5448),
-        (sidereon.GnssSystem.GALILEO, 5, [0.6622, 0.6958, -0.2780], 1.0491),
+        (sidereon.GnssSystem.GPS, 1, [0.0225, 0.9951, -0.0966], 3.8865, 3.5740),
+        (sidereon.GnssSystem.GPS, 2, [0.6750, -0.6900, -0.2612], 1.4377, 1.1252),
+        (sidereon.GnssSystem.GPS, 3, [0.0723, -0.6601, -0.7477], 0.8604, 0.5479),
+        (sidereon.GnssSystem.GPS, 4, [-0.9398, 0.2553, -0.2269], 1.6383, 1.3258),
+        (sidereon.GnssSystem.GPS, 5, [-0.5907, -0.7539, -0.2877], 1.3229, 1.0104),
+        (
+            sidereon.GnssSystem.GALILEO,
+            1,
+            [-0.3236, -0.0354, -0.9455],
+            0.8434,
+            0.5309,
+        ),
+        (
+            sidereon.GnssSystem.GALILEO,
+            2,
+            [-0.6748, 0.4356, -0.5957],
+            0.8963,
+            0.5838,
+        ),
+        (
+            sidereon.GnssSystem.GALILEO,
+            3,
+            [0.0938, -0.7004, -0.7075],
+            0.8669,
+            0.5544,
+        ),
+        (
+            sidereon.GnssSystem.GALILEO,
+            4,
+            [0.5571, 0.3088, -0.7709],
+            0.8573,
+            0.5448,
+        ),
+        (sidereon.GnssSystem.GALILEO, 5, [0.6622, 0.6958, -0.2780], 1.3616, 1.0491),
     ]
     geometry = sidereon.AraimGeometry(
         [row(*args) for args in rows],
@@ -180,18 +276,29 @@ def test_araim_wgc_add_v3_public_example_protection_levels():
             sidereon.ConstellationIsm(sidereon.GnssSystem.GPS, 1.0e-4, model),
             sidereon.ConstellationIsm(sidereon.GnssSystem.GALILEO, 1.0e-4, model),
         ],
-        [],
+        [
+            sidereon.SatelliteIsm.new_with_effective_sigmas(
+                sat_token(system, prn),
+                0.75,
+                0.5,
+                0.5,
+                1.0e-5,
+                math.sqrt(c_int_m2),
+                math.sqrt(c_acc_m2),
+            )
+            for system, prn, _design_enu, c_int_m2, c_acc_m2 in rows
+        ],
     )
 
-    result = sidereon.araim(geometry, ism, sidereon.IntegrityAllocation.lpv_200())
+    allocation = sidereon.IntegrityAllocation.lpv_200()
+    assert allocation.p_emt == pytest.approx(1.0e-5)
+    result = sidereon.araim(geometry, ism, allocation)
     assert result.availability
-    assert result.vpl_m == pytest.approx(19.2, abs=1.0)
-    assert result.hpl_m == pytest.approx(14.5, abs=1.0)
-    assert result.emt_m == pytest.approx(7.8, abs=1.0)
+    assert result.vpl_m == pytest.approx(19.2, abs=0.1)
+    assert result.hpl_m == pytest.approx(14.5, abs=0.1)
+    assert result.emt_m == pytest.approx(7.8, abs=0.1)
     assert result.sigma_acc_v_m == pytest.approx(1.47, abs=0.02)
-    modes = sidereon.enumerate_fault_modes(
-        geometry, ism, sidereon.IntegrityAllocation.lpv_200()
-    )
+    modes = sidereon.enumerate_fault_modes(geometry, ism, allocation)
     assert modes[0].excluded == []
 
 

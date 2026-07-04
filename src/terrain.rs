@@ -68,7 +68,7 @@ pub struct PyDtedLookupOptions {
 }
 
 impl PyDtedLookupOptions {
-    fn inner(&self) -> DtedLookupOptions {
+    pub(crate) fn inner(&self) -> DtedLookupOptions {
         self.inner
     }
 }
@@ -158,9 +158,7 @@ impl PyDtedTerrain {
             .outer_iter()
             .map(|row| (row[0], row[1]))
             .collect::<Vec<_>>();
-        let options = options
-            .map(PyDtedLookupOptions::inner)
-            .unwrap_or_else(DtedLookupOptions::default);
+        let options = options.map(PyDtedLookupOptions::inner).unwrap_or_default();
         let mut heights = Vec::with_capacity(points.len());
         for (index, result) in self
             .inner
