@@ -46,7 +46,9 @@ mod estimation;
 mod events;
 mod fallback;
 mod forces;
+mod frame_catalog;
 mod frames;
+mod geodesic;
 mod geodetic_time_series;
 mod geoid;
 mod geometry;
@@ -90,6 +92,7 @@ mod spk;
 mod spp;
 mod staleness;
 mod tca;
+mod tdm;
 mod terrain;
 mod terrain_store;
 mod tides;
@@ -134,6 +137,13 @@ create_exception!(
 
 create_exception!(
     _sidereon,
+    GeodesicError,
+    PyValueError,
+    "Raised when a WGS84 geodesic direct or inverse input is outside its accepted domain."
+);
+
+create_exception!(
+    _sidereon,
     SolveError,
     SidereonError,
     "Raised when a solve or propagation fails: non-convergence, an SGP4 error\ncode, or an integration failure."
@@ -158,6 +168,13 @@ create_exception!(
     CdmParseError,
     ParseError,
     "Raised when a CCSDS CDM KVN or XML message fails to parse."
+);
+
+create_exception!(
+    _sidereon,
+    TdmParseError,
+    ParseError,
+    "Raised when a CCSDS TDM KVN message fails to parse or encode."
 );
 
 create_exception!(
@@ -295,6 +312,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("Sp3ParseError", py.get_type::<Sp3ParseError>())?;
     m.add("AntexParseError", py.get_type::<AntexParseError>())?;
     m.add("TleParseError", py.get_type::<TleParseError>())?;
+    m.add("GeodesicError", py.get_type::<GeodesicError>())?;
     m.add("SolveError", py.get_type::<SolveError>())?;
     m.add("PrimitiveError", py.get_type::<PrimitiveError>())?;
     m.add(
@@ -319,6 +337,9 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ConstellationError", py.get_type::<ConstellationError>())?;
     m.add("SelectionError", py.get_type::<SelectionError>())?;
     m.add("FallbackError", py.get_type::<FallbackError>())?;
+    m.add("TdmParseError", py.get_type::<TdmParseError>())?;
+    geodesic::register(m)?;
+    frame_catalog::register(m)?;
     ephemeris::register(m)?;
     orbit_determination::register(m)?;
     estimation::register(m)?;
@@ -337,6 +358,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     source_localization::register(m)?;
     conjunction::register(m)?;
     cdm::register(m)?;
+    tdm::register(m)?;
     omm::register(m)?;
     oem::register(m)?;
     opm::register(m)?;

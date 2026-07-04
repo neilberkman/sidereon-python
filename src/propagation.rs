@@ -26,26 +26,38 @@ use sidereon::propagator::{
     ForceModelComponents, ForceModelKind, IntegratorKind, PropagationForceModel, StatePropagator,
 };
 use sidereon::sgp4::{
-    fit_tle as core_fit_tle, parse_tle_file_with_opsmode, ElementSet, FitConfig, FitEpoch,
-    FitSample, FitStatistics, JulianDate as Sgp4JulianDate, Loss as CoreLoss,
+    fit_tle as core_fit_tle, parse_tle_file_with_opsmode, DecayLatch as CoreDecayLatch, ElementSet,
+    FitConfig, FitEpoch, FitSample, FitStatistics, JulianDate as Sgp4JulianDate, Loss as CoreLoss,
     OpsMode as CoreOpsMode, Satellite, TleFit, TleMetadata, XScale,
 };
 use sidereon::tle::{
     encode as encode_tle_lines, parse as parse_tle_lines, ChecksumWarning, TleElements,
 };
 use sidereon::{
-    SchwarzschildRelativity, SolarRadiationPressure, ThirdBodyGravity, ZonalDegrees, ZonalGravity,
+    SchwarzschildRelativity, SolarRadiationPressure, SphericalHarmonicGravityConfig,
+    ThirdBodyGravity, ZonalDegrees, ZonalGravity,
 };
 
 use crate::events::PyWgs84Geodetic;
 use crate::forces::PyDragParameters;
 use crate::marshal::{
     fixed_array, instants_from_unix_micros, rows3_to_array, rows6_to_array, scalar_rows_to_array2,
-    vec3_rows_to_array3, EmptyPolicy, FinitePolicy,
+    unix_microseconds_slice, vec3_rows_to_array3, EmptyPolicy, FinitePolicy,
 };
 use crate::omm::PyOmm;
 use crate::space_weather::PySpaceWeatherTable;
 use crate::{to_solve_err, to_tle_err, SolveError, TleParseError};
+
+const UNIX_EPOCH_JDN: i64 = 2_440_588;
+const MICROSECONDS_PER_DAY_I64: i64 = 86_400_000_000;
+
+fn sgp4_julian_date_from_unix_microseconds(unix_microseconds: i64) -> Sgp4JulianDate {
+    let days = unix_microseconds.div_euclid(MICROSECONDS_PER_DAY_I64);
+    let micros_of_day = unix_microseconds.rem_euclid(MICROSECONDS_PER_DAY_I64);
+    let jd_midnight = (UNIX_EPOCH_JDN + days) as f64 - 0.5;
+    let fraction = micros_of_day as f64 / MICROSECONDS_PER_DAY_I64 as f64;
+    Sgp4JulianDate(jd_midnight, fraction)
+}
 
 /// SGP4 operation mode for TLE initialization.
 #[pyclass(module = "sidereon._sidereon", name = "OpsMode", eq, eq_int)]
@@ -288,6 +300,8 @@ impl PyForceModelComponents {
     #[pyo3(signature = (
         two_body_mu_km3_s2=None,
         zonal_max_degree=None,
+        spherical_harmonic_max_degree=None,
+        spherical_harmonic_max_order=None,
         third_body=false,
         solar_radiation_pressure=None,
         relativity=false,
@@ -295,6 +309,8 @@ impl PyForceModelComponents {
     fn new(
         two_body_mu_km3_s2: Option<f64>,
         zonal_max_degree: Option<u8>,
+        spherical_harmonic_max_degree: Option<u16>,
+        spherical_harmonic_max_order: Option<u16>,
         third_body: bool,
         solar_radiation_pressure: Option<&PySolarRadiationPressure>,
         relativity: bool,
@@ -310,6 +326,25 @@ impl PyForceModelComponents {
                 ..ZonalGravity::default()
             };
             inner.zonal = Some(zonal);
+        }
+        match (spherical_harmonic_max_degree, spherical_harmonic_max_order) {
+            (Some(max_degree), Some(max_order)) => {
+                if inner.zonal.is_some() {
+                    return Err(PyValueError::new_err(
+                        "zonal and spherical harmonic gravity cannot both be selected",
+                    ));
+                }
+                inner.spherical_harmonic = Some(
+                    SphericalHarmonicGravityConfig::earth(max_degree, max_order)
+                        .map_err(|err| PyValueError::new_err(err.to_string()))?,
+                );
+            }
+            (None, None) => {}
+            _ => {
+                return Err(PyValueError::new_err(
+                    "spherical_harmonic_max_degree and spherical_harmonic_max_order must be provided together",
+                ));
+            }
         }
         if third_body {
             inner.third_body = Some(ThirdBodyGravity::default());
@@ -361,6 +396,22 @@ impl PyForceModelComponents {
         zonal_degree_label(self.inner.zonal)
     }
 
+    /// Highest enabled spherical-harmonic degree, or `None` when disabled.
+    #[getter]
+    fn spherical_harmonic_max_degree(&self) -> Option<u16> {
+        self.inner
+            .spherical_harmonic
+            .map(|gravity| gravity.max_degree)
+    }
+
+    /// Highest enabled spherical-harmonic order, or `None` when disabled.
+    #[getter]
+    fn spherical_harmonic_max_order(&self) -> Option<u16> {
+        self.inner
+            .spherical_harmonic
+            .map(|gravity| gravity.max_order)
+    }
+
     /// Whether Sun and Moon third-body acceleration is enabled.
     #[getter]
     fn third_body(&self) -> bool {
@@ -381,9 +432,11 @@ impl PyForceModelComponents {
 
     fn __repr__(&self) -> String {
         format!(
-            "ForceModelComponents(two_body_mu_km3_s2={:?}, zonal_max_degree={:?}, third_body={}, solar_radiation_pressure={}, relativity={})",
+            "ForceModelComponents(two_body_mu_km3_s2={:?}, zonal_max_degree={:?}, spherical_harmonic_max_degree={:?}, spherical_harmonic_max_order={:?}, third_body={}, solar_radiation_pressure={}, relativity={})",
             self.two_body_mu_km3_s2(),
             self.zonal_max_degree(),
+            self.spherical_harmonic_max_degree(),
+            self.spherical_harmonic_max_order(),
             self.third_body(),
             self.solar_radiation_pressure(),
             self.relativity()
@@ -441,6 +494,24 @@ impl PyForceModelKind {
                 solar_radiation_pressure.map(PySolarRadiationPressure::inner),
             ),
         }
+    }
+
+    /// Canonical Earth Phase B force set with embedded EGM96 harmonics.
+    #[staticmethod]
+    #[pyo3(signature = (max_degree, max_order, solar_radiation_pressure=None))]
+    fn earth_phase_b(
+        max_degree: u16,
+        max_order: u16,
+        solar_radiation_pressure: Option<&PySolarRadiationPressure>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: ForceModelKind::earth_phase_b(
+                max_degree,
+                max_order,
+                solar_radiation_pressure.map(PySolarRadiationPressure::inner),
+            )
+            .map_err(|err| PyValueError::new_err(err.to_string()))?,
+        })
     }
 
     /// Stable lowercase selector label.
@@ -1594,6 +1665,42 @@ fn fit_tle(
     Ok(PyTleFit { inner })
 }
 
+/// Stateful latch for SGP4 decay-like failures.
+#[pyclass(module = "sidereon._sidereon", name = "DecayLatch")]
+#[derive(Clone, Copy, Default)]
+pub struct PyDecayLatch {
+    inner: CoreDecayLatch,
+}
+
+#[pymethods]
+impl PyDecayLatch {
+    /// Construct an empty decay latch.
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: CoreDecayLatch::new(),
+        }
+    }
+
+    /// First recorded failing epoch in minutes since the TLE epoch.
+    #[getter]
+    fn first_failing_minutes_since_epoch(&self) -> Option<f64> {
+        self.inner.first_failing_epoch().map(|epoch| epoch.0)
+    }
+
+    /// Clear the recorded decay state.
+    fn clear(&mut self) {
+        self.inner.clear();
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "DecayLatch(first_failing_minutes_since_epoch={:?})",
+            self.first_failing_minutes_since_epoch()
+        )
+    }
+}
+
 /// A parsed two-line element set, ready to propagate.
 ///
 /// Construct from the two TLE lines. `opsmode` selects the SGP4 operation mode:
@@ -1662,6 +1769,33 @@ impl PyTle {
         Ok(PyTlePropagation {
             positions_km: predictions.iter().map(|p| p.position).collect(),
             velocities_km_s: predictions.iter().map(|p| p.velocity).collect(),
+        })
+    }
+
+    /// Propagate with a mutable decay latch.
+    ///
+    /// Once a decay-like SGP4 failure is observed, the latch rejects later
+    /// epochs even if the raw SGP4 call would otherwise return a state.
+    fn propagate_with_decay_latch(
+        &self,
+        epochs_unix_us: PyReadonlyArray1<'_, i64>,
+        mut latch: PyRefMut<'_, PyDecayLatch>,
+    ) -> PyResult<PyTlePropagation> {
+        let micros = unix_microseconds_slice(&epochs_unix_us, EmptyPolicy::Allow)?;
+        let mut positions_km = Vec::with_capacity(micros.len());
+        let mut velocities_km_s = Vec::with_capacity(micros.len());
+        for &unix_microseconds in micros {
+            let jd = sgp4_julian_date_from_unix_microseconds(unix_microseconds);
+            let prediction = self
+                .satellite
+                .propagate_jd_with_decay_latch(jd, &mut latch.inner)
+                .map_err(to_solve_err)?;
+            positions_km.push(prediction.position);
+            velocities_km_s.push(prediction.velocity);
+        }
+        Ok(PyTlePropagation {
+            positions_km,
+            velocities_km_s,
         })
     }
 
@@ -2847,6 +2981,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTleFitMetadata>()?;
     m.add_class::<PyFitStatistics>()?;
     m.add_class::<PyTleFit>()?;
+    m.add_class::<PyDecayLatch>()?;
     m.add_class::<PyTle>()?;
     m.add_class::<PyNamedTle>()?;
     m.add_class::<PyTleFile>()?;
