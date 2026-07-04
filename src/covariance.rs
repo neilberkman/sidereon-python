@@ -448,12 +448,24 @@ fn covariance_from_jacobian<'py>(
 /// A 2-D confidence error ellipse from a 2x2 covariance block.
 #[pyclass(module = "sidereon._sidereon", name = "ErrorEllipse")]
 #[derive(Clone)]
-pub struct PyErrorEllipse {
+pub(crate) struct PyErrorEllipse {
     confidence: f64,
     chi_square_scale: f64,
     semi_major: f64,
     semi_minor: f64,
     orientation_rad: f64,
+}
+
+impl PyErrorEllipse {
+    pub(crate) fn from_one_sigma_m(ellipse: sidereon_core::error_metrics::ErrorEllipse) -> Self {
+        Self {
+            confidence: f64::NAN,
+            chi_square_scale: 1.0,
+            semi_major: ellipse.semi_major_m,
+            semi_minor: ellipse.semi_minor_m,
+            orientation_rad: ellipse.orientation_rad,
+        }
+    }
 }
 
 #[pymethods]
@@ -476,9 +488,21 @@ impl PyErrorEllipse {
         self.semi_major
     }
 
+    /// Semi-major axis length in metres for position-error metrics.
+    #[getter]
+    fn semi_major_m(&self) -> f64 {
+        self.semi_major
+    }
+
     /// Semi-minor axis length.
     #[getter]
     fn semi_minor(&self) -> f64 {
+        self.semi_minor
+    }
+
+    /// Semi-minor axis length in metres for position-error metrics.
+    #[getter]
+    fn semi_minor_m(&self) -> f64 {
         self.semi_minor
     }
 

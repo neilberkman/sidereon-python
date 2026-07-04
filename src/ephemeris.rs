@@ -644,7 +644,7 @@ impl From<PreciseEphemerisSample> for PyPreciseEphemerisSample {
 }
 
 impl PyPreciseEphemerisSample {
-    fn to_core(&self) -> PreciseEphemerisSample {
+    pub(crate) fn to_core(&self) -> PreciseEphemerisSample {
         self.inner
     }
 }
