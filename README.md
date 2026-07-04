@@ -81,23 +81,44 @@ print(solution.rx_clock_s)   # receiver clock bias, seconds
 
 The Python package mirrors the full breadth of the engine.
 
-- **Orbit propagation:** SGP4/SDP4 from TLE/OMM, numerical propagation with
-  atmospheric drag and orbital-decay estimation, batch and constellation arcs,
-  pass prediction, look angles, and coverage analysis.
+- **Orbit propagation:** SGP4/SDP4 from TLE/OMM, numerical propagation with a
+  composable force model (zonal harmonics through J6, Sun/Moon third-body,
+  solar radiation pressure, relativistic correction, atmospheric drag) and
+  orbital-decay estimation, batch and constellation arcs, pass prediction,
+  look angles, and coverage analysis.
 - **Orbital mechanics:** classical, equinoctial, and modified equinoctial
   elements, anomaly conversions and Kepler propagation, Lambert transfers,
-  initial orbit determination (IOD), and relative motion in RIC/RTN/LVLH
-  frames with Clohessy-Wiltshire propagation.
+  initial orbit determination (IOD), batch least-squares orbit fitting against
+  precise ephemerides with a per-satellite residual ledger, and relative
+  motion in RIC/RTN/LVLH frames with Clohessy-Wiltshire propagation.
 - **GNSS positioning:** single-point positioning (SPP), RTK (float and fixed),
-  PPP (float and fixed), DGNSS, a robust solve driver with RAIM fault
-  detection and exclusion (FDE), and DOP.
+  PPP (float and fixed), DGNSS, a robust solve driver, and DOP.
+- **Integrity and error bounds:** RAIM fault detection and exclusion,
+  multi-constellation ARAIM protection levels, SBAS protection levels
+  (DO-229), per-observation reliability (minimal detectable bias,
+  internal/external), observability classification of every solution (rank,
+  redundancy, conditioning), and covariance-derived error metrics (CEP, R95,
+  SEP, error ellipse) that report wide or flagged bounds for weak geometry
+  rather than fabricated confidence.
 - **GNSS corrections and products:** SBAS and RTCM SSR corrections applied to
   broadcast ephemeris, Bias-SINEX code and phase biases (DCB/OSB), Klobuchar
-  and NeQuick-G ionosphere, IONEX maps, and troposphere models.
+  and NeQuick-G ionosphere, IONEX maps, troposphere models, and NTRIP client
+  stream handling.
 - **Ephemeris and time:** broadcast ephemeris and precise SP3 products, JPL SPK
   (DAF/.bsp) kernels, uniform satellite-state sampling across broadcast and
-  precise sources, scale-aware time (UTC/TT/TDB/UT1/GPS), and Earth
-  orientation parameters (EOP).
+  precise sources with batched multi-satellite interpolation, scale-aware time
+  (UTC/TAI/TT/TDB/UT1 and the GNSS system times) with leap-second handling,
+  and Earth orientation parameters (EOP).
+- **Timing and clocks:** Allan-family stability analysis (ADEV/MDEV/HDEV/TDEV)
+  and power-law clock-noise identification with a five-coefficient fit
+  (IEEE 1139).
+- **Estimation and detection:** scalar Kalman and alpha-beta trackers,
+  innovation gating, robust statistics, CFAR detection thresholds, and
+  source localization (ToA/TDOA) from arrival times at known sensors.
+- **Geodesy and monitoring:** robust station velocity (MIDAS), trajectory
+  fitting with seasonal terms and offsets, step detection, network motion
+  fields with common-mode removal, and repeating-geometry (sidereal)
+  filtering.
 - **Geometry and events:** reference frames, geodetic and ECEF conversions,
   look angles, eclipse, conjunction screening with collision probability, and
   angular geometry (separation, position angle, phase angle, beta angle).
@@ -106,10 +127,13 @@ The Python package mirrors the full breadth of the engine.
   motion), sub-solar and sub-observer points, the terminator, parallactic
   angle, satellite visual magnitude, moonrise/moonset, seasons, moon phases,
   planetary events, meridian transits, and lunar and solar eclipses.
-- **Terrain:** DTED elevation lookup and geoid (EGM96) height conversion.
+- **Observation quality:** RINEX observation QC (completeness, multipath,
+  cycle slips), carrier-phase combinations, and Hatch smoothing.
+- **Terrain:** DTED elevation lookup with batch probes, a memory-mappable
+  terrain store, and geoid (EGM96) height conversion.
 - **RF:** link budget (FSPL, EIRP, C/N0, antenna gain).
 - **Formats:** parse and serialize TLE/OMM, CCSDS OEM/OPM/CDM, RINEX, CRINEX,
-  SP3, IONEX, ANTEX, Bias-SINEX, SBAS logs, and RTCM.
+  SP3, IONEX, ANTEX, Bias-SINEX, SBAS logs, RTCM, and NMEA.
 - **Data acquisition:** the `sidereon.data` module downloads and caches GNSS
   products (SP3 and IONEX from IGS/MGEX analysis centers, including merged
   multi-center SP3) and DTED terrain tiles.
