@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1};
-use pyo3::exceptions::{PyIndexError, PyKeyError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyByteArray, PyBytes, PyModule};
 
@@ -21,9 +21,13 @@ use sidereon_core::astro::time::{Instant, InstantRepr, JulianDateSplit};
 use sidereon_core::constants::J2000_JD;
 use sidereon_core::ephemeris::{
     align_clock_reference as core_align_clock_reference,
-    clock_reference_offset as core_clock_reference_offset, sample as core_sample,
-    ClockReferenceOffset, EphemerisSampleRow, EphemerisSampleStatus, PreciseEphemerisSample,
-    PreciseEphemerisSamples, Sp3,
+    clock_reference_offset as core_clock_reference_offset,
+    observable_states_at_j2000_s as core_observable_states_at_j2000_s,
+    observable_states_at_shared_j2000_s as core_observable_states_at_shared_j2000_s,
+    sample as core_sample, ClockReferenceOffset, EphemerisSampleRow, EphemerisSampleStatus,
+    ObservableEphemerisSource, ObservableStateBatch, ObservableStateElementStatus,
+    ObservablesError, PreciseEphemerisInterpolant, PreciseEphemerisSample, PreciseEphemerisSamples,
+    Sp3, OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
 };
 use sidereon_core::Error as CoreError;
 use sidereon_core::GnssSatelliteId;
@@ -333,6 +337,156 @@ impl PyEphemerisSampleRow {
     }
 }
 
+/// Status for one element of an [`ObservableStateBatch`].
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "ObservableStateElementStatus",
+    eq,
+    eq_int
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PyObservableStateElementStatus {
+    /// The element contains a usable ECEF state.
+    VALID,
+    /// The source has no usable state for this satellite and epoch.
+    GAP,
+    /// The scalar evaluator returned a non-gap error.
+    ERROR,
+}
+
+impl From<ObservableStateElementStatus> for PyObservableStateElementStatus {
+    fn from(value: ObservableStateElementStatus) -> Self {
+        match value {
+            ObservableStateElementStatus::Valid => Self::VALID,
+            ObservableStateElementStatus::Gap => Self::GAP,
+            ObservableStateElementStatus::Error => Self::ERROR,
+        }
+    }
+}
+
+#[pymethods]
+impl PyObservableStateElementStatus {
+    /// Stable lowercase status label.
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::VALID => "valid",
+            Self::GAP => "gap",
+            Self::ERROR => "error",
+        }
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::VALID => "ObservableStateElementStatus.VALID",
+            Self::GAP => "ObservableStateElementStatus.GAP",
+            Self::ERROR => "ObservableStateElementStatus.ERROR",
+        }
+    }
+}
+
+/// Contiguous output arrays for a batched satellite-state query.
+///
+/// Entry `i` belongs to input satellite `i` and epoch `i` for
+/// [`observable_states_at_j2000_s`], or to input satellite `i` at the shared
+/// epoch for [`observable_states_at_shared_j2000_s`]. `positions_ecef_m` is
+/// numpy `(n, 3)` in ECEF metres. `clocks_s` is numpy `(n,)` in seconds, with
+/// NaN when the core result has no clock. Failed elements use the public missing
+/// position sentinel and carry their error text in `element_results`.
+#[pyclass(module = "sidereon._sidereon", name = "ObservableStateBatch")]
+#[derive(Clone)]
+pub struct PyObservableStateBatch {
+    inner: ObservableStateBatch,
+}
+
+impl From<ObservableStateBatch> for PyObservableStateBatch {
+    fn from(inner: ObservableStateBatch) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyObservableStateBatch {
+    /// Satellite ECEF positions as numpy `(n, 3)`, metres.
+    ///
+    /// Failed elements are filled with
+    /// `OBSERVABLE_STATE_MISSING_POSITION_ECEF_M`.
+    #[getter]
+    fn positions_ecef_m<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        rows3_to_array(py, &self.inner.positions_ecef_m)
+    }
+
+    /// Satellite clock offsets as numpy `(n,)`, seconds.
+    ///
+    /// Entries are NaN when the source has no clock or the element failed.
+    #[getter]
+    fn clocks_s<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        let clocks: Vec<_> = self
+            .inner
+            .clocks_s
+            .iter()
+            .map(|clock| clock.unwrap_or(f64::NAN))
+            .collect();
+        np_array(py, &clocks)
+    }
+
+    /// Per-element status categories.
+    #[getter]
+    fn statuses(&self) -> Vec<PyObservableStateElementStatus> {
+        (0..self.inner.len())
+            .filter_map(|index| self.inner.element_status(index))
+            .map(Into::into)
+            .collect()
+    }
+
+    /// Per-element result text: `None` for success, error text for failure.
+    #[getter]
+    fn element_results(&self) -> Vec<Option<String>> {
+        self.inner
+            .element_results
+            .iter()
+            .map(|result| result.as_ref().err().map(ToString::to_string))
+            .collect()
+    }
+
+    /// Number of batch elements.
+    #[getter]
+    fn element_count(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Whether this batch has no elements.
+    #[getter]
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Return the status category for one element.
+    fn element_status(&self, index: usize) -> PyResult<PyObservableStateElementStatus> {
+        self.inner
+            .element_status(index)
+            .map(Into::into)
+            .ok_or_else(|| PyIndexError::new_err(format!("element index {index} out of range")))
+    }
+
+    /// Return `None` for a successful element or the core error text on failure.
+    fn element_result(&self, index: usize) -> PyResult<Option<String>> {
+        self.inner
+            .element_results
+            .get(index)
+            .map(|result| result.as_ref().err().map(ToString::to_string))
+            .ok_or_else(|| PyIndexError::new_err(format!("element index {index} out of range")))
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("ObservableStateBatch(element_count={})", self.inner.len())
+    }
+}
+
 /// One epoch's clock-reference datum offset between two SP3 products.
 #[pyclass(module = "sidereon._sidereon", name = "Sp3ClockReferenceOffset")]
 #[derive(Clone)]
@@ -626,6 +780,116 @@ impl PyPreciseEphemerisSamples {
     }
 }
 
+/// A reusable precise-ephemeris interpolant with cached per-satellite nodes.
+///
+/// Build it once from an [`Sp3`] product, from raw [`PreciseEphemerisSample`]
+/// rows, or from an existing [`PreciseEphemerisSamples`] source. State queries
+/// use seconds since J2000 in the source time scale and return ECEF metres plus
+/// optional clock seconds, matching the scalar precise-ephemeris evaluator.
+#[pyclass(module = "sidereon._sidereon", name = "PreciseEphemerisInterpolant")]
+#[derive(Clone)]
+pub struct PyPreciseEphemerisInterpolant {
+    inner: PreciseEphemerisInterpolant,
+}
+
+#[pymethods]
+impl PyPreciseEphemerisInterpolant {
+    /// Build a cached interpolant from a parsed SP3 product.
+    #[staticmethod]
+    fn from_sp3(source: &PySp3) -> Self {
+        Self {
+            inner: PreciseEphemerisInterpolant::from_sp3(&source.inner),
+        }
+    }
+
+    /// Build a cached interpolant directly from precise-ephemeris samples.
+    #[staticmethod]
+    fn from_samples(py: Python<'_>, samples: Vec<Py<PyPreciseEphemerisSample>>) -> PyResult<Self> {
+        let samples = samples.iter().map(|s| s.borrow(py).to_core());
+        let inner = PreciseEphemerisInterpolant::from_samples(samples)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    /// Build a cached interpolant from an existing sample-backed source.
+    #[staticmethod]
+    fn from_precise_ephemeris_samples(source: &PyPreciseEphemerisSamples) -> Self {
+        Self {
+            inner: PreciseEphemerisInterpolant::from_precise_ephemeris_samples(&source.inner),
+        }
+    }
+
+    /// Time scale of the source epochs used to build this handle.
+    #[getter]
+    fn time_scale(&self) -> PyTimeScale {
+        self.inner.time_scale().into()
+    }
+
+    /// Satellite tokens this handle can interpolate, ascending.
+    #[getter]
+    fn satellites(&self) -> Vec<String> {
+        self.inner.satellites().map(|sat| sat.to_string()).collect()
+    }
+
+    /// Interpolate one satellite state at seconds since J2000.
+    ///
+    /// Returns an [`Sp3State`] whose position is ECEF metres and whose clock is
+    /// seconds or `None`. Raises `ValueError` for a malformed satellite token and
+    /// `SolveError` for out-of-coverage or missing-source cases.
+    fn position_at_j2000_seconds(
+        &self,
+        satellite: &str,
+        epoch_j2000_s: f64,
+    ) -> PyResult<PySp3State> {
+        let sat = parse_sat(satellite)?;
+        let state = self
+            .inner
+            .position_at_j2000_seconds(sat, epoch_j2000_s)
+            .map_err(to_solve_err)?;
+        Ok(PySp3State::from_state(state))
+    }
+
+    /// Evaluate ECEF states for parallel satellite and epoch arrays.
+    ///
+    /// `satellites[i]` is evaluated at `epochs_j2000_s[i]`. The result keeps
+    /// contiguous position and clock arrays plus per-element status and error
+    /// text.
+    fn observable_states_at_j2000_s(
+        &self,
+        satellites: Vec<String>,
+        epochs_j2000_s: PyReadonlyArray1<'_, f64>,
+    ) -> PyResult<PyObservableStateBatch> {
+        let satellites = parse_satellites(&satellites)?;
+        let epochs = epochs_j2000_s
+            .as_slice()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        self.inner
+            .observable_states_at_j2000_s(&satellites, epochs)
+            .map(PyObservableStateBatch::from)
+            .map_err(observable_state_batch_error)
+    }
+
+    /// Evaluate ECEF states for many satellites at one shared J2000-second epoch.
+    fn observable_states_at_shared_j2000_s(
+        &self,
+        satellites: Vec<String>,
+        epoch_j2000_s: f64,
+    ) -> PyResult<PyObservableStateBatch> {
+        let satellites = parse_satellites(&satellites)?;
+        Ok(self
+            .inner
+            .observable_states_at_shared_j2000_s(&satellites, epoch_j2000_s)
+            .into())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PreciseEphemerisInterpolant(satellites={})",
+            self.inner.satellites().count()
+        )
+    }
+}
+
 /// Build a split-Julian-date [`Instant`] from J2000 seconds in a time scale.
 ///
 /// The residual day fraction is split off `jd_whole` so it stays within one day,
@@ -679,6 +943,77 @@ fn load_sp3(source: &Bound<'_, PyAny>) -> PyResult<PySp3> {
     Ok(PySp3 { inner })
 }
 
+fn parse_satellites(tokens: &[String]) -> PyResult<Vec<GnssSatelliteId>> {
+    tokens.iter().map(|token| parse_sat(token)).collect()
+}
+
+fn observable_state_batch_error(err: ObservablesError) -> PyErr {
+    match err {
+        ObservablesError::InvalidInput { .. } => PyValueError::new_err(err.to_string()),
+        ObservablesError::NoEphemeris | ObservablesError::Ephemeris(_) => to_solve_err(err),
+    }
+}
+
+fn with_observable_source<R>(
+    source: &Bound<'_, PyAny>,
+    f: impl FnOnce(&dyn ObservableEphemerisSource) -> PyResult<R>,
+) -> PyResult<R> {
+    if let Ok(sp3) = source.extract::<PyRef<'_, PySp3>>() {
+        f(&sp3.inner)
+    } else if let Ok(samples) = source.extract::<PyRef<'_, PyPreciseEphemerisSamples>>() {
+        f(&samples.inner)
+    } else if let Ok(interpolant) = source.extract::<PyRef<'_, PyPreciseEphemerisInterpolant>>() {
+        f(&interpolant.inner)
+    } else if let Ok(broadcast) = source.extract::<PyRef<'_, PyBroadcastEphemeris>>() {
+        f(&broadcast.inner)
+    } else {
+        Err(PyTypeError::new_err(
+            "source must be Sp3, PreciseEphemerisSamples, PreciseEphemerisInterpolant, or BroadcastEphemeris",
+        ))
+    }
+}
+
+/// Evaluate ECEF states for parallel satellite and epoch arrays.
+///
+/// `source` may be [`Sp3`], [`PreciseEphemerisSamples`],
+/// [`PreciseEphemerisInterpolant`], or [`BroadcastEphemeris`](crate). The input
+/// arrays are parallel: `satellites[i]` is evaluated at `epochs_j2000_s[i]`.
+/// The returned [`ObservableStateBatch`] keeps ECEF position metres, clock
+/// seconds, per-element status, and per-element error text.
+#[pyfunction]
+fn observable_states_at_j2000_s(
+    source: &Bound<'_, PyAny>,
+    satellites: Vec<String>,
+    epochs_j2000_s: PyReadonlyArray1<'_, f64>,
+) -> PyResult<PyObservableStateBatch> {
+    let satellites = parse_satellites(&satellites)?;
+    let epochs = epochs_j2000_s
+        .as_slice()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    with_observable_source(source, |source| {
+        core_observable_states_at_j2000_s(source, &satellites, epochs)
+            .map(PyObservableStateBatch::from)
+            .map_err(observable_state_batch_error)
+    })
+}
+
+/// Evaluate ECEF states for many satellites at one shared J2000-second epoch.
+///
+/// `source` may be [`Sp3`], [`PreciseEphemerisSamples`],
+/// [`PreciseEphemerisInterpolant`], or [`BroadcastEphemeris`](crate). The result
+/// is index-aligned with `satellites`.
+#[pyfunction]
+fn observable_states_at_shared_j2000_s(
+    source: &Bound<'_, PyAny>,
+    satellites: Vec<String>,
+    epoch_j2000_s: f64,
+) -> PyResult<PyObservableStateBatch> {
+    let satellites = parse_satellites(&satellites)?;
+    with_observable_source(source, |source| {
+        Ok(core_observable_states_at_shared_j2000_s(source, &satellites, epoch_j2000_s).into())
+    })
+}
+
 #[pyfunction]
 fn ephemeris_sample(
     source: &Bound<'_, PyAny>,
@@ -702,6 +1037,14 @@ fn ephemeris_sample(
             stop_j2000_s,
             step_s,
         )
+    } else if let Ok(interpolant) = source.extract::<PyRef<'_, PyPreciseEphemerisInterpolant>>() {
+        core_sample(
+            &interpolant.inner,
+            &satellites,
+            start_j2000_s,
+            stop_j2000_s,
+            step_s,
+        )
     } else if let Ok(broadcast) = source.extract::<PyRef<'_, PyBroadcastEphemeris>>() {
         core_sample(
             &broadcast.inner,
@@ -712,7 +1055,7 @@ fn ephemeris_sample(
         )
     } else {
         return Err(PyValueError::new_err(
-            "source must be Sp3, PreciseEphemerisSamples, or BroadcastEphemeris",
+            "source must be Sp3, PreciseEphemerisSamples, PreciseEphemerisInterpolant, or BroadcastEphemeris",
         ));
     }
     .map_err(to_solve_err)?;
@@ -761,11 +1104,20 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySp3Interpolation>()?;
     m.add_class::<PyEphemerisSampleStatus>()?;
     m.add_class::<PyEphemerisSampleRow>()?;
+    m.add_class::<PyObservableStateElementStatus>()?;
+    m.add_class::<PyObservableStateBatch>()?;
     m.add_class::<PySp3ClockReferenceOffset>()?;
     m.add_class::<PySp3State>()?;
     m.add_class::<PyPreciseEphemerisSample>()?;
     m.add_class::<PyPreciseEphemerisSamples>()?;
+    m.add_class::<PyPreciseEphemerisInterpolant>()?;
+    m.add(
+        "OBSERVABLE_STATE_MISSING_POSITION_ECEF_M",
+        OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
+    )?;
     m.add_function(wrap_pyfunction!(load_sp3, m)?)?;
+    m.add_function(wrap_pyfunction!(observable_states_at_j2000_s, m)?)?;
+    m.add_function(wrap_pyfunction!(observable_states_at_shared_j2000_s, m)?)?;
     m.add_function(wrap_pyfunction!(ephemeris_sample, m)?)?;
     m.add_function(wrap_pyfunction!(sp3_clock_reference_offset, m)?)?;
     m.add_function(wrap_pyfunction!(align_sp3_clock_reference, m)?)?;

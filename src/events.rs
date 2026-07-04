@@ -442,6 +442,12 @@ impl From<core_geometry::Dop> for PyDop {
     }
 }
 
+impl PyDop {
+    pub(crate) fn from_core(value: core_geometry::Dop) -> Self {
+        value.into()
+    }
+}
+
 #[pymethods]
 impl PyDop {
     /// Compute DOP from ECEF receiver-to-satellite LOS rows.
