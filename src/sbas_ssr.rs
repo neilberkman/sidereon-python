@@ -1390,7 +1390,7 @@ impl From<SbasGeoState> for PySbasGeoState {
 #[pyclass(module = "sidereon._sidereon", name = "SbasCorrectionStore")]
 /// Mutable SBAS correction store.
 pub struct PySbasCorrectionStore {
-    inner: SbasCorrectionStore,
+    pub(crate) inner: SbasCorrectionStore,
 }
 
 #[pymethods]

@@ -128,7 +128,7 @@ impl PyAraimRow {
 #[pyclass(module = "sidereon._sidereon", name = "AraimGeometry")]
 #[derive(Clone)]
 pub struct PyAraimGeometry {
-    inner: AraimGeometry,
+    pub(crate) inner: AraimGeometry,
 }
 
 #[pymethods]
@@ -545,7 +545,7 @@ impl PyConstellationIsm {
 #[pyclass(module = "sidereon._sidereon", name = "Ism")]
 #[derive(Clone)]
 pub struct PyIsm {
-    inner: Ism,
+    pub(crate) inner: Ism,
 }
 
 #[pymethods]

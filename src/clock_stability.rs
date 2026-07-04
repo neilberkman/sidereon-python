@@ -8,11 +8,16 @@ use pyo3::types::PyModule;
 
 use sidereon_core::clock_stability::{
     allan_deviation as core_allan_deviation,
+    allan_deviation_power_law_slope as core_allan_deviation_power_law_slope,
+    allan_variance_power_law_tau_exponent as core_allan_variance_power_law_tau_exponent,
     compute_allan_deviations as core_compute_allan_deviations,
-    hadamard_deviation as core_hadamard_deviation, modified_adev as core_modified_adev,
+    fit_power_law_noise as core_fit_power_law_noise, hadamard_deviation as core_hadamard_deviation,
+    modified_adev as core_modified_adev,
+    modified_allan_deviation_power_law_slope as core_modified_allan_deviation_power_law_slope,
     overlapping_adev as core_overlapping_adev, time_deviation as core_time_deviation,
     AllanDeviationCurves, AllanError, AllanEstimatorSet, AllanInput, AllanOptions, AllanResult,
-    AllanSeries, GapPolicy, TauGrid,
+    AllanSeries, GapPolicy, PowerLawNoiseFit, PowerLawNoiseOptions, PowerLawNoiseRegion,
+    PowerLawNoiseType, PowerLawOctave, PowerLawOctaveDominance, PowerLawOctaveFlag, TauGrid,
 };
 
 use crate::np_array;
@@ -535,6 +540,12 @@ impl From<AllanResult> for PyAllanResult {
     }
 }
 
+impl PyAllanResult {
+    fn inner(&self) -> &AllanResult {
+        &self.inner
+    }
+}
+
 #[pymethods]
 impl PyAllanResult {
     /// Averaging times as a numpy `(n,)` array, seconds.
@@ -615,6 +626,463 @@ impl PyAllanDeviationCurves {
     }
 }
 
+/// IEEE 1139 fractional-frequency PSD power-law noise type.
+#[pyclass(module = "sidereon._sidereon", name = "PowerLawNoiseType", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyPowerLawNoiseType {
+    /// Random-walk frequency modulation.
+    RANDOM_WALK_FM,
+    /// Flicker frequency modulation.
+    FLICKER_FM,
+    /// White frequency modulation.
+    WHITE_FM,
+    /// Flicker phase modulation.
+    FLICKER_PM,
+    /// White phase modulation.
+    WHITE_PM,
+}
+
+impl From<PowerLawNoiseType> for PyPowerLawNoiseType {
+    fn from(value: PowerLawNoiseType) -> Self {
+        match value {
+            PowerLawNoiseType::RandomWalkFM => Self::RANDOM_WALK_FM,
+            PowerLawNoiseType::FlickerFM => Self::FLICKER_FM,
+            PowerLawNoiseType::WhiteFM => Self::WHITE_FM,
+            PowerLawNoiseType::FlickerPM => Self::FLICKER_PM,
+            PowerLawNoiseType::WhitePM => Self::WHITE_PM,
+        }
+    }
+}
+
+impl From<PyPowerLawNoiseType> for PowerLawNoiseType {
+    fn from(value: PyPowerLawNoiseType) -> Self {
+        match value {
+            PyPowerLawNoiseType::RANDOM_WALK_FM => Self::RandomWalkFM,
+            PyPowerLawNoiseType::FLICKER_FM => Self::FlickerFM,
+            PyPowerLawNoiseType::WHITE_FM => Self::WhiteFM,
+            PyPowerLawNoiseType::FLICKER_PM => Self::FlickerPM,
+            PyPowerLawNoiseType::WHITE_PM => Self::WhitePM,
+        }
+    }
+}
+
+#[pymethods]
+impl PyPowerLawNoiseType {
+    /// Stable lowercase noise-type label.
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::RANDOM_WALK_FM => "random_walk_fm",
+            Self::FLICKER_FM => "flicker_fm",
+            Self::WHITE_FM => "white_fm",
+            Self::FLICKER_PM => "flicker_pm",
+            Self::WHITE_PM => "white_pm",
+        }
+    }
+
+    /// Spectral exponent `alpha` in `S_y(f) = h_alpha f^alpha`.
+    #[getter]
+    fn alpha(&self) -> i32 {
+        PowerLawNoiseType::from(*self).alpha()
+    }
+
+    /// Index into `PowerLawNoiseFit.coefficients`.
+    #[getter]
+    fn coefficient_index(&self) -> usize {
+        PowerLawNoiseType::from(*self).coefficient_index()
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::RANDOM_WALK_FM => "PowerLawNoiseType.RANDOM_WALK_FM",
+            Self::FLICKER_FM => "PowerLawNoiseType.FLICKER_FM",
+            Self::WHITE_FM => "PowerLawNoiseType.WHITE_FM",
+            Self::FLICKER_PM => "PowerLawNoiseType.FLICKER_PM",
+            Self::WHITE_PM => "PowerLawNoiseType.WHITE_PM",
+        }
+    }
+}
+
+/// Options for per-octave power-law identification.
+#[pyclass(module = "sidereon._sidereon", name = "PowerLawNoiseOptions")]
+#[derive(Clone, Copy)]
+pub struct PyPowerLawNoiseOptions {
+    inner: PowerLawNoiseOptions,
+}
+
+impl PyPowerLawNoiseOptions {
+    fn inner(&self) -> PowerLawNoiseOptions {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyPowerLawNoiseOptions {
+    /// Build power-law clock-noise identification options.
+    #[new]
+    #[pyo3(signature = (
+        basic_tau_s=1.0,
+        measurement_bandwidth_hz=None,
+        min_points_per_octave=None,
+        slope_tolerance=None,
+        scatter_tolerance=None,
+    ))]
+    fn new(
+        basic_tau_s: f64,
+        measurement_bandwidth_hz: Option<f64>,
+        min_points_per_octave: Option<usize>,
+        slope_tolerance: Option<f64>,
+        scatter_tolerance: Option<f64>,
+    ) -> Self {
+        let mut inner = measurement_bandwidth_hz
+            .map(|bandwidth| PowerLawNoiseOptions::new(basic_tau_s, bandwidth))
+            .unwrap_or_else(|| PowerLawNoiseOptions::sampled_at_nyquist(basic_tau_s));
+        if let Some(value) = min_points_per_octave {
+            inner.min_points_per_octave = value;
+        }
+        if let Some(value) = slope_tolerance {
+            inner.slope_tolerance = value;
+        }
+        if let Some(value) = scatter_tolerance {
+            inner.scatter_tolerance = value;
+        }
+        Self { inner }
+    }
+
+    /// Construct options using the Nyquist bandwidth for `basic_tau_s`.
+    #[staticmethod]
+    fn sampled_at_nyquist(basic_tau_s: f64) -> Self {
+        Self {
+            inner: PowerLawNoiseOptions::sampled_at_nyquist(basic_tau_s),
+        }
+    }
+
+    /// Minimum tau points required before an octave can be classified.
+    #[getter]
+    fn min_points_per_octave(&self) -> usize {
+        self.inner.min_points_per_octave
+    }
+
+    /// Maximum absolute slope error allowed for a tabulated noise type.
+    #[getter]
+    fn slope_tolerance(&self) -> f64 {
+        self.inner.slope_tolerance
+    }
+
+    /// Maximum robust local-slope scatter before an octave is ambiguous.
+    #[getter]
+    fn scatter_tolerance(&self) -> f64 {
+        self.inner.scatter_tolerance
+    }
+
+    /// Basic sample interval used by the deviation calculation, seconds.
+    #[getter]
+    fn basic_tau_s(&self) -> f64 {
+        self.inner.basic_tau_s
+    }
+
+    /// Upper measurement bandwidth, hertz.
+    #[getter]
+    fn measurement_bandwidth_hz(&self) -> f64 {
+        self.inner.measurement_bandwidth_hz
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PowerLawNoiseOptions(basic_tau_s={}, measurement_bandwidth_hz={})",
+            self.inner.basic_tau_s, self.inner.measurement_bandwidth_hz
+        )
+    }
+}
+
+/// Reason an octave could not receive a dominant noise type.
+#[pyclass(module = "sidereon._sidereon", name = "PowerLawOctaveFlag", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyPowerLawOctaveFlag {
+    /// Fewer tau points than requested were present.
+    UNDER_SAMPLED,
+    /// A zero deviation made the log-log slope undefined.
+    DEGENERATE_DEVIATION,
+    /// MDEV lacked enough tau points to separate phase-modulation types.
+    MISSING_MODIFIED_ALLAN,
+}
+
+impl From<PowerLawOctaveFlag> for PyPowerLawOctaveFlag {
+    fn from(value: PowerLawOctaveFlag) -> Self {
+        match value {
+            PowerLawOctaveFlag::UnderSampled => Self::UNDER_SAMPLED,
+            PowerLawOctaveFlag::DegenerateDeviation => Self::DEGENERATE_DEVIATION,
+            PowerLawOctaveFlag::MissingModifiedAllan => Self::MISSING_MODIFIED_ALLAN,
+        }
+    }
+}
+
+#[pymethods]
+impl PyPowerLawOctaveFlag {
+    /// Stable lowercase flag label.
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::UNDER_SAMPLED => "under_sampled",
+            Self::DEGENERATE_DEVIATION => "degenerate_deviation",
+            Self::MISSING_MODIFIED_ALLAN => "missing_modified_allan",
+        }
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::UNDER_SAMPLED => "PowerLawOctaveFlag.UNDER_SAMPLED",
+            Self::DEGENERATE_DEVIATION => "PowerLawOctaveFlag.DEGENERATE_DEVIATION",
+            Self::MISSING_MODIFIED_ALLAN => "PowerLawOctaveFlag.MISSING_MODIFIED_ALLAN",
+        }
+    }
+}
+
+/// Dominant noise decision for one tau octave.
+#[pyclass(module = "sidereon._sidereon", name = "PowerLawOctaveDominance")]
+#[derive(Clone, Copy)]
+pub struct PyPowerLawOctaveDominance {
+    inner: PowerLawOctaveDominance,
+}
+
+impl From<PowerLawOctaveDominance> for PyPowerLawOctaveDominance {
+    fn from(inner: PowerLawOctaveDominance) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyPowerLawOctaveDominance {
+    /// Stable decision kind: `dominant`, `ambiguous`, or `flagged`.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match self.inner {
+            PowerLawOctaveDominance::Dominant(_) => "dominant",
+            PowerLawOctaveDominance::Ambiguous => "ambiguous",
+            PowerLawOctaveDominance::Flagged(_) => "flagged",
+        }
+    }
+
+    /// Dominant noise type, when classified.
+    #[getter]
+    fn noise_type(&self) -> Option<PyPowerLawNoiseType> {
+        match self.inner {
+            PowerLawOctaveDominance::Dominant(noise_type) => Some(noise_type.into()),
+            _ => None,
+        }
+    }
+
+    /// Classification flag, when the octave could not be classified.
+    #[getter]
+    fn flag(&self) -> Option<PyPowerLawOctaveFlag> {
+        match self.inner {
+            PowerLawOctaveDominance::Flagged(flag) => Some(flag.into()),
+            _ => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        match self.inner {
+            PowerLawOctaveDominance::Dominant(noise_type) => {
+                format!(
+                    "PowerLawOctaveDominance(kind='dominant', noise_type={})",
+                    PyPowerLawNoiseType::from(noise_type).label()
+                )
+            }
+            PowerLawOctaveDominance::Ambiguous => {
+                "PowerLawOctaveDominance(kind='ambiguous')".to_string()
+            }
+            PowerLawOctaveDominance::Flagged(flag) => {
+                format!(
+                    "PowerLawOctaveDominance(kind='flagged', flag={})",
+                    PyPowerLawOctaveFlag::from(flag).label()
+                )
+            }
+        }
+    }
+}
+
+/// Per-octave power-law classification from local ADEV and MDEV slopes.
+#[pyclass(module = "sidereon._sidereon", name = "PowerLawOctave")]
+#[derive(Clone)]
+pub struct PyPowerLawOctave {
+    inner: PowerLawOctave,
+}
+
+impl From<PowerLawOctave> for PyPowerLawOctave {
+    fn from(inner: PowerLawOctave) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyPowerLawOctave {
+    /// First tau in the octave, seconds.
+    #[getter]
+    fn tau_start_s(&self) -> f64 {
+        self.inner.tau_start_s
+    }
+
+    /// Last tau used in the octave, seconds.
+    #[getter]
+    fn tau_end_s(&self) -> f64 {
+        self.inner.tau_end_s
+    }
+
+    /// Number of ADEV tau points used for the octave slope.
+    #[getter]
+    fn point_count(&self) -> usize {
+        self.inner.point_count
+    }
+
+    /// Fitted ADEV log-log slope for this octave, if available.
+    #[getter]
+    fn adev_slope(&self) -> Option<f64> {
+        self.inner.adev_slope
+    }
+
+    /// Fitted MDEV log-log slope for this octave, if available.
+    #[getter]
+    fn mdev_slope(&self) -> Option<f64> {
+        self.inner.mdev_slope
+    }
+
+    /// Robust scatter of adjacent ADEV slopes inside the octave, if available.
+    #[getter]
+    fn slope_scatter(&self) -> Option<f64> {
+        self.inner.slope_scatter
+    }
+
+    /// Dominant type, ambiguity, or classification flag.
+    #[getter]
+    fn dominance(&self) -> PyPowerLawOctaveDominance {
+        self.inner.dominance.into()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PowerLawOctave(tau_start_s={}, tau_end_s={}, point_count={})",
+            self.inner.tau_start_s, self.inner.tau_end_s, self.inner.point_count
+        )
+    }
+}
+
+/// Consecutive tau span supporting one fitted power-law coefficient.
+#[pyclass(module = "sidereon._sidereon", name = "PowerLawNoiseRegion")]
+#[derive(Clone)]
+pub struct PyPowerLawNoiseRegion {
+    inner: PowerLawNoiseRegion,
+}
+
+impl From<PowerLawNoiseRegion> for PyPowerLawNoiseRegion {
+    fn from(inner: PowerLawNoiseRegion) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyPowerLawNoiseRegion {
+    /// Noise type identified across the region.
+    #[getter]
+    fn noise_type(&self) -> PyPowerLawNoiseType {
+        self.inner.noise_type.into()
+    }
+
+    /// First tau in the region, seconds.
+    #[getter]
+    fn tau_start_s(&self) -> f64 {
+        self.inner.tau_start_s
+    }
+
+    /// Last tau in the region, seconds.
+    #[getter]
+    fn tau_end_s(&self) -> f64 {
+        self.inner.tau_end_s
+    }
+
+    /// Number of classified octaves merged into this region.
+    #[getter]
+    fn octave_count(&self) -> usize {
+        self.inner.octave_count
+    }
+
+    /// Number of deviation points used in the coefficient fit.
+    #[getter]
+    fn point_count(&self) -> usize {
+        self.inner.point_count
+    }
+
+    /// Mean local slope from the statistic used for classification.
+    #[getter]
+    fn mean_slope(&self) -> f64 {
+        self.inner.mean_slope
+    }
+
+    /// Fitted PSD coefficient for this region.
+    #[getter]
+    fn coefficient(&self) -> f64 {
+        self.inner.coefficient
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PowerLawNoiseRegion(noise_type={}, tau_start_s={}, tau_end_s={})",
+            self.noise_type().label(),
+            self.inner.tau_start_s,
+            self.inner.tau_end_s
+        )
+    }
+}
+
+/// IEEE 1139 power-law noise identification and coefficient fit.
+#[pyclass(module = "sidereon._sidereon", name = "PowerLawNoiseFit")]
+#[derive(Clone)]
+pub struct PyPowerLawNoiseFit {
+    inner: PowerLawNoiseFit,
+}
+
+impl From<PowerLawNoiseFit> for PyPowerLawNoiseFit {
+    fn from(inner: PowerLawNoiseFit) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyPowerLawNoiseFit {
+    /// Dominant classification for each tau octave.
+    #[getter]
+    fn dominant_per_octave(&self) -> Vec<PyPowerLawOctave> {
+        self.inner
+            .dominant_per_octave
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect()
+    }
+
+    /// PSD coefficients `[h_-2, h_-1, h_0, h_1, h_2]`.
+    #[getter]
+    fn coefficients<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.coefficients)
+    }
+
+    /// Consecutive identified tau regions used by the coefficient fit.
+    #[getter]
+    fn regions(&self) -> Vec<PyPowerLawNoiseRegion> {
+        self.inner.regions.iter().cloned().map(Into::into).collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PowerLawNoiseFit(octaves={}, regions={})",
+            self.inner.dominant_per_octave.len(),
+            self.inner.regions.len()
+        )
+    }
+}
+
 /// Compute the requested Allan-family curves.
 #[pyfunction]
 fn compute_allan_deviations(input: &PyAllanInput) -> PyResult<PyAllanDeviationCurves> {
@@ -690,6 +1158,40 @@ fn time_deviation(
         .map(Into::into)
 }
 
+/// Identify per-octave power-law noise and fit PSD coefficients.
+#[pyfunction]
+#[pyo3(signature = (adev, mdev, options=None))]
+fn fit_power_law_noise(
+    adev: &PyAllanResult,
+    mdev: &PyAllanResult,
+    options: Option<&PyPowerLawNoiseOptions>,
+) -> PyResult<PyPowerLawNoiseFit> {
+    let options = options
+        .map(PyPowerLawNoiseOptions::inner)
+        .unwrap_or_else(|| PowerLawNoiseOptions::sampled_at_nyquist(1.0));
+    core_fit_power_law_noise(adev.inner(), mdev.inner(), options)
+        .map(Into::into)
+        .map_err(|err| PyValueError::new_err(err.to_string()))
+}
+
+/// Exact ADEV log-log slope for a power-law noise type.
+#[pyfunction]
+fn allan_deviation_power_law_slope(noise_type: PyPowerLawNoiseType) -> f64 {
+    core_allan_deviation_power_law_slope(noise_type.into())
+}
+
+/// Exact MDEV log-log slope for a power-law noise type.
+#[pyfunction]
+fn modified_allan_deviation_power_law_slope(noise_type: PyPowerLawNoiseType) -> f64 {
+    core_modified_allan_deviation_power_law_slope(noise_type.into())
+}
+
+/// Exact Allan-variance tau exponent for a power-law noise type.
+#[pyfunction]
+fn allan_variance_power_law_tau_exponent(noise_type: PyPowerLawNoiseType) -> i32 {
+    core_allan_variance_power_law_tau_exponent(noise_type.into())
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAllanSeries>()?;
     m.add_class::<PyTauGrid>()?;
@@ -700,11 +1202,25 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAllanInput>()?;
     m.add_class::<PyAllanResult>()?;
     m.add_class::<PyAllanDeviationCurves>()?;
+    m.add_class::<PyPowerLawNoiseType>()?;
+    m.add_class::<PyPowerLawNoiseOptions>()?;
+    m.add_class::<PyPowerLawOctaveFlag>()?;
+    m.add_class::<PyPowerLawOctaveDominance>()?;
+    m.add_class::<PyPowerLawOctave>()?;
+    m.add_class::<PyPowerLawNoiseRegion>()?;
+    m.add_class::<PyPowerLawNoiseFit>()?;
     m.add_function(wrap_pyfunction!(compute_allan_deviations, m)?)?;
     m.add_function(wrap_pyfunction!(allan_deviation, m)?)?;
     m.add_function(wrap_pyfunction!(overlapping_adev, m)?)?;
     m.add_function(wrap_pyfunction!(modified_adev, m)?)?;
     m.add_function(wrap_pyfunction!(hadamard_deviation, m)?)?;
     m.add_function(wrap_pyfunction!(time_deviation, m)?)?;
+    m.add_function(wrap_pyfunction!(fit_power_law_noise, m)?)?;
+    m.add_function(wrap_pyfunction!(allan_deviation_power_law_slope, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        modified_allan_deviation_power_law_slope,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(allan_variance_power_law_tau_exponent, m)?)?;
     Ok(())
 }

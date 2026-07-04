@@ -23,7 +23,7 @@ use sidereon::passes::{
 };
 use sidereon::propagator::api::IntegratorOptions;
 use sidereon::propagator::{
-    propagate_states, IntegratorKind, PropagationConfig, PropagationForceModel,
+    ForceModelComponents, ForceModelKind, IntegratorKind, PropagationForceModel, StatePropagator,
 };
 use sidereon::sgp4::{
     fit_tle as core_fit_tle, parse_tle_file_with_opsmode, ElementSet, FitConfig, FitEpoch,
@@ -32,6 +32,9 @@ use sidereon::sgp4::{
 };
 use sidereon::tle::{
     encode as encode_tle_lines, parse as parse_tle_lines, ChecksumWarning, TleElements,
+};
+use sidereon::{
+    SchwarzschildRelativity, SolarRadiationPressure, ThirdBodyGravity, ZonalDegrees, ZonalGravity,
 };
 
 use crate::events::PyWgs84Geodetic;
@@ -130,6 +133,27 @@ impl PyForceModel {
             PyForceModel::TWO_BODY_J2 => PropagationForceModel::TwoBodyJ2,
         }
     }
+
+    fn to_kind(self, mu_km3_s2: Option<f64>) -> ForceModelKind {
+        match self {
+            PyForceModel::TWO_BODY => match mu_km3_s2 {
+                Some(mu_km3_s2) => ForceModelKind::TwoBody { mu_km3_s2 },
+                None => ForceModelKind::two_body(),
+            },
+            PyForceModel::TWO_BODY_J2 => {
+                let mut kind = ForceModelKind::two_body_j2();
+                if let Some(mu_km3_s2) = mu_km3_s2 {
+                    if let ForceModelKind::TwoBodyJ2 {
+                        mu_km3_s2: value, ..
+                    } = &mut kind
+                    {
+                        *value = mu_km3_s2;
+                    }
+                }
+                kind
+            }
+        }
+    }
 }
 
 #[pymethods]
@@ -156,6 +180,318 @@ pub(crate) fn extract_force_model(obj: &Bound<'_, PyAny>) -> PyResult<PyForceMod
         return Ok(model);
     }
     PyForceModel::from_label(&obj.extract::<String>()?)
+}
+
+/// Cannonball solar-radiation-pressure parameters for composite propagation.
+#[pyclass(module = "sidereon._sidereon", name = "SolarRadiationPressure")]
+#[derive(Clone, Copy)]
+pub struct PySolarRadiationPressure {
+    inner: SolarRadiationPressure,
+}
+
+impl PySolarRadiationPressure {
+    fn inner(&self) -> SolarRadiationPressure {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PySolarRadiationPressure {
+    /// Build SRP parameters from reflectivity coefficient and area-to-mass ratio.
+    #[new]
+    fn new(cr: f64, area_to_mass_m2_kg: f64) -> PyResult<Self> {
+        SolarRadiationPressure::new(cr, area_to_mass_m2_kg)
+            .map(|inner| Self { inner })
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    /// Build SRP parameters with explicit pressure and astronomical unit constants.
+    #[staticmethod]
+    fn with_pressure(
+        cr: f64,
+        area_to_mass_m2_kg: f64,
+        pressure_n_m2: f64,
+        au_km: f64,
+    ) -> PyResult<Self> {
+        SolarRadiationPressure::with_pressure(cr, area_to_mass_m2_kg, pressure_n_m2, au_km)
+            .map(|inner| Self { inner })
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    /// Reflectivity coefficient.
+    #[getter]
+    fn cr(&self) -> f64 {
+        self.inner.cr()
+    }
+
+    /// Area-to-mass ratio, square metres per kilogram.
+    #[getter]
+    fn area_to_mass_m2_kg(&self) -> f64 {
+        self.inner.area_to_mass_m2_kg()
+    }
+
+    /// Solar radiation pressure at 1 AU, newtons per square metre.
+    #[getter]
+    fn pressure_n_m2(&self) -> f64 {
+        self.inner.pressure_n_m2()
+    }
+
+    /// Astronomical unit used by the inverse-square scale, kilometres.
+    #[getter]
+    fn au_km(&self) -> f64 {
+        self.inner.au_km()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SolarRadiationPressure(cr={}, area_to_mass_m2_kg={})",
+            self.inner.cr(),
+            self.inner.area_to_mass_m2_kg()
+        )
+    }
+}
+
+/// Additive force components for composite numerical propagation.
+#[pyclass(module = "sidereon._sidereon", name = "ForceModelComponents")]
+#[derive(Clone, Copy)]
+pub struct PyForceModelComponents {
+    inner: ForceModelComponents,
+}
+
+impl PyForceModelComponents {
+    fn inner(&self) -> ForceModelComponents {
+        self.inner
+    }
+}
+
+fn zonal_degree_label(zonal: Option<ZonalGravity>) -> Option<u8> {
+    let degrees = zonal?.degrees;
+    if degrees.j6 {
+        Some(6)
+    } else if degrees.j5 {
+        Some(5)
+    } else if degrees.j4 {
+        Some(4)
+    } else if degrees.j3 {
+        Some(3)
+    } else if degrees.j2 {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+#[pymethods]
+impl PyForceModelComponents {
+    /// Build an additive force-component set.
+    #[new]
+    #[pyo3(signature = (
+        two_body_mu_km3_s2=None,
+        zonal_max_degree=None,
+        third_body=false,
+        solar_radiation_pressure=None,
+        relativity=false,
+    ))]
+    fn new(
+        two_body_mu_km3_s2: Option<f64>,
+        zonal_max_degree: Option<u8>,
+        third_body: bool,
+        solar_radiation_pressure: Option<&PySolarRadiationPressure>,
+        relativity: bool,
+    ) -> PyResult<Self> {
+        let mut inner = ForceModelComponents {
+            two_body_mu_km3_s2,
+            ..ForceModelComponents::EMPTY
+        };
+        if let Some(max_degree) = zonal_max_degree {
+            let zonal = ZonalGravity {
+                degrees: ZonalDegrees::through(max_degree)
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?,
+                ..ZonalGravity::default()
+            };
+            inner.zonal = Some(zonal);
+        }
+        if third_body {
+            inner.third_body = Some(ThirdBodyGravity::default());
+        }
+        inner.solar_radiation_pressure =
+            solar_radiation_pressure.map(PySolarRadiationPressure::inner);
+        if relativity {
+            inner.relativity = Some(SchwarzschildRelativity::default());
+        }
+        Ok(Self { inner })
+    }
+
+    /// Empty component set.
+    #[staticmethod]
+    fn empty() -> Self {
+        Self {
+            inner: ForceModelComponents::EMPTY,
+        }
+    }
+
+    /// Canonical Earth central gravity only.
+    #[staticmethod]
+    fn earth_two_body() -> Self {
+        Self {
+            inner: ForceModelComponents::earth_two_body(),
+        }
+    }
+
+    /// Canonical Earth Phase A components, with optional SRP parameters.
+    #[staticmethod]
+    #[pyo3(signature = (solar_radiation_pressure=None))]
+    fn earth_phase_a(solar_radiation_pressure: Option<&PySolarRadiationPressure>) -> Self {
+        Self {
+            inner: ForceModelComponents::earth_phase_a(
+                solar_radiation_pressure.map(PySolarRadiationPressure::inner),
+            ),
+        }
+    }
+
+    /// Central gravity parameter, if central gravity is enabled.
+    #[getter]
+    fn two_body_mu_km3_s2(&self) -> Option<f64> {
+        self.inner.two_body_mu_km3_s2
+    }
+
+    /// Highest enabled Earth zonal degree, or `None` when zonals are disabled.
+    #[getter]
+    fn zonal_max_degree(&self) -> Option<u8> {
+        zonal_degree_label(self.inner.zonal)
+    }
+
+    /// Whether Sun and Moon third-body acceleration is enabled.
+    #[getter]
+    fn third_body(&self) -> bool {
+        self.inner.third_body.is_some()
+    }
+
+    /// Whether cannonball solar radiation pressure is enabled.
+    #[getter]
+    fn solar_radiation_pressure(&self) -> bool {
+        self.inner.solar_radiation_pressure.is_some()
+    }
+
+    /// Whether Schwarzschild relativity is enabled.
+    #[getter]
+    fn relativity(&self) -> bool {
+        self.inner.relativity.is_some()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ForceModelComponents(two_body_mu_km3_s2={:?}, zonal_max_degree={:?}, third_body={}, solar_radiation_pressure={}, relativity={})",
+            self.two_body_mu_km3_s2(),
+            self.zonal_max_degree(),
+            self.third_body(),
+            self.solar_radiation_pressure(),
+            self.relativity()
+        )
+    }
+}
+
+/// Concrete numerical propagation force selector.
+#[pyclass(module = "sidereon._sidereon", name = "ForceModelKind")]
+#[derive(Clone, Copy)]
+pub struct PyForceModelKind {
+    inner: ForceModelKind,
+}
+
+impl PyForceModelKind {
+    pub(crate) fn inner(&self) -> ForceModelKind {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyForceModelKind {
+    /// Canonical or custom two-body central gravity.
+    #[staticmethod]
+    #[pyo3(signature = (mu_km3_s2=None))]
+    fn two_body(mu_km3_s2: Option<f64>) -> Self {
+        Self {
+            inner: PyForceModel::TWO_BODY.to_kind(mu_km3_s2),
+        }
+    }
+
+    /// Canonical or custom Earth two-body plus J2 gravity.
+    #[staticmethod]
+    #[pyo3(signature = (mu_km3_s2=None))]
+    fn two_body_j2(mu_km3_s2: Option<f64>) -> Self {
+        Self {
+            inner: PyForceModel::TWO_BODY_J2.to_kind(mu_km3_s2),
+        }
+    }
+
+    /// Additive force model from component switches.
+    #[staticmethod]
+    fn composite(components: &PyForceModelComponents) -> Self {
+        Self {
+            inner: ForceModelKind::composite(components.inner()),
+        }
+    }
+
+    /// Canonical Earth Phase A force set, with optional SRP parameters.
+    #[staticmethod]
+    #[pyo3(signature = (solar_radiation_pressure=None))]
+    fn earth_phase_a(solar_radiation_pressure: Option<&PySolarRadiationPressure>) -> Self {
+        Self {
+            inner: ForceModelKind::earth_phase_a(
+                solar_radiation_pressure.map(PySolarRadiationPressure::inner),
+            ),
+        }
+    }
+
+    /// Stable lowercase selector label.
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self.inner {
+            ForceModelKind::TwoBody { .. } => "two_body",
+            ForceModelKind::TwoBodyJ2 { .. } => "two_body_j2",
+            ForceModelKind::Composite { .. } => "composite",
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("ForceModelKind.{}()", self.label())
+    }
+}
+
+fn force_kind_from_any(
+    obj: Option<&Bound<'_, PyAny>>,
+    mu_km3_s2: Option<f64>,
+) -> PyResult<ForceModelKind> {
+    let Some(obj) = obj else {
+        return Ok(PyForceModel::TWO_BODY.to_kind(mu_km3_s2));
+    };
+    if let Ok(kind) = obj.extract::<PyRef<'_, PyForceModelKind>>() {
+        if mu_km3_s2.is_some() {
+            return Err(PyValueError::new_err(
+                "mu_km3_s2 may only be used with ForceModel.TWO_BODY or ForceModel.TWO_BODY_J2",
+            ));
+        }
+        return Ok(kind.inner());
+    }
+    if let Ok(model) = obj.extract::<PyForceModel>() {
+        return Ok(model.to_kind(mu_km3_s2));
+    }
+    let label = obj.extract::<String>()?;
+    match label.as_str() {
+        "two_body" => Ok(PyForceModel::TWO_BODY.to_kind(mu_km3_s2)),
+        "two_body_j2" => Ok(PyForceModel::TWO_BODY_J2.to_kind(mu_km3_s2)),
+        "earth_phase_a" => {
+            if mu_km3_s2.is_some() {
+                return Err(PyValueError::new_err(
+                    "mu_km3_s2 may only be used with ForceModel.TWO_BODY or ForceModel.TWO_BODY_J2",
+                ));
+            }
+            Ok(ForceModelKind::earth_phase_a(None))
+        }
+        other => Err(PyValueError::new_err(format!(
+            "unknown force_model {other:?}; expected a ForceModel, ForceModelKind, \"two_body\", \"two_body_j2\", or \"earth_phase_a\""
+        ))),
+    }
 }
 
 /// Numerical propagation integrator.
@@ -661,13 +997,13 @@ impl PyLoss {
         }
     }
 
-    pub(crate) fn to_trf_loss(self) -> trust_region_least_squares::loss::Loss {
+    pub(crate) fn to_trf_loss(self) -> CoreLoss {
         match self {
-            Self::LINEAR => trust_region_least_squares::loss::Loss::Linear,
-            Self::SOFT_L1 => trust_region_least_squares::loss::Loss::SoftL1,
-            Self::HUBER => trust_region_least_squares::loss::Loss::Huber,
-            Self::CAUCHY => trust_region_least_squares::loss::Loss::Cauchy,
-            Self::ARCTAN => trust_region_least_squares::loss::Loss::Arctan,
+            Self::LINEAR => CoreLoss::Linear,
+            Self::SOFT_L1 => CoreLoss::SoftL1,
+            Self::HUBER => CoreLoss::Huber,
+            Self::CAUCHY => CoreLoss::Cauchy,
+            Self::ARCTAN => CoreLoss::Arctan,
         }
     }
 }
@@ -1302,8 +1638,8 @@ impl PyTle {
     /// Re-encode the parsed elements as the two 69-character TLE lines (with
     /// checksums), via the engine's `tle::encode`. For a well-formed input the
     /// round-trip is character-exact.
-    fn to_lines(&self) -> (String, String) {
-        encode_tle_lines(&self.elements)
+    fn to_lines(&self) -> PyResult<(String, String)> {
+        encode_tle_lines(&self.elements).map_err(to_tle_err)
     }
 
     /// Advisory checksum discrepancies found while parsing, as a list of
@@ -1775,11 +2111,11 @@ impl PyEphemeris {
 /// `position_km` and `velocity_km_s` are length-3 numpy arrays; `times_s` is a
 /// 1-D numpy `float64` array of absolute TDB epochs (seconds) at which to sample
 /// the trajectory, monotonic in the propagation direction. The state is
-/// integrated with the chosen `force_model` (`ForceModel.TWO_BODY` or
-/// `ForceModel.TWO_BODY_J2`) and `integrator` (`Integrator.DP54` adaptive,
-/// default, or `Integrator.RK4` fixed-step). The
+/// integrated with the chosen `force_model` (the legacy [`ForceModel`] enum or
+/// a 0.15 [`ForceModelKind`] composite handle) and `integrator`
+/// (`Integrator.DP54` adaptive, default, or `Integrator.RK4` fixed-step). The
 /// tolerance / step keywords are forwarded to the integrator. Bad input
-/// (wrong shape, unknown selector, non-positive step) raises
+/// (wrong array length, unknown selector, non-positive step) raises
 /// `ValueError`; a propagation failure raises `SidereonError`.
 #[pyfunction]
 #[pyo3(signature = (
@@ -1788,7 +2124,7 @@ impl PyEphemeris {
     velocity_km_s,
     times_s,
     *,
-    force_model = PyForceModel::TWO_BODY,
+    force_model = None,
     integrator = PyIntegrator::DP54,
     abs_tol = 1.0e-9,
     rel_tol = 1.0e-12,
@@ -1807,7 +2143,7 @@ fn propagate_state(
     position_km: PyReadonlyArray1<'_, f64>,
     velocity_km_s: PyReadonlyArray1<'_, f64>,
     times_s: PyReadonlyArray1<'_, f64>,
-    #[pyo3(from_py_with = extract_force_model)] force_model: PyForceModel,
+    force_model: Option<&Bound<'_, PyAny>>,
     #[pyo3(from_py_with = extract_integrator)] integrator: PyIntegrator,
     abs_tol: f64,
     rel_tol: f64,
@@ -1833,10 +2169,11 @@ fn propagate_state(
         return Err(PyValueError::new_err("initial_step_s must be positive"));
     }
     let drag = drag.map(|value| value.borrow(py).inner());
+    let force_model = force_kind_from_any(force_model, mu_km3_s2)?;
 
-    let config = PropagationConfig {
-        force_model: force_model.to_core(),
-        mu_km3_s2,
+    let propagator = StatePropagator {
+        initial: sidereon::state::CartesianState::new(epoch_s, position, velocity),
+        force_model,
         integrator: IntegratorKind::from(integrator),
         options: IntegratorOptions {
             abs_tol,
@@ -1848,17 +2185,17 @@ fn propagate_state(
             dense_output: false,
         },
         drag,
-        ..PropagationConfig::new(epoch_s, position, velocity)
+        space_weather: None,
     };
 
     let output_times = times_vec.clone();
     let states = if let Some(table) = space_weather_table {
         let source = table.borrow(py).source();
-        let propagator = config.to_propagator().with_space_weather(source);
+        let propagator = propagator.with_space_weather(source);
         py.allow_threads(move || propagator.ephemeris(&times_vec))
             .map_err(to_solve_err)?
     } else {
-        py.allow_threads(move || propagate_states(&config, &times_vec))
+        py.allow_threads(move || propagator.ephemeris(&times_vec))
             .map_err(to_solve_err)?
     };
     Ok(PyEphemeris {
@@ -2497,6 +2834,9 @@ impl PyConstellation {
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOpsMode>()?;
     m.add_class::<PyForceModel>()?;
+    m.add_class::<PySolarRadiationPressure>()?;
+    m.add_class::<PyForceModelComponents>()?;
+    m.add_class::<PyForceModelKind>()?;
     m.add_class::<PyIntegrator>()?;
     m.add_class::<PyGroundStation>()?;
     m.add_class::<PyChecksumWarning>()?;
