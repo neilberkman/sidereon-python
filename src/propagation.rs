@@ -648,7 +648,7 @@ pub enum PyLoss {
 }
 
 impl PyLoss {
-    fn from_label(value: &str) -> PyResult<Self> {
+    pub(crate) fn from_label(value: &str) -> PyResult<Self> {
         match value {
             "linear" => Ok(Self::LINEAR),
             "soft_l1" => Ok(Self::SOFT_L1),
@@ -658,6 +658,16 @@ impl PyLoss {
             other => Err(PyValueError::new_err(format!(
                 "unknown loss {other:?}; expected linear, soft_l1, huber, cauchy, or arctan"
             ))),
+        }
+    }
+
+    pub(crate) fn to_trf_loss(self) -> trust_region_least_squares::loss::Loss {
+        match self {
+            Self::LINEAR => trust_region_least_squares::loss::Loss::Linear,
+            Self::SOFT_L1 => trust_region_least_squares::loss::Loss::SoftL1,
+            Self::HUBER => trust_region_least_squares::loss::Loss::Huber,
+            Self::CAUCHY => trust_region_least_squares::loss::Loss::Cauchy,
+            Self::ARCTAN => trust_region_least_squares::loss::Loss::Arctan,
         }
     }
 }

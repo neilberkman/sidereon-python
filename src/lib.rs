@@ -15,7 +15,7 @@
 
 use numpy::PyArray1;
 use pyo3::create_exception;
-use pyo3::exceptions::PyException;
+use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
@@ -41,6 +41,7 @@ mod doppler;
 mod elements;
 mod ephemeris;
 mod equinoctial;
+mod estimation;
 mod events;
 mod fallback;
 mod forces;
@@ -76,6 +77,7 @@ mod rtcm;
 mod rtk;
 mod sbas_ssr;
 mod sky;
+mod source_localization;
 mod space_weather;
 mod spk;
 mod spp;
@@ -128,6 +130,20 @@ create_exception!(
     SolveError,
     SidereonError,
     "Raised when a solve or propagation fails: non-convergence, an SGP4 error\ncode, or an integration failure."
+);
+
+create_exception!(
+    _sidereon,
+    PrimitiveError,
+    PyValueError,
+    "Raised when an estimation or detection primitive rejects its scalar inputs."
+);
+
+create_exception!(
+    _sidereon,
+    SourceLocalizationError,
+    PyValueError,
+    "Raised when source-localization inputs or geometry cannot produce a solution."
 );
 
 create_exception!(
@@ -273,6 +289,11 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("AntexParseError", py.get_type::<AntexParseError>())?;
     m.add("TleParseError", py.get_type::<TleParseError>())?;
     m.add("SolveError", py.get_type::<SolveError>())?;
+    m.add("PrimitiveError", py.get_type::<PrimitiveError>())?;
+    m.add(
+        "SourceLocalizationError",
+        py.get_type::<SourceLocalizationError>(),
+    )?;
     m.add("CdmParseError", py.get_type::<CdmParseError>())?;
     m.add("OmmParseError", py.get_type::<OmmParseError>())?;
     m.add("OemParseError", py.get_type::<OemParseError>())?;
@@ -292,6 +313,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SelectionError", py.get_type::<SelectionError>())?;
     m.add("FallbackError", py.get_type::<FallbackError>())?;
     ephemeris::register(m)?;
+    estimation::register(m)?;
     products::register(m)?;
     bodies::register(m)?;
     spp::register(m)?;
@@ -303,6 +325,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     ionex::register(m)?;
     rf::register(m)?;
     events::register(m)?;
+    source_localization::register(m)?;
     conjunction::register(m)?;
     cdm::register(m)?;
     omm::register(m)?;
