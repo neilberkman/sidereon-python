@@ -156,9 +156,7 @@ def test_mmap_terrain_store_matches_dted_reader_and_missing_dac_is_typed(tmp_pat
     assert ellipsoid_model.metres() == ellipsoid_default.metres()
 
     with pytest.raises(ValueError) as excinfo:
-        sidereon.Egm96FifteenMinuteGeoid.from_ww15mgh_dac_path(
-            tmp_path / "WW15MGH.DAC"
-        )
+        sidereon.Egm96FifteenMinuteGeoid.from_ww15mgh_dac_path(tmp_path / "WW15MGH.DAC")
     message = str(excinfo.value)
     assert message.startswith("MissingEgm96Dac:")
     assert "WW15MGH.DAC" in message
