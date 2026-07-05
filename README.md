@@ -82,14 +82,16 @@ print(solution.rx_clock_s)   # receiver clock bias, seconds
 The Python package mirrors the full breadth of the engine.
 
 - **Orbit propagation:** SGP4/SDP4 from TLE/OMM, numerical propagation with a
-  composable force model (zonal harmonics through J6, Sun/Moon third-body,
-  solar radiation pressure, relativistic correction, atmospheric drag) and
-  orbital-decay estimation, batch and constellation arcs, pass prediction,
+  composable force model (spherical-harmonic geopotential to selectable degree
+  and order, Sun/Moon third-body, solar radiation pressure, relativistic
+  correction, atmospheric drag) and orbital-decay estimation with a post-decay
+  validity latch, batch and constellation arcs, pass prediction,
   look angles, and coverage analysis.
 - **Orbital mechanics:** classical, equinoctial, and modified equinoctial
   elements, anomaly conversions and Kepler propagation, Lambert transfers,
   initial orbit determination (IOD), batch least-squares orbit fitting against
-  precise ephemerides with a per-satellite residual ledger, and relative
+  precise ephemerides (including terrestrial-frame SP3 products through the
+  Earth-orientation chain) with a per-satellite residual ledger, and relative
   motion in RIC/RTN/LVLH frames with Clohessy-Wiltshire propagation.
 - **GNSS positioning:** single-point positioning (SPP), RTK (float and fixed),
   PPP (float and fixed), DGNSS, a robust solve driver, and DOP.
@@ -115,7 +117,9 @@ The Python package mirrors the full breadth of the engine.
 - **Estimation and detection:** scalar Kalman and alpha-beta trackers,
   innovation gating, robust statistics, CFAR detection thresholds, and
   source localization (ToA/TDOA) from arrival times at known sensors.
-- **Geodesy and monitoring:** robust station velocity (MIDAS), trajectory
+- **Geodesy and monitoring:** geodesic direct and inverse problems (Karney),
+  an epoch-aware terrestrial reference frame catalog with published ITRF and
+  ETRF Helmert parameter sets, robust station velocity (MIDAS), trajectory
   fitting with seasonal terms and offsets, step detection, network motion
   fields with common-mode removal, and repeating-geometry (sidereal)
   filtering.
@@ -130,10 +134,10 @@ The Python package mirrors the full breadth of the engine.
 - **Observation quality:** RINEX observation QC (completeness, multipath,
   cycle slips), carrier-phase combinations, and Hatch smoothing.
 - **Terrain:** DTED elevation lookup with batch probes, a memory-mappable
-  terrain store, and geoid (EGM96) height conversion.
+  terrain store, and geoid height conversion from EGM96 and EGM2008 grids.
 - **RF:** link budget (FSPL, EIRP, C/N0, antenna gain).
-- **Formats:** parse and serialize TLE/OMM, CCSDS OEM/OPM/CDM, RINEX, CRINEX,
-  SP3, IONEX, ANTEX, Bias-SINEX, SBAS logs, RTCM, and NMEA.
+- **Formats:** parse and serialize TLE/OMM, CCSDS OEM/OPM/CDM/TDM, RINEX,
+  CRINEX, SP3, IONEX, ANTEX, Bias-SINEX, SBAS logs, RTCM, and NMEA.
 - **Data acquisition:** the `sidereon.data` module downloads and caches GNSS
   products (SP3 and IONEX from IGS/MGEX analysis centers, including merged
   multi-center SP3) and DTED terrain tiles.
