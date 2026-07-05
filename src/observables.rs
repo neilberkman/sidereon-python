@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -27,6 +27,10 @@ use sidereon_core::observables::{
     ObservableEphemerisSource, ObservablesError, PredictOptions, PredictRequest,
     PredictedObservables, RangePrediction, RangePredictionRequest,
 };
+use sidereon_core::positioning::{
+    solve_with_doppler_velocity as core_solve_with_doppler_velocity,
+    DopplerObservation as CoreDopplerObservation, ReceiverSolution,
+};
 use sidereon_core::quality::{
     self, PseudorangeVarianceModel, PseudorangeVarianceOptions, QualityError, RaimWeights,
     WeightEntry,
@@ -41,14 +45,24 @@ use sidereon_core::velocity::{
 use sidereon_core::GnssSatelliteId;
 
 use crate::marshal::{
-    fixed_array, option_py_or_default, rows3_from_array, EmptyPolicy, FinitePolicy, PyGnssSystem,
+    fixed_array, mat3_to_array, option_py_or_default, rows3_from_array, rows_to_array, EmptyPolicy,
+    FinitePolicy, PyGnssSystem,
 };
 use crate::rinex::PyBroadcastEphemeris;
+use crate::spp::{PySppConfig, PySppSolution};
 use crate::{np_array, to_solve_err, PyPreciseEphemerisSamples, PySp3};
 
 type PyPseudorangeObservation = (String, f64);
 type PyDroppedPseudorange = (String, PyPseudorangeDropReason);
 type PyPseudorangeCombinationResult = (Vec<PyPseudorangeObservation>, Vec<PyDroppedPseudorange>);
+
+fn state_covariance_ecef_block(covariance: &[[f64; 4]; 4]) -> [[f64; 3]; 3] {
+    [
+        [covariance[0][0], covariance[0][1], covariance[0][2]],
+        [covariance[1][0], covariance[1][1], covariance[1][2]],
+        [covariance[2][0], covariance[2][1], covariance[2][2]],
+    ]
+}
 
 /// A canonical GNSS carrier band.
 #[pyclass(module = "sidereon._sidereon", name = "CarrierBand", eq, eq_int)]
@@ -1065,6 +1079,16 @@ impl PyVelocityObservation {
     fn to_core(&self) -> VelocityObservation {
         self.inner
     }
+
+    #[allow(clippy::wrong_self_convention)]
+    fn to_core_doppler(&self) -> CoreDopplerObservation {
+        CoreDopplerObservation {
+            satellite_id: self.inner.satellite_id,
+            doppler_hz: self.inner.value,
+            carrier_hz: self.inner.carrier_hz,
+            sat_clock_drift_s_s: self.inner.sat_clock_drift_s_s,
+        }
+    }
 }
 
 /// Options controlling receiver velocity solving.
@@ -1147,6 +1171,21 @@ impl PyVelocitySolution {
         self.inner.clock_drift_s_s
     }
 
+    /// Unit-variance covariance of `[vx, vy, vz, clock_drift]`.
+    #[getter]
+    fn state_covariance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        rows_to_array(py, &self.inner.state_covariance)
+    }
+
+    /// ECEF velocity covariance block in `(m/s)^2`.
+    #[getter]
+    fn velocity_covariance_ecef_m2_s2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(
+            py,
+            &state_covariance_ecef_block(&self.inner.state_covariance),
+        )
+    }
+
     /// Satellite tokens contributing rows, in residual order.
     #[getter]
     fn used_sats(&self) -> Vec<String> {
@@ -1177,6 +1216,45 @@ impl PyVelocitySolution {
             self.inner.velocity_m_s[2],
             self.inner.clock_drift_s_s,
             self.inner.used_sats.len()
+        )
+    }
+}
+
+/// Result from solving SPP position plus Doppler velocity.
+#[pyclass(module = "sidereon._sidereon", name = "SppDopplerSolution")]
+pub struct PySppDopplerSolution {
+    receiver: ReceiverSolution,
+    velocity: Option<VelocitySolution>,
+    velocity_error: Option<String>,
+}
+
+#[pymethods]
+impl PySppDopplerSolution {
+    /// Receiver position solution.
+    #[getter]
+    fn receiver(&self) -> PySppSolution {
+        PySppSolution::from_solution(self.receiver.clone())
+    }
+
+    /// Solved velocity and clock drift, or `None` when Doppler rows are absent or unusable.
+    #[getter]
+    fn velocity(&self) -> Option<PyVelocitySolution> {
+        self.velocity
+            .clone()
+            .map(|inner| PyVelocitySolution { inner })
+    }
+
+    /// Velocity solve error text when Doppler rows were present but not solved.
+    #[getter]
+    fn velocity_error(&self) -> Option<String> {
+        self.velocity_error.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SppDopplerSolution(has_velocity={}, velocity_error={:?})",
+            self.velocity.is_some(),
+            self.velocity_error
         )
     }
 }
@@ -1932,6 +2010,33 @@ fn solve_velocity_broadcast(
     Ok(PyVelocitySolution { inner })
 }
 
+/// Solve SPP position and attach Doppler velocity when the Doppler rows are usable.
+#[pyfunction]
+#[pyo3(signature = (sp3, config, doppler_observations))]
+fn solve_spp_with_doppler_velocity(
+    py: Python<'_>,
+    sp3: &PySp3,
+    config: &PySppConfig,
+    doppler_observations: Vec<Py<PyVelocityObservation>>,
+) -> PyResult<PySppDopplerSolution> {
+    let observations: Vec<_> = doppler_observations
+        .iter()
+        .map(|obs| obs.borrow(py).to_core_doppler())
+        .collect();
+    let result = core_solve_with_doppler_velocity(
+        &sp3.inner,
+        &config.to_inputs(),
+        &observations,
+        config.with_geodetic_flag(),
+    )
+    .map_err(to_solve_err)?;
+    Ok(PySppDopplerSolution {
+        receiver: result.receiver,
+        velocity: result.velocity,
+        velocity_error: result.velocity_error.map(|error| error.to_string()),
+    })
+}
+
 /// Predicted single-satellite geometric observables at a receive epoch.
 ///
 /// Range, range-rate, Doppler, satellite clock, look angles, transmit time, and
@@ -2036,7 +2141,9 @@ fn parse_satellite(token: &str) -> PyResult<GnssSatelliteId> {
 /// the batch path it only ever classifies a genuine failure.
 fn observables_error(err: ObservablesError) -> PyErr {
     match err {
-        ObservablesError::InvalidInput { .. } => PyValueError::new_err(err.to_string()),
+        ObservablesError::InvalidInput { .. } | ObservablesError::Media(_) => {
+            PyValueError::new_err(err.to_string())
+        }
         ObservablesError::NoEphemeris | ObservablesError::Ephemeris(_) => to_solve_err(err),
     }
 }
@@ -2620,6 +2727,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyVelocityObservation>()?;
     m.add_class::<PyVelocitySolveOptions>()?;
     m.add_class::<PyVelocitySolution>()?;
+    m.add_class::<PySppDopplerSolution>()?;
     m.add_class::<PyReplicaOptions>()?;
     m.add_class::<PyCorrelateOptions>()?;
     m.add_class::<PyCorrelationResult>()?;
@@ -2656,6 +2764,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(range_rate_to_doppler, m)?)?;
     m.add_function(wrap_pyfunction!(solve_velocity, m)?)?;
     m.add_function(wrap_pyfunction!(solve_velocity_broadcast, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_spp_with_doppler_velocity, m)?)?;
     m.add_class::<PyPredictedObservables>()?;
     m.add_function(wrap_pyfunction!(observe, m)?)?;
     m.add_function(wrap_pyfunction!(observe_broadcast, m)?)?;

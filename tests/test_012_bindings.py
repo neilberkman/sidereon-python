@@ -194,8 +194,12 @@ def test_ionex_sample_sources_round_trip_grid_bytes_and_slant_delay():
         int(parsed.map_epochs_j2000_s[0]),
         1_575_420_000.0,
     )
-    assert from_grid.slant_delay(*args) == parsed.slant_delay(*args)
-    assert from_nodes.slant_delay(*args) == parsed.slant_delay(*args)
+    assert from_grid.slant_delay(
+        *args, hold_out_of_coverage=True
+    ) == parsed.slant_delay(*args, hold_out_of_coverage=True)
+    assert from_nodes.slant_delay(
+        *args, hold_out_of_coverage=True
+    ) == parsed.slant_delay(*args, hold_out_of_coverage=True)
 
 
 def test_sbas_decoded_payload_and_store_accessors():

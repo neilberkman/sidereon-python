@@ -39,6 +39,7 @@ mod defaults;
 mod dgnss;
 mod doppler;
 mod elements;
+mod emission;
 mod ephemeris;
 mod equinoctial;
 mod error_metrics;
@@ -50,6 +51,7 @@ mod frame_catalog;
 mod frames;
 mod geodesic;
 mod geodetic_time_series;
+mod geofence;
 mod geoid;
 mod geometry;
 mod geometry_quality;
@@ -91,6 +93,7 @@ mod space_weather;
 mod spk;
 mod spp;
 mod staleness;
+mod static_positioning;
 mod tca;
 mod tdm;
 mod terrain;
@@ -140,6 +143,13 @@ create_exception!(
     GeodesicError,
     PyValueError,
     "Raised when a WGS84 geodesic direct or inverse input is outside its accepted domain."
+);
+
+create_exception!(
+    _sidereon,
+    GeofenceError,
+    SidereonError,
+    "Raised when geofence construction, containment, probability, or crossing evaluation fails."
 );
 
 create_exception!(
@@ -242,6 +252,27 @@ create_exception!(
 
 create_exception!(
     _sidereon,
+    PreciseInterpolantArtifactError,
+    ParseError,
+    "Raised when a precise-interpolant artifact cannot be opened."
+);
+
+create_exception!(
+    _sidereon,
+    PreciseInterpolantArtifactCorruptError,
+    PreciseInterpolantArtifactError,
+    "Raised when a precise-interpolant artifact checksum indicates corrupt bytes."
+);
+
+create_exception!(
+    _sidereon,
+    PreciseInterpolantArtifactTruncatedError,
+    PreciseInterpolantArtifactError,
+    "Raised when a precise-interpolant artifact is shorter than its declared layout."
+);
+
+create_exception!(
+    _sidereon,
     RtcmParseError,
     ParseError,
     "Raised when an RTCM 3 message body cannot be decoded or framed."
@@ -313,6 +344,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("AntexParseError", py.get_type::<AntexParseError>())?;
     m.add("TleParseError", py.get_type::<TleParseError>())?;
     m.add("GeodesicError", py.get_type::<GeodesicError>())?;
+    m.add("GeofenceError", py.get_type::<GeofenceError>())?;
     m.add("SolveError", py.get_type::<SolveError>())?;
     m.add("PrimitiveError", py.get_type::<PrimitiveError>())?;
     m.add(
@@ -332,6 +364,18 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CrinexParseError", py.get_type::<CrinexParseError>())?;
     m.add("IonexParseError", py.get_type::<IonexParseError>())?;
     m.add("SpkParseError", py.get_type::<SpkParseError>())?;
+    m.add(
+        "PreciseInterpolantArtifactError",
+        py.get_type::<PreciseInterpolantArtifactError>(),
+    )?;
+    m.add(
+        "PreciseInterpolantArtifactCorruptError",
+        py.get_type::<PreciseInterpolantArtifactCorruptError>(),
+    )?;
+    m.add(
+        "PreciseInterpolantArtifactTruncatedError",
+        py.get_type::<PreciseInterpolantArtifactTruncatedError>(),
+    )?;
     m.add("RtcmParseError", py.get_type::<RtcmParseError>())?;
     m.add("SpaceWeatherError", py.get_type::<SpaceWeatherError>())?;
     m.add("ConstellationError", py.get_type::<ConstellationError>())?;
@@ -339,6 +383,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("FallbackError", py.get_type::<FallbackError>())?;
     m.add("TdmParseError", py.get_type::<TdmParseError>())?;
     geodesic::register(m)?;
+    geofence::register(m)?;
     frame_catalog::register(m)?;
     ephemeris::register(m)?;
     orbit_determination::register(m)?;
@@ -369,6 +414,8 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     dgnss::register(m)?;
     broadcast_comparison::register(m)?;
     ppp_corrections::register(m)?;
+    static_positioning::register(m)?;
+    emission::register(m)?;
     qc::register(m)?;
     constellation::register(m)?;
     staleness::register(m)?;
