@@ -100,10 +100,12 @@ def test_mmap_terrain_store_matches_dted_reader_and_missing_dac_is_typed(tmp_pat
         [
             (hex_to_f64(case["longitude_bits"]), hex_to_f64(case["latitude_bits"]))
             for case in cases
-        ]
-        + [(-104.5, 36.5)],
+        ],
         dtype=np.float64,
     )
+    # The (36,-105) tile is absent from this fixture tree: the store surfaces
+    # it as a typed error instead of a silent zero height.
+    missing_tile_point = np.asarray([[-104.5, 36.5]], dtype=np.float64)
 
     store_bytes = sidereon.dted_tree_to_mmap_store(root)
     store_path = tmp_path / "terrain.tmm"
@@ -129,6 +131,8 @@ def test_mmap_terrain_store_matches_dted_reader_and_missing_dac_is_typed(tmp_pat
         sidereon.DtedInterpolation.NEAREST_POSTING,
     ):
         opts = sidereon.DtedLookupOptions(interpolation)
+        with pytest.raises(ValueError, match="missing terrain tile"):
+            mmap.height_batch(missing_tile_point, opts)
         got_batch = mmap.height_batch(points, opts)
         want_batch = dted.height_batch(points, opts)
         assert _bits_equal(got_batch, want_batch)

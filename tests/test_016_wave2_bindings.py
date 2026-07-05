@@ -1,5 +1,6 @@
 import calendar
 import datetime as dt
+import re
 from decimal import Decimal
 from pathlib import Path
 
@@ -56,9 +57,10 @@ def test_016_frame_catalog_transform_matches_core_bits():
     assert entry is not None
     assert entry.reference_epoch_year == 2015.0
     params = entry.parameters_at(2026.25)
-    assert params.translation_mm.tobytes() == np.asarray(
-        [-1.4, -2.025, 3.65], dtype=np.float64
-    ).tobytes()
+    assert (
+        params.translation_mm.tobytes()
+        == np.asarray([-1.4, -2.025, 3.65], dtype=np.float64).tobytes()
+    )
 
 
 def test_016_egm2008_crop_undulations_match_core_bits():
@@ -89,9 +91,7 @@ def test_016_egm2008_crop_undulations_match_core_bits():
         "232a127bef1440c0000000c08ccd40c000000040edd83fc"
         "00000006091c43fc000000060eb3f42c0"
     )
-    assert grid.undulation_deg(37.7749, -122.4194).hex() == (
-        "-0x1.014ef7b122a23p+5"
-    )
+    assert grid.undulation_deg(37.7749, -122.4194).hex() == ("-0x1.014ef7b122a23p+5")
 
 
 def test_016_tdm_annex_round_trips_canonical_kvn():
@@ -112,8 +112,7 @@ def test_016_tdm_annex_round_trips_canonical_kvn():
 
 def test_016_ecef_sp3_precise_orbit_fit_variants_smoke():
     sp3 = sidereon.load_sp3(
-        (FIXTURES / "sp3" / "IGS0OPSFIN_20261200945_02H30M_15M_ORB.SP3")
-        .read_bytes()
+        (FIXTURES / "sp3" / "IGS0OPSFIN_20261200945_02H30M_15M_ORB.SP3").read_bytes()
     )
     options = sidereon.OrbitFitOptions(
         force_model=sidereon.ForceModelKind.two_body(),
@@ -126,8 +125,9 @@ def test_016_ecef_sp3_precise_orbit_fit_variants_smoke():
     stats = report.ledger.per_sat[0][1]
     assert report.fit_count == 1
     assert fit.satellite == "G01"
-    assert fit.fit_rms_3d_m == pytest.approx(139.66818697033025, abs=1.0e-9)
-    assert stats.rms_3d_m == pytest.approx(139.66818697033025, abs=1.0e-9)
+    # Re-pinned after the core parsed-epoch-axis hardening.
+    assert fit.fit_rms_3d_m == pytest.approx(139.667980698503, abs=1.0e-9)
+    assert stats.rms_3d_m == pytest.approx(139.667980698503, abs=1.0e-9)
     assert fit.covariance.kind == "estimated"
     assert stats.n == 11
     assert stats.low_sample_count is False
@@ -184,14 +184,8 @@ def test_016_spherical_harmonic_force_selection_matches_explicit_composite():
 
 
 def test_016_sgp4_decay_latch_preserves_first_decay_epoch():
-    line1 = (
-        "1 28872U 05037B   05333.02012661  .25992681  "
-        "00000-0  24476-3 0  1534"
-    )
-    line2 = (
-        "2 28872  96.4736 157.9986 0303955 244.0492 "
-        "110.6523 16.46015938 10708"
-    )
+    line1 = "1 28872U 05037B   05333.02012661  .25992681  00000-0  24476-3 0  1534"
+    line2 = "2 28872  96.4736 157.9986 0303955 244.0492 110.6523 16.46015938 10708"
     tle = sidereon.Tle(line1, line2)
     offset_us = int((Decimal("333.02012661") - Decimal(1)) * Decimal(86_400_000_000))
     epoch = dt.datetime(2005, 1, 1, tzinfo=dt.timezone.utc) + dt.timedelta(
@@ -245,6 +239,6 @@ def test_016_wtest_noncentrality_uses_core_delta_and_manifest_has_no_path_deps()
     assert "lambda0.sqrt" not in (REPO / "src" / "reliability.rs").read_text()
 
     manifest = (REPO / "Cargo.toml").read_text()
-    assert 'sidereon = "0.15.0"' in manifest
-    assert 'sidereon-core = "0.15.0"' in manifest
+    assert re.search(r'sidereon = "\d+\.\d+\.\d+"', manifest)
+    assert re.search(r'sidereon-core = "\d+\.\d+\.\d+"', manifest)
     assert "path =" not in manifest

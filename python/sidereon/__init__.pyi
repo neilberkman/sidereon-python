@@ -7325,9 +7325,7 @@ class GeoidGrid:
     @staticmethod
     def from_egm96_dac(data: bytes) -> GeoidGrid: ...
     @staticmethod
-    def from_egm2008_raster(
-        data: bytes, spacing: Egm2008GridSpacing
-    ) -> GeoidGrid: ...
+    def from_egm2008_raster(data: bytes, spacing: Egm2008GridSpacing) -> GeoidGrid: ...
     @staticmethod
     def from_egm2008_raster_window(
         data: bytes, window: Egm2008RasterWindow

@@ -467,6 +467,12 @@ impl From<TerrainStoreError> for PyTerrainStoreError {
                 path: None,
                 remediation: None,
             },
+            TerrainStoreError::TileIdMismatch { path, .. } => Self {
+                kind: "TileIdMismatch".to_string(),
+                message,
+                path: Some(path.display().to_string()),
+                remediation: None,
+            },
             TerrainStoreError::Checksum { .. } => Self {
                 kind: "Checksum".to_string(),
                 message,

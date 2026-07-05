@@ -972,8 +972,10 @@ impl PyRinexClock {
     ///
     /// Re-parsing the output with [`parse_rinex_clock`] reproduces the same time
     /// scale and per-satellite series.
-    fn to_rinex_string(&self) -> String {
-        self.inner.to_rinex_string()
+    fn to_rinex_string(&self) -> PyResult<String> {
+        self.inner
+            .to_rinex_string()
+            .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
     fn __repr__(&self) -> String {

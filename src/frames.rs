@@ -64,6 +64,10 @@ pub enum PyTimeScale {
     BDT,
     /// GLONASS system time (UTC(SU)-based; offset is leap-second dependent).
     GLONASST,
+    /// Geocentric Coordinate Time.
+    TCG,
+    /// Barycentric Coordinate Time.
+    TCB,
     /// QZSS system time (steered synchronous with GPST).
     QZSST,
 }
@@ -80,6 +84,8 @@ impl From<TimeScale> for PyTimeScale {
             TimeScale::Bdt => PyTimeScale::BDT,
             TimeScale::Glonasst => PyTimeScale::GLONASST,
             TimeScale::Qzsst => PyTimeScale::QZSST,
+            TimeScale::Tcg => PyTimeScale::TCG,
+            TimeScale::Tcb => PyTimeScale::TCB,
         }
     }
 }
@@ -96,6 +102,8 @@ impl From<PyTimeScale> for TimeScale {
             PyTimeScale::BDT => TimeScale::Bdt,
             PyTimeScale::GLONASST => TimeScale::Glonasst,
             PyTimeScale::QZSST => TimeScale::Qzsst,
+            PyTimeScale::TCG => TimeScale::Tcg,
+            PyTimeScale::TCB => TimeScale::Tcb,
         }
     }
 }
