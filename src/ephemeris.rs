@@ -25,9 +25,10 @@ use sidereon_core::ephemeris::{
     observable_states_at_j2000_s as core_observable_states_at_j2000_s,
     observable_states_at_shared_j2000_s as core_observable_states_at_shared_j2000_s,
     sample as core_sample, ClockReferenceOffset, EphemerisSampleRow, EphemerisSampleStatus,
-    ObservableEphemerisSource, ObservableStateBatch, ObservableStateElementStatus,
-    ObservablesError, PreciseEphemerisInterpolant, PreciseEphemerisSample, PreciseEphemerisSamples,
-    Sp3, OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
+    MmapPreciseEphemerisInterpolant, ObservableEphemerisSource, ObservableStateBatch,
+    ObservableStateElementStatus, ObservablesError, PreciseEphemerisInterpolant,
+    PreciseEphemerisSample, PreciseEphemerisSamples, PreciseInterpolantStoreError, Sp3,
+    OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
 };
 use sidereon_core::Error as CoreError;
 use sidereon_core::GnssSatelliteId;
@@ -35,7 +36,10 @@ use sidereon_core::GnssSatelliteId;
 use crate::frames::PyTimeScale;
 use crate::marshal::rows3_to_array;
 use crate::rinex::PyBroadcastEphemeris;
-use crate::{np_array, to_solve_err, to_sp3_err};
+use crate::{
+    np_array, to_solve_err, to_sp3_err, PreciseInterpolantArtifactCorruptError,
+    PreciseInterpolantArtifactError, PreciseInterpolantArtifactTruncatedError,
+};
 
 /// Seconds in one day, for the J2000-second <-> split-Julian-date reconstruction.
 const SECONDS_PER_DAY: f64 = 86_400.0;
@@ -192,6 +196,18 @@ impl PySp3 {
             .into_iter()
             .map(PyPreciseEphemerisSample::from)
             .collect()
+    }
+
+    /// Build deterministic memory-mappable precise-interpolant artifact bytes.
+    fn precise_interpolant_artifact_bytes<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = self
+            .inner
+            .precise_interpolant_store_bytes()
+            .map_err(precise_artifact_error_without_bytes)?;
+        Ok(PyBytes::new(py, &bytes))
     }
 
     fn __repr__(&self) -> String {
@@ -890,6 +906,130 @@ impl PyPreciseEphemerisInterpolant {
     }
 }
 
+/// Precise-interpolant artifact opened from canonical store bytes.
+#[pyclass(module = "sidereon._sidereon", name = "PreciseInterpolantArtifact")]
+pub struct PyPreciseInterpolantArtifact {
+    inner: MmapPreciseEphemerisInterpolant<'static>,
+}
+
+impl PyPreciseInterpolantArtifact {
+    fn from_vec(bytes: Vec<u8>) -> PyResult<Self> {
+        let truncated = artifact_looks_truncated(&bytes);
+        MmapPreciseEphemerisInterpolant::from_vec(bytes)
+            .map(|inner| Self { inner })
+            .map_err(|err| precise_artifact_error(err, truncated))
+    }
+}
+
+#[pymethods]
+impl PyPreciseInterpolantArtifact {
+    /// Open an owned artifact from Python bytes.
+    #[staticmethod]
+    fn from_bytes(source: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(bytes) = source.downcast::<PyBytes>() {
+            return Self::from_vec(bytes.as_bytes().to_vec());
+        }
+        if let Ok(buf) = source.downcast::<PyByteArray>() {
+            // SAFETY: the bytes are copied before control returns to Python.
+            return Self::from_vec(unsafe { buf.as_bytes() }.to_vec());
+        }
+        Err(PyTypeError::new_err(
+            "PreciseInterpolantArtifact.from_bytes expects bytes or bytearray",
+        ))
+    }
+
+    /// Read and open an artifact from a filesystem path.
+    #[staticmethod]
+    fn from_path(path: PathBuf) -> PyResult<Self> {
+        let bytes = std::fs::read(&path)?;
+        Self::from_vec(bytes)
+    }
+
+    /// Artifact byte length.
+    #[getter]
+    fn byte_len(&self) -> usize {
+        self.inner.as_bytes().len()
+    }
+
+    /// File-level checksum stored by the artifact format.
+    #[getter]
+    fn checksum64(&self) -> u64 {
+        self.inner.checksum64()
+    }
+
+    /// Time scale of the stored epoch axis.
+    #[getter]
+    fn time_scale(&self) -> PyTimeScale {
+        self.inner.time_scale().into()
+    }
+
+    /// Satellite tokens present in the artifact.
+    #[getter]
+    fn satellites(&self) -> Vec<String> {
+        self.inner
+            .satellites()
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    /// Copy the backing artifact bytes into a Python `bytes` object.
+    fn as_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, self.inner.as_bytes())
+    }
+
+    /// Interpolate one satellite state at seconds since J2000.
+    fn position_at_j2000_seconds(
+        &self,
+        satellite: &str,
+        epoch_j2000_s: f64,
+    ) -> PyResult<PySp3State> {
+        let sat = parse_sat(satellite)?;
+        let state = self
+            .inner
+            .position_at_j2000_seconds(sat, epoch_j2000_s)
+            .map_err(to_solve_err)?;
+        Ok(PySp3State::from_state(state))
+    }
+
+    /// Evaluate ECEF states for parallel satellite and epoch arrays.
+    fn observable_states_at_j2000_s(
+        &self,
+        satellites: Vec<String>,
+        epochs_j2000_s: PyReadonlyArray1<'_, f64>,
+    ) -> PyResult<PyObservableStateBatch> {
+        let satellites = parse_satellites(&satellites)?;
+        let epochs = epochs_j2000_s
+            .as_slice()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        self.inner
+            .observable_states_at_j2000_s(&satellites, epochs)
+            .map(PyObservableStateBatch::from)
+            .map_err(observable_state_batch_error)
+    }
+
+    /// Evaluate ECEF states for many satellites at one shared J2000-second epoch.
+    fn observable_states_at_shared_j2000_s(
+        &self,
+        satellites: Vec<String>,
+        epoch_j2000_s: f64,
+    ) -> PyResult<PyObservableStateBatch> {
+        let satellites = parse_satellites(&satellites)?;
+        Ok(self
+            .inner
+            .observable_states_at_shared_j2000_s(&satellites, epoch_j2000_s)
+            .into())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PreciseInterpolantArtifact(byte_len={}, satellites={})",
+            self.inner.as_bytes().len(),
+            self.inner.satellites().len()
+        )
+    }
+}
+
 /// Build a split-Julian-date [`Instant`] from J2000 seconds in a time scale.
 ///
 /// The residual day fraction is split off `jd_whole` so it stays within one day,
@@ -909,6 +1049,45 @@ fn instant_from_j2000_seconds(
         scale,
         repr: InstantRepr::JulianDate(split),
     })
+}
+
+fn artifact_looks_truncated(bytes: &[u8]) -> bool {
+    const HEADER_LEN: usize = 64;
+    const MAGIC: &[u8; 8] = b"PEMAP001";
+    const TOTAL_LEN_OFFSET: usize = 32;
+
+    if bytes.len() < HEADER_LEN {
+        return true;
+    }
+    if &bytes[..MAGIC.len()] == MAGIC {
+        let mut raw = [0_u8; 8];
+        raw.copy_from_slice(&bytes[TOTAL_LEN_OFFSET..TOTAL_LEN_OFFSET + 8]);
+        let total_len = u64::from_le_bytes(raw) as usize;
+        return total_len > bytes.len();
+    }
+    false
+}
+
+fn precise_artifact_error_without_bytes(err: PreciseInterpolantStoreError) -> PyErr {
+    precise_artifact_error(err, false)
+}
+
+fn precise_artifact_error(err: PreciseInterpolantStoreError, truncated: bool) -> PyErr {
+    if truncated {
+        return PreciseInterpolantArtifactTruncatedError::new_err(err.to_string());
+    }
+    match err {
+        PreciseInterpolantStoreError::Checksum { .. }
+        | PreciseInterpolantStoreError::SatelliteChecksum { .. } => {
+            PreciseInterpolantArtifactCorruptError::new_err(err.to_string())
+        }
+        PreciseInterpolantStoreError::Parse { ref reason }
+            if reason.contains("past store length") || reason.contains("out of bounds") =>
+        {
+            PreciseInterpolantArtifactTruncatedError::new_err(err.to_string())
+        }
+        other => PreciseInterpolantArtifactError::new_err(other.to_string()),
+    }
 }
 
 /// Parse an SP3-c or SP3-d product from in-memory bytes or a file path.
@@ -943,18 +1122,29 @@ fn load_sp3(source: &Bound<'_, PyAny>) -> PyResult<PySp3> {
     Ok(PySp3 { inner })
 }
 
-fn parse_satellites(tokens: &[String]) -> PyResult<Vec<GnssSatelliteId>> {
+/// Build deterministic precise-interpolant artifact bytes from an SP3 product.
+#[pyfunction]
+fn build_precise_interpolant_artifact_bytes<'py>(
+    py: Python<'py>,
+    sp3: &PySp3,
+) -> PyResult<Bound<'py, PyBytes>> {
+    sp3.precise_interpolant_artifact_bytes(py)
+}
+
+pub(crate) fn parse_satellites(tokens: &[String]) -> PyResult<Vec<GnssSatelliteId>> {
     tokens.iter().map(|token| parse_sat(token)).collect()
 }
 
-fn observable_state_batch_error(err: ObservablesError) -> PyErr {
+pub(crate) fn observable_state_batch_error(err: ObservablesError) -> PyErr {
     match err {
-        ObservablesError::InvalidInput { .. } => PyValueError::new_err(err.to_string()),
+        ObservablesError::InvalidInput { .. } | ObservablesError::Media(_) => {
+            PyValueError::new_err(err.to_string())
+        }
         ObservablesError::NoEphemeris | ObservablesError::Ephemeris(_) => to_solve_err(err),
     }
 }
 
-fn with_observable_source<R>(
+pub(crate) fn with_observable_source<R>(
     source: &Bound<'_, PyAny>,
     f: impl FnOnce(&dyn ObservableEphemerisSource) -> PyResult<R>,
 ) -> PyResult<R> {
@@ -964,11 +1154,13 @@ fn with_observable_source<R>(
         f(&samples.inner)
     } else if let Ok(interpolant) = source.extract::<PyRef<'_, PyPreciseEphemerisInterpolant>>() {
         f(&interpolant.inner)
+    } else if let Ok(artifact) = source.extract::<PyRef<'_, PyPreciseInterpolantArtifact>>() {
+        f(&artifact.inner)
     } else if let Ok(broadcast) = source.extract::<PyRef<'_, PyBroadcastEphemeris>>() {
         f(&broadcast.inner)
     } else {
         Err(PyTypeError::new_err(
-            "source must be Sp3, PreciseEphemerisSamples, PreciseEphemerisInterpolant, or BroadcastEphemeris",
+            "source must be Sp3, PreciseEphemerisSamples, PreciseEphemerisInterpolant, PreciseInterpolantArtifact, or BroadcastEphemeris",
         ))
     }
 }
@@ -976,10 +1168,11 @@ fn with_observable_source<R>(
 /// Evaluate ECEF states for parallel satellite and epoch arrays.
 ///
 /// `source` may be [`Sp3`], [`PreciseEphemerisSamples`],
-/// [`PreciseEphemerisInterpolant`], or [`BroadcastEphemeris`](crate). The input
-/// arrays are parallel: `satellites[i]` is evaluated at `epochs_j2000_s[i]`.
-/// The returned [`ObservableStateBatch`] keeps ECEF position metres, clock
-/// seconds, per-element status, and per-element error text.
+/// [`PreciseEphemerisInterpolant`], [`PreciseInterpolantArtifact`], or
+/// [`BroadcastEphemeris`](crate). The input arrays are parallel:
+/// `satellites[i]` is evaluated at `epochs_j2000_s[i]`. The returned
+/// [`ObservableStateBatch`] keeps ECEF position metres, clock seconds,
+/// per-element status, and per-element error text.
 #[pyfunction]
 fn observable_states_at_j2000_s(
     source: &Bound<'_, PyAny>,
@@ -1000,8 +1193,8 @@ fn observable_states_at_j2000_s(
 /// Evaluate ECEF states for many satellites at one shared J2000-second epoch.
 ///
 /// `source` may be [`Sp3`], [`PreciseEphemerisSamples`],
-/// [`PreciseEphemerisInterpolant`], or [`BroadcastEphemeris`](crate). The result
-/// is index-aligned with `satellites`.
+/// [`PreciseEphemerisInterpolant`], [`PreciseInterpolantArtifact`], or
+/// [`BroadcastEphemeris`](crate). The result is index-aligned with `satellites`.
 #[pyfunction]
 fn observable_states_at_shared_j2000_s(
     source: &Bound<'_, PyAny>,
@@ -1045,6 +1238,14 @@ fn ephemeris_sample(
             stop_j2000_s,
             step_s,
         )
+    } else if let Ok(artifact) = source.extract::<PyRef<'_, PyPreciseInterpolantArtifact>>() {
+        core_sample(
+            &artifact.inner,
+            &satellites,
+            start_j2000_s,
+            stop_j2000_s,
+            step_s,
+        )
     } else if let Ok(broadcast) = source.extract::<PyRef<'_, PyBroadcastEphemeris>>() {
         core_sample(
             &broadcast.inner,
@@ -1055,7 +1256,7 @@ fn ephemeris_sample(
         )
     } else {
         return Err(PyValueError::new_err(
-            "source must be Sp3, PreciseEphemerisSamples, PreciseEphemerisInterpolant, or BroadcastEphemeris",
+            "source must be Sp3, PreciseEphemerisSamples, PreciseEphemerisInterpolant, PreciseInterpolantArtifact, or BroadcastEphemeris",
         ));
     }
     .map_err(to_solve_err)?;
@@ -1111,11 +1312,16 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPreciseEphemerisSample>()?;
     m.add_class::<PyPreciseEphemerisSamples>()?;
     m.add_class::<PyPreciseEphemerisInterpolant>()?;
+    m.add_class::<PyPreciseInterpolantArtifact>()?;
     m.add(
         "OBSERVABLE_STATE_MISSING_POSITION_ECEF_M",
         OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
     )?;
     m.add_function(wrap_pyfunction!(load_sp3, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        build_precise_interpolant_artifact_bytes,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(observable_states_at_j2000_s, m)?)?;
     m.add_function(wrap_pyfunction!(observable_states_at_shared_j2000_s, m)?)?;
     m.add_function(wrap_pyfunction!(ephemeris_sample, m)?)?;

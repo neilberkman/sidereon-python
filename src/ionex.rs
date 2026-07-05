@@ -35,7 +35,9 @@ use sidereon_core::atmosphere::ionosphere::{
     nequick_g_delay_m as core_nequick_g_delay_m, nequick_g_stec_tecu as core_nequick_g_stec_tecu,
     GalileoNequickCoeffs, GalileoNequickEval, IonoModel, KlobucharParams, NequickGRayEval,
 };
-use sidereon_core::atmosphere::{ionex_slant_delay, Ionex, TecGridSamples, TecSample};
+use sidereon_core::atmosphere::{
+    ionex_slant_delay_with_policy, Ionex, IonexCoveragePolicy, TecGridSamples, TecSample,
+};
 use sidereon_core::Wgs84Geodetic;
 
 use crate::{np_array, to_solve_err};
@@ -475,7 +477,8 @@ impl PyIonex {
     /// since J2000, landing exactly on the product's own epoch axis.
     /// `frequency_hz` is the carrier the dispersive delay is reported on. Raises
     /// `ValueError` on out-of-range or non-finite input.
-    #[pyo3(signature = (lat_deg, lon_deg, azimuth_deg, elevation_deg, epoch_j2000_s, frequency_hz))]
+    #[pyo3(signature = (lat_deg, lon_deg, azimuth_deg, elevation_deg, epoch_j2000_s, frequency_hz, hold_out_of_coverage=false))]
+    #[allow(clippy::too_many_arguments)]
     fn slant_delay(
         &self,
         lat_deg: f64,
@@ -484,17 +487,25 @@ impl PyIonex {
         elevation_deg: f64,
         epoch_j2000_s: i64,
         frequency_hz: f64,
+        hold_out_of_coverage: bool,
     ) -> PyResult<f64> {
         let receiver = Wgs84Geodetic::new(lat_deg * DEG_TO_RAD, lon_deg * DEG_TO_RAD, 0.0)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        ionex_slant_delay(
+        let policy = if hold_out_of_coverage {
+            IonexCoveragePolicy::Hold
+        } else {
+            IonexCoveragePolicy::Strict
+        };
+        ionex_slant_delay_with_policy(
             &self.inner,
             receiver,
             elevation_deg * DEG_TO_RAD,
             azimuth_deg * DEG_TO_RAD,
             epoch_j2000_s,
             frequency_hz,
+            policy,
         )
+        .map(|evaluation| evaluation.delay_m)
         .map_err(|err| match err {
             sidereon_core::Error::InvalidInput(message) => {
                 PyValueError::new_err(format!("invalid IONEX slant input: {message}"))

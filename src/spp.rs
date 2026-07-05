@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
-use numpy::PyArray1;
+use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -21,7 +21,7 @@ use sidereon_core::GnssSatelliteId;
 
 use crate::events::PyDop;
 use crate::geometry_quality::PyGeometryQuality;
-use crate::marshal::{option_py_or_default, PyGnssSystem};
+use crate::marshal::{mat3_to_array, option_py_or_default, PyGnssSystem};
 use crate::{np_array, to_solve_err, PySp3, SolveError};
 
 /// One pseudorange observation for an SPP solve.
@@ -243,7 +243,7 @@ impl PySppSurfaceMet {
 #[pyclass(module = "sidereon._sidereon", name = "SppRobustConfig")]
 #[derive(Clone, Copy, Default)]
 pub struct PySppRobustConfig {
-    inner: RobustConfig,
+    pub(crate) inner: RobustConfig,
 }
 
 impl PySppRobustConfig {
@@ -560,6 +560,24 @@ impl PySppSolution {
     #[getter]
     fn rx_clock_s(&self) -> f64 {
         self.inner.rx_clock_s
+    }
+
+    /// Receiver clock drift in seconds per second, when solved from Doppler rows.
+    #[getter]
+    fn rx_clock_drift_s_s(&self) -> Option<f64> {
+        self.inner.rx_clock_drift_s_s
+    }
+
+    /// ECEF position covariance in square metres.
+    #[getter]
+    fn position_covariance_ecef_m2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.position_covariance.ecef_m2)
+    }
+
+    /// Local ENU position covariance in square metres.
+    #[getter]
+    fn position_covariance_enu_m2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.position_covariance.enu_m2)
     }
 
     /// `(lat_rad, lon_rad, height_m)` if the solve was asked for geodetic.

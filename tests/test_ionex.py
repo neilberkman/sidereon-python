@@ -109,6 +109,10 @@ def test_slant_delay_cases_bit_exact(grid_from_bytes):
             float.fromhex(inputs["el_deg"]),
             int(inputs["epoch_s"]),
             float.fromhex(inputs["frequency_hz"]),
+            # The golden set includes epochs outside the fixture's map span;
+            # the pinned values are the documented hold-at-edge behavior, now
+            # requested explicitly.
+            hold_out_of_coverage=True,
         )
         _assert_bit_exact(got, case["expect"]["delay_m"], f"case {case['name']}")
 

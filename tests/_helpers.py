@@ -6,7 +6,8 @@ order, from:
 
 1. ``SIDEREON_CORE_FIXTURES`` if set (explicit override).
 2. A sibling ``sidereon-core`` checkout (in-tree development layout).
-3. The cargo git checkout of the exact ``sidereon-core`` revision this binding
+3. A local ``[patch.crates-io]`` / path dependency to ``sidereon-core``.
+4. The cargo git checkout of the exact ``sidereon-core`` revision this binding
    is locked to (parsed from ``Cargo.lock``), so the fixtures always match the
    core the extension was built against.
 """
@@ -62,20 +63,25 @@ def _cargo_checkout_fixtures():
 
 def _path_dependency_fixtures():
     """Fixtures dir from a local sidereon-core path dependency."""
-    manifest = os.path.join(_REPO, "Cargo.toml")
-    try:
-        with open(manifest) as handle:
-            text = handle.read()
-    except OSError:
-        return None
-    match = re.search(r'sidereon-core\s*=\s*\{\s*path\s*=\s*"([^"]+)"', text)
-    if not match:
-        return None
-    path = os.path.expanduser(match.group(1))
-    if not os.path.isabs(path):
-        path = os.path.normpath(os.path.join(_REPO, path))
-    cand = os.path.join(path, "tests", "fixtures")
-    return cand if os.path.isdir(cand) else None
+    for config in (
+        os.path.join(_REPO, "Cargo.toml"),
+        os.path.join(_REPO, ".cargo", "config.toml"),
+    ):
+        try:
+            with open(config) as handle:
+                text = handle.read()
+        except OSError:
+            continue
+        match = re.search(r'sidereon-core\s*=\s*\{\s*path\s*=\s*"([^"]+)"', text)
+        if not match:
+            continue
+        path = os.path.expanduser(match.group(1))
+        if not os.path.isabs(path):
+            path = os.path.normpath(os.path.join(_REPO, path))
+        cand = os.path.join(path, "tests", "fixtures")
+        if os.path.isdir(cand):
+            return cand
+    return None
 
 
 def _resolve_core_fixtures():
