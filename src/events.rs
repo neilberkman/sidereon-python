@@ -216,6 +216,46 @@ impl PyEclipseStatus {
     }
 }
 
+/// Earth figure used for conical eclipse geometry.
+#[pyclass(module = "sidereon._sidereon", name = "EarthShadowModel", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum PyEarthShadowModel {
+    /// Spherical Earth with mean Earth radius.
+    SPHERICAL,
+    /// WGS84 oblate Earth approximation.
+    WGS84_OBLATE,
+}
+
+impl From<PyEarthShadowModel> for core_eclipse::EarthShadowModel {
+    fn from(value: PyEarthShadowModel) -> Self {
+        match value {
+            PyEarthShadowModel::SPHERICAL => core_eclipse::EarthShadowModel::Spherical,
+            PyEarthShadowModel::WGS84_OBLATE => core_eclipse::EarthShadowModel::Wgs84Oblate,
+        }
+    }
+}
+
+#[pymethods]
+impl PyEarthShadowModel {
+    /// Stable lowercase model label.
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            PyEarthShadowModel::SPHERICAL => "spherical",
+            PyEarthShadowModel::WGS84_OBLATE => "wgs84_oblate",
+        }
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            PyEarthShadowModel::SPHERICAL => "EarthShadowModel.SPHERICAL",
+            PyEarthShadowModel::WGS84_OBLATE => "EarthShadowModel.WGS84_OBLATE",
+        }
+    }
+}
+
 /// WGS84 receiver geodetic coordinates for DOP.
 #[pyclass(module = "sidereon._sidereon", name = "Wgs84Geodetic")]
 #[derive(Clone, Copy)]
@@ -696,6 +736,43 @@ fn shadow_fraction<'py>(
         .iter()
         .zip(suns.iter())
         .map(|(&sat, &sun)| core_eclipse::shadow_fraction(sat, sun).map_err(to_solve_err))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(PyArray1::from_vec(py, out))
+}
+
+/// Shadow fraction with an explicit Earth figure model.
+#[pyfunction]
+fn shadow_fraction_with_model<'py>(
+    py: Python<'py>,
+    satellite_position_km: PyReadonlyArray2<'_, f64>,
+    sun_position_km: PyReadonlyArray2<'_, f64>,
+    model: PyEarthShadowModel,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let satellites = rows3_from_array(
+        "satellite_position_km",
+        &satellite_position_km,
+        EmptyPolicy::Reject,
+        FinitePolicy::RequireFinite,
+    )?;
+    let suns = rows3_from_array(
+        "sun_position_km",
+        &sun_position_km,
+        EmptyPolicy::Reject,
+        FinitePolicy::RequireFinite,
+    )?;
+    check_same_len(
+        "satellite_position_km",
+        satellites.len(),
+        "sun_position_km",
+        suns.len(),
+    )?;
+    let model = core_eclipse::EarthShadowModel::from(model);
+    let out: Vec<f64> = satellites
+        .iter()
+        .zip(suns.iter())
+        .map(|(&sat, &sun)| {
+            core_eclipse::shadow_fraction_with_model(sat, sun, model).map_err(to_solve_err)
+        })
         .collect::<PyResult<Vec<_>>>()?;
     Ok(PyArray1::from_vec(py, out))
 }
@@ -1266,6 +1343,7 @@ fn gnss_dop_series_uniform(
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEclipseStatus>()?;
+    m.add_class::<PyEarthShadowModel>()?;
     m.add_class::<PyWgs84Geodetic>()?;
     m.add_class::<PyDopWeighting>()?;
     m.add_class::<PyEnuConvention>()?;
@@ -1274,6 +1352,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDopAtEpoch>()?;
     m.add_class::<PyDopSeriesPoint>()?;
     m.add_function(wrap_pyfunction!(shadow_fraction, m)?)?;
+    m.add_function(wrap_pyfunction!(shadow_fraction_with_model, m)?)?;
     m.add_function(wrap_pyfunction!(eclipse_status, m)?)?;
     m.add_function(wrap_pyfunction!(sun_angle, m)?)?;
     m.add_function(wrap_pyfunction!(moon_angle, m)?)?;

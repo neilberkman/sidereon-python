@@ -5,8 +5,12 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
+use sidereon_core::astro::frames::orientation::TdbEarthOrientationProvider;
 use sidereon_core::orbit_determination::{
+    fit_all_sp3_ecef_precise_orbits as core_fit_all_sp3_ecef_precise_orbits,
     fit_precise_ephemeris_sample_orbit as core_fit_precise_ephemeris_sample_orbit,
+    fit_sp3_ecef_precise_orbit as core_fit_sp3_ecef_precise_orbit,
+    fit_sp3_ecef_precise_orbits as core_fit_sp3_ecef_precise_orbits,
     fit_sp3_precise_orbit as core_fit_sp3_precise_orbit, OrbitArcSpan, OrbitFitCovariance,
     OrbitFitOptions, OrbitFitReport, OrbitFitSolution, OrbitResidualLedger, OrbitResidualStats,
 };
@@ -25,6 +29,10 @@ fn parse_satellite(token: &str) -> PyResult<GnssSatelliteId> {
     token
         .parse::<GnssSatelliteId>()
         .map_err(|err| PyValueError::new_err(format!("invalid satellite token {token:?}: {err}")))
+}
+
+fn parse_satellites(tokens: &[String]) -> PyResult<Vec<GnssSatelliteId>> {
+    tokens.iter().map(|token| parse_satellite(token)).collect()
 }
 
 fn to_orbit_fit_err<E: std::fmt::Display>(err: E) -> PyErr {
@@ -385,6 +393,52 @@ fn fit_sp3_precise_orbit(
         .map_err(to_orbit_fit_err)
 }
 
+/// Fit one satellite from a parsed ECEF SP3 product.
+#[pyfunction]
+#[pyo3(signature = (product, satellite, options=None))]
+fn fit_sp3_ecef_precise_orbit(
+    product: &PySp3,
+    satellite: &str,
+    options: Option<&PyOrbitFitOptions>,
+) -> PyResult<PyOrbitFitReport> {
+    let satellite = parse_satellite(satellite)?;
+    let options = options.map(PyOrbitFitOptions::inner).unwrap_or_default();
+    let orientation_provider = TdbEarthOrientationProvider::new();
+    core_fit_sp3_ecef_precise_orbit(&product.inner, satellite, &orientation_provider, &options)
+        .map(Into::into)
+        .map_err(to_orbit_fit_err)
+}
+
+/// Fit selected satellites from a parsed ECEF SP3 product.
+#[pyfunction]
+#[pyo3(signature = (product, satellites, options=None))]
+fn fit_sp3_ecef_precise_orbits(
+    product: &PySp3,
+    satellites: Vec<String>,
+    options: Option<&PyOrbitFitOptions>,
+) -> PyResult<PyOrbitFitReport> {
+    let satellites = parse_satellites(&satellites)?;
+    let options = options.map(PyOrbitFitOptions::inner).unwrap_or_default();
+    let orientation_provider = TdbEarthOrientationProvider::new();
+    core_fit_sp3_ecef_precise_orbits(&product.inner, &satellites, &orientation_provider, &options)
+        .map(Into::into)
+        .map_err(to_orbit_fit_err)
+}
+
+/// Fit every satellite in a parsed ECEF SP3 product.
+#[pyfunction]
+#[pyo3(signature = (product, options=None))]
+fn fit_all_sp3_ecef_precise_orbits(
+    product: &PySp3,
+    options: Option<&PyOrbitFitOptions>,
+) -> PyResult<PyOrbitFitReport> {
+    let options = options.map(PyOrbitFitOptions::inner).unwrap_or_default();
+    let orientation_provider = TdbEarthOrientationProvider::new();
+    core_fit_all_sp3_ecef_precise_orbits(&product.inner, &orientation_provider, &options)
+        .map(Into::into)
+        .map_err(to_orbit_fit_err)
+}
+
 /// Fit one satellite from precise ephemeris sample handles.
 #[pyfunction]
 #[pyo3(signature = (samples, satellite, options=None))]
@@ -414,6 +468,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOrbitResidualLedger>()?;
     m.add_class::<PyOrbitFitReport>()?;
     m.add_function(wrap_pyfunction!(fit_sp3_precise_orbit, m)?)?;
+    m.add_function(wrap_pyfunction!(fit_sp3_ecef_precise_orbit, m)?)?;
+    m.add_function(wrap_pyfunction!(fit_sp3_ecef_precise_orbits, m)?)?;
+    m.add_function(wrap_pyfunction!(fit_all_sp3_ecef_precise_orbits, m)?)?;
     m.add_function(wrap_pyfunction!(fit_precise_ephemeris_sample_orbit, m)?)?;
     Ok(())
 }

@@ -10,8 +10,8 @@ use pyo3::types::PyModule;
 
 use sidereon_core::quality::{
     reliability_araim as core_reliability_araim, reliability_design as core_reliability_design,
-    wtest_noncentrality as core_wtest_noncentrality, ObservationReliability, RangeReliabilityRow,
-    ReliabilityOptions, ReliabilityReport, ReliabilitySummary,
+    wtest_noncentrality_components as core_wtest_noncentrality_components, ObservationReliability,
+    RangeReliabilityRow, ReliabilityOptions, ReliabilityReport, ReliabilitySummary,
 };
 
 use crate::araim::{PyAraimGeometry, PyIsm};
@@ -374,10 +374,11 @@ fn wtest_noncentrality(
         (None, Some(beta)) => beta,
         (None, None) => ReliabilityOptions::default().beta,
     };
-    let lambda0 = core_wtest_noncentrality(alpha, missed_detection).map_err(to_value_err)?;
+    let components =
+        core_wtest_noncentrality_components(alpha, missed_detection).map_err(to_value_err)?;
     Ok(PyWtestNoncentrality {
-        delta0: lambda0.sqrt(),
-        lambda0,
+        delta0: components.delta0,
+        lambda0: components.lambda0,
     })
 }
 

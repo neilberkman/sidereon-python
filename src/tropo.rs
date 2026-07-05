@@ -63,10 +63,9 @@ fn tropo_zenith_delay(
 ///
 /// Returns `(dry, wet)`. The mapping depends on `elevation_rad`, the receiver
 /// `lat_rad` and `height_m`, and the seasonal day-of-year taken from
-/// `epoch_unix_us` (unix-microsecond UTC). A sub-horizon (`<= 0`) elevation is a
-/// transient solver state, so it clamps to the `asin(0.01)` mapping floor and
-/// returns finite factors rather than erroring; out-of-domain meteorology or a
-/// non-finite input still raises `ValueError`.
+/// `epoch_unix_us` (unix-microsecond UTC). Elevations outside the Niell mapping
+/// validity range of 3 to 90 degrees raise `ValueError` with the core error
+/// message.
 #[pyfunction]
 fn tropo_mapping_factors(
     elevation_rad: f64,

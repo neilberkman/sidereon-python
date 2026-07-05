@@ -21,6 +21,7 @@ import json
 import math
 import os
 
+import pytest
 import sidereon
 from _helpers import CORE_FIXTURES
 
@@ -133,16 +134,13 @@ def test_below_zenith_mapping_and_slant_match_golden_within_reconstruction_band(
     assert abs(slant - _exp(c, "slant_m")) < RECONSTRUCTION_TOL_M
 
 
-# The 0.9.1 troposphere hardening clamps a sub-horizon elevation (a transient
-# solver state) instead of rejecting it, mirroring the core's own
-# `tropo_clamps_transient_solver_states` contract: the Niell mapping floors at
-# asin(0.01) rad and the composed slant saturates to exactly 0.0 m.
-TROPO_MIN_MAPPING_ELEVATION_RAD = math.asin(0.01)
+# Standalone mapping now surfaces the core's checked Niell validity range:
+# 3 to 90 degrees. The slant-delay helper stays permissive for solver transients.
+TROPO_MIN_MAPPING_ELEVATION_RAD = math.radians(3.0)
 
 
-def test_below_horizon_mapping_clamps_to_floor():
-    """Sub-horizon (<= 0) elevation clamps to the asin(0.01) mapping floor and
-    returns finite factors bit-identical to the floor elevation, not an error."""
+def test_below_horizon_mapping_rejects_with_core_error():
+    """Low elevations surface the core mapping-domain error."""
     c = _zenith_case()
     lat = _inp(c, "lat_rad")
     height = _inp(c, "height_m")
@@ -151,12 +149,9 @@ def test_below_horizon_mapping_clamps_to_floor():
         TROPO_MIN_MAPPING_ELEVATION_RAD, lat, height, DOY28_EPOCH_US
     )
     assert all(math.isfinite(v) for v in floored)
-    for el in (0.0, math.radians(-5.0)):
-        dry, wet = sidereon.tropo_mapping_factors(el, lat, height, DOY28_EPOCH_US)
-        assert math.isfinite(dry) and math.isfinite(wet)
-        # Bit-identical to the floor: sub-horizon snaps to the floor elevation.
-        assert dry.hex() == floored[0].hex()
-        assert wet.hex() == floored[1].hex()
+    for el in (0.0, math.radians(1.0), math.radians(-5.0)):
+        with pytest.raises(ValueError, match="below mapping validity"):
+            sidereon.tropo_mapping_factors(el, lat, height, DOY28_EPOCH_US)
 
 
 def test_below_horizon_slant_saturates_to_zero():
