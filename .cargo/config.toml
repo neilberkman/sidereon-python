@@ -1,0 +1,6 @@
+# INTERIM PRE-RELEASE OVERRIDE - REMOVE AT THE 0.19 RELEASE TRAIN.
+# Points the build at unreleased sidereon-core main so wheels built from this
+# branch carry the track filter before the next crates.io release.
+[patch.crates-io]
+sidereon-core = { git = "https://github.com/neilberkman/sidereon", branch = "main" }
+sidereon = { git = "https://github.com/neilberkman/sidereon", branch = "main" }
