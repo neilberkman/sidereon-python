@@ -9002,6 +9002,20 @@ class PositionErrorMetrics:
     def mrse_m(self) -> float: ...
     def __repr__(self) -> str: ...
 
+class PositionCovariance:
+    """Position covariance in ECEF and local ENU coordinates."""
+
+    def __init__(
+        self,
+        ecef_m2: npt.ArrayLike,
+        enu_m2: npt.ArrayLike,
+    ) -> None: ...
+    @property
+    def ecef_m2(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def enu_m2(self) -> npt.NDArray[np.float64]: ...
+    def __repr__(self) -> str: ...
+
 class KinematicSolution:
     """Kinematic position solution value for error metrics."""
 
@@ -9034,9 +9048,27 @@ def metrics_from_ecef_covariance_m2(
     covariance_ecef_m2: npt.ArrayLike,
     receiver: Wgs84Geodetic,
 ) -> PositionErrorMetrics: ...
+def metrics_from_position_covariance(
+    covariance: PositionCovariance,
+) -> PositionErrorMetrics: ...
 def metrics_from_kinematic_solution(
     solution: KinematicSolution,
 ) -> PositionErrorMetrics: ...
+def error_ellipse_from_enu_m2(
+    covariance_enu_m2: npt.ArrayLike,
+) -> ErrorEllipse: ...
+def horizontal_radius_at(
+    covariance_enu_m2: npt.ArrayLike,
+    probability: float,
+) -> PercentileRadius: ...
+def spherical_radius_at(
+    covariance_enu_m2: npt.ArrayLike,
+    probability: float,
+) -> PercentileRadius: ...
+def vertical_radius_at(
+    sigma_u_m2: float,
+    probability: float,
+) -> float: ...
 
 # --- DOP local-ENU convention ----------------------------------------------
 

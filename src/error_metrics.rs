@@ -8,11 +8,16 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
 use sidereon_core::error_metrics::{
+    error_ellipse_from_enu_m2 as core_error_ellipse_from_enu_m2,
+    horizontal_radius_at as core_horizontal_radius_at,
     metrics_from_ecef_covariance_m2 as core_metrics_from_ecef_covariance_m2,
     metrics_from_enu_covariance_m2 as core_metrics_from_enu_covariance_m2,
-    metrics_from_kinematic_solution as core_metrics_from_kinematic_solution, ErrorMetricsError,
-    PercentileRadius, PositionErrorMetrics,
+    metrics_from_kinematic_solution as core_metrics_from_kinematic_solution,
+    metrics_from_position_covariance as core_metrics_from_position_covariance,
+    spherical_radius_at as core_spherical_radius_at, vertical_radius_at as core_vertical_radius_at,
+    ErrorMetricsError, PercentileRadius, PositionErrorMetrics,
 };
+use sidereon_core::geometry::PositionCovariance;
 use sidereon_core::precise_positioning::{KinematicEpochSolution, KinematicEpochStatus};
 
 use crate::covariance::PyErrorEllipse;
@@ -179,6 +184,55 @@ impl PyPositionErrorMetrics {
     }
 }
 
+/// Position covariance in both ECEF and local ENU coordinates.
+#[pyclass(module = "sidereon._sidereon", name = "PositionCovariance")]
+#[derive(Clone, Copy)]
+pub struct PyPositionCovariance {
+    inner: PositionCovariance,
+}
+
+impl PyPositionCovariance {
+    fn inner(&self) -> PositionCovariance {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyPositionCovariance {
+    /// Build a position covariance from ECEF and ENU covariance matrices.
+    #[new]
+    fn new(
+        ecef_m2: PyReadonlyArray2<'_, f64>,
+        enu_m2: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: PositionCovariance {
+                ecef_m2: matrix3_from_array(&ecef_m2, "ecef_m2", FinitePolicy::AllowNonFinite)?,
+                enu_m2: matrix3_from_array(&enu_m2, "enu_m2", FinitePolicy::AllowNonFinite)?,
+            },
+        })
+    }
+
+    /// Position covariance in ECEF coordinates, square metres.
+    #[getter]
+    fn ecef_m2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.ecef_m2)
+    }
+
+    /// Position covariance in local ENU coordinates, square metres.
+    #[getter]
+    fn enu_m2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.enu_m2)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PositionCovariance(ecef_m2=[{}, ...], enu_m2=[{}, ...])",
+            self.inner.ecef_m2[0][0], self.inner.enu_m2[0][0]
+        )
+    }
+}
+
 /// Kinematic position solution value accepted by `metrics_from_kinematic_solution`.
 #[pyclass(module = "sidereon._sidereon", name = "KinematicSolution")]
 #[derive(Clone, Copy)]
@@ -271,6 +325,16 @@ fn metrics_from_ecef_covariance_m2(
         .map_err(to_metrics_err)
 }
 
+/// Compute position error metrics from a position covariance value.
+#[pyfunction]
+fn metrics_from_position_covariance(
+    covariance: &PyPositionCovariance,
+) -> PyResult<PyPositionErrorMetrics> {
+    core_metrics_from_position_covariance(&covariance.inner())
+        .map(Into::into)
+        .map_err(to_metrics_err)
+}
+
 /// Compute position error metrics from a kinematic position solution.
 #[pyfunction]
 fn metrics_from_kinematic_solution(
@@ -281,12 +345,71 @@ fn metrics_from_kinematic_solution(
         .map_err(to_metrics_err)
 }
 
+/// Horizontal one-sigma ellipse from an ENU covariance in square metres.
+#[pyfunction]
+fn error_ellipse_from_enu_m2(
+    covariance_enu_m2: PyReadonlyArray2<'_, f64>,
+) -> PyResult<PyErrorEllipse> {
+    let covariance = matrix3_from_array(
+        &covariance_enu_m2,
+        "covariance_enu_m2",
+        FinitePolicy::AllowNonFinite,
+    )?;
+    core_error_ellipse_from_enu_m2(covariance)
+        .map(PyErrorEllipse::from_one_sigma_m)
+        .map_err(to_metrics_err)
+}
+
+/// Horizontal percentile circle radius from an ENU covariance.
+#[pyfunction]
+fn horizontal_radius_at(
+    covariance_enu_m2: PyReadonlyArray2<'_, f64>,
+    probability: f64,
+) -> PyResult<PyPercentileRadius> {
+    let covariance = matrix3_from_array(
+        &covariance_enu_m2,
+        "covariance_enu_m2",
+        FinitePolicy::AllowNonFinite,
+    )?;
+    core_horizontal_radius_at(covariance, probability)
+        .map(Into::into)
+        .map_err(to_metrics_err)
+}
+
+/// Three-dimensional percentile sphere radius from an ENU covariance.
+#[pyfunction]
+fn spherical_radius_at(
+    covariance_enu_m2: PyReadonlyArray2<'_, f64>,
+    probability: f64,
+) -> PyResult<PyPercentileRadius> {
+    let covariance = matrix3_from_array(
+        &covariance_enu_m2,
+        "covariance_enu_m2",
+        FinitePolicy::AllowNonFinite,
+    )?;
+    core_spherical_radius_at(covariance, probability)
+        .map(Into::into)
+        .map_err(to_metrics_err)
+}
+
+/// Vertical one-dimensional percentile radius from an up variance.
+#[pyfunction]
+fn vertical_radius_at(sigma_u_m2: f64, probability: f64) -> PyResult<f64> {
+    core_vertical_radius_at(sigma_u_m2, probability).map_err(to_metrics_err)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPercentileRadius>()?;
     m.add_class::<PyPositionErrorMetrics>()?;
+    m.add_class::<PyPositionCovariance>()?;
     m.add_class::<PyKinematicSolution>()?;
     m.add_function(wrap_pyfunction!(metrics_from_enu_covariance_m2, m)?)?;
     m.add_function(wrap_pyfunction!(metrics_from_ecef_covariance_m2, m)?)?;
+    m.add_function(wrap_pyfunction!(metrics_from_position_covariance, m)?)?;
     m.add_function(wrap_pyfunction!(metrics_from_kinematic_solution, m)?)?;
+    m.add_function(wrap_pyfunction!(error_ellipse_from_enu_m2, m)?)?;
+    m.add_function(wrap_pyfunction!(horizontal_radius_at, m)?)?;
+    m.add_function(wrap_pyfunction!(spherical_radius_at, m)?)?;
+    m.add_function(wrap_pyfunction!(vertical_radius_at, m)?)?;
     Ok(())
 }
