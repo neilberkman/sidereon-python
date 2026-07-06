@@ -13,6 +13,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyModule};
 
+use sidereon::astro::forces::{SolidEarthPoleTideGravity, SolidEarthTideGravity};
 use sidereon::geometry::visible_at_elevation_mask;
 use sidereon::passes::{
     find_passes_for_satellite, ground_track as core_ground_track, look_angle_arc,
@@ -303,15 +304,20 @@ impl PyForceModelComponents {
         spherical_harmonic_max_degree=None,
         spherical_harmonic_max_order=None,
         third_body=false,
+        solid_earth_tide=false,
+        solid_earth_pole_tide=false,
         solar_radiation_pressure=None,
         relativity=false,
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         two_body_mu_km3_s2: Option<f64>,
         zonal_max_degree: Option<u8>,
         spherical_harmonic_max_degree: Option<u16>,
         spherical_harmonic_max_order: Option<u16>,
         third_body: bool,
+        solid_earth_tide: bool,
+        solid_earth_pole_tide: bool,
         solar_radiation_pressure: Option<&PySolarRadiationPressure>,
         relativity: bool,
     ) -> PyResult<Self> {
@@ -348,6 +354,12 @@ impl PyForceModelComponents {
         }
         if third_body {
             inner.third_body = Some(ThirdBodyGravity::default());
+        }
+        if solid_earth_tide {
+            inner.solid_earth_tide = Some(SolidEarthTideGravity::default());
+        }
+        if solid_earth_pole_tide {
+            inner.solid_earth_pole_tide = Some(SolidEarthPoleTideGravity::default());
         }
         inner.solar_radiation_pressure =
             solar_radiation_pressure.map(PySolarRadiationPressure::inner);
@@ -418,6 +430,18 @@ impl PyForceModelComponents {
         self.inner.third_body.is_some()
     }
 
+    /// Whether solid Earth tide geopotential perturbation is enabled.
+    #[getter]
+    fn solid_earth_tide(&self) -> bool {
+        self.inner.solid_earth_tide.is_some()
+    }
+
+    /// Whether solid Earth pole tide geopotential perturbation is enabled.
+    #[getter]
+    fn solid_earth_pole_tide(&self) -> bool {
+        self.inner.solid_earth_pole_tide.is_some()
+    }
+
     /// Whether cannonball solar radiation pressure is enabled.
     #[getter]
     fn solar_radiation_pressure(&self) -> bool {
@@ -432,12 +456,14 @@ impl PyForceModelComponents {
 
     fn __repr__(&self) -> String {
         format!(
-            "ForceModelComponents(two_body_mu_km3_s2={:?}, zonal_max_degree={:?}, spherical_harmonic_max_degree={:?}, spherical_harmonic_max_order={:?}, third_body={}, solar_radiation_pressure={}, relativity={})",
+            "ForceModelComponents(two_body_mu_km3_s2={:?}, zonal_max_degree={:?}, spherical_harmonic_max_degree={:?}, spherical_harmonic_max_order={:?}, third_body={}, solid_earth_tide={}, solid_earth_pole_tide={}, solar_radiation_pressure={}, relativity={})",
             self.two_body_mu_km3_s2(),
             self.zonal_max_degree(),
             self.spherical_harmonic_max_degree(),
             self.spherical_harmonic_max_order(),
             self.third_body(),
+            self.solid_earth_tide(),
+            self.solid_earth_pole_tide(),
             self.solar_radiation_pressure(),
             self.relativity()
         )

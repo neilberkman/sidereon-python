@@ -5,7 +5,8 @@
 //! EWMA, and CA-CFAR utilities. The binding only marshals scalar values and a
 //! numpy sample vector for MAD.
 
-use numpy::PyReadonlyArray1;
+use numpy::ndarray::Array2;
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
@@ -26,11 +27,922 @@ use sidereon_core::estimation::primitives::{
     AlphaBetaGains, AlphaBetaState, AlphaBetaStep, NisGate, PrimitiveError as CorePrimitiveError,
     ScalarKalmanGains, MAD_GAUSSIAN_CONSISTENCY,
 };
+use sidereon_core::estimation::{
+    smooth_track_rts as core_smooth_track_rts, SmoothedTrack, SmoothedTrackEpoch,
+    TrackCoordinateFrame, TrackError, TrackFilter, TrackFilterConfig, TrackGatedUpdate,
+    TrackInnovation, TrackPrediction, TrackRtsEpoch, TrackRtsHistory, TrackRtsHistoryBuilder,
+    TrackState, TrackUpdate,
+};
 
+use crate::np_array;
 use crate::PrimitiveError;
 
 fn primitive_error(err: CorePrimitiveError) -> PyErr {
     PrimitiveError::new_err(err.to_string())
+}
+
+fn track_error(err: TrackError) -> PyErr {
+    PrimitiveError::new_err(err.to_string())
+}
+
+fn vector_from_array(values: &PyReadonlyArray1<'_, f64>, name: &str) -> PyResult<Vec<f64>> {
+    let view = values.as_array();
+    if view.is_empty() {
+        return Err(PrimitiveError::new_err(format!("{name} must not be empty")));
+    }
+    let mut out = Vec::with_capacity(view.len());
+    for (index, value) in view.iter().copied().enumerate() {
+        if !value.is_finite() {
+            return Err(PrimitiveError::new_err(format!(
+                "{name}[{index}] must be finite"
+            )));
+        }
+        out.push(value);
+    }
+    Ok(out)
+}
+
+fn square_matrix_from_array(
+    values: &PyReadonlyArray2<'_, f64>,
+    name: &str,
+    expected: Option<usize>,
+) -> PyResult<Vec<Vec<f64>>> {
+    let view = values.as_array();
+    if view.nrows() != view.ncols() {
+        return Err(PrimitiveError::new_err(format!("{name} must be square")));
+    }
+    if let Some(expected) = expected {
+        if view.nrows() != expected {
+            return Err(PrimitiveError::new_err(format!(
+                "{name} must have shape ({expected}, {expected})"
+            )));
+        }
+    }
+    let mut out = vec![vec![0.0; view.ncols()]; view.nrows()];
+    for row in 0..view.nrows() {
+        for col in 0..view.ncols() {
+            let value = view[[row, col]];
+            if !value.is_finite() {
+                return Err(PrimitiveError::new_err(format!(
+                    "{name}[{row}, {col}] must be finite"
+                )));
+            }
+            out[row][col] = value;
+        }
+    }
+    Ok(out)
+}
+
+fn matrix_to_array<'py>(py: Python<'py>, values: &[Vec<f64>]) -> Bound<'py, PyArray2<f64>> {
+    let rows = values.len();
+    let cols = values.first().map_or(0, Vec::len);
+    let mut array = Array2::<f64>::zeros((rows, cols));
+    for (row_index, row) in values.iter().enumerate() {
+        for (col_index, value) in row.iter().enumerate() {
+            array[[row_index, col_index]] = *value;
+        }
+    }
+    PyArray2::from_owned_array(py, array)
+}
+
+/// Cartesian frame used by a no-IMU track filter.
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "TrackCoordinateFrame",
+    eq,
+    eq_int
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
+#[allow(non_camel_case_types)]
+pub enum PyTrackCoordinateFrame {
+    /// Earth-Centered-Earth-Fixed position in metres.
+    ECEF,
+    /// Local East-North-Up position in metres.
+    ENU,
+    /// Caller-defined fixed Cartesian frame in metres.
+    CALLER_DEFINED_CARTESIAN,
+}
+
+impl From<PyTrackCoordinateFrame> for TrackCoordinateFrame {
+    fn from(frame: PyTrackCoordinateFrame) -> Self {
+        match frame {
+            PyTrackCoordinateFrame::ECEF => Self::Ecef,
+            PyTrackCoordinateFrame::ENU => Self::Enu,
+            PyTrackCoordinateFrame::CALLER_DEFINED_CARTESIAN => Self::CallerDefinedCartesian,
+        }
+    }
+}
+
+impl From<TrackCoordinateFrame> for PyTrackCoordinateFrame {
+    fn from(frame: TrackCoordinateFrame) -> Self {
+        match frame {
+            TrackCoordinateFrame::Ecef => Self::ECEF,
+            TrackCoordinateFrame::Enu => Self::ENU,
+            TrackCoordinateFrame::CallerDefinedCartesian => Self::CALLER_DEFINED_CARTESIAN,
+        }
+    }
+}
+
+#[pymethods]
+impl PyTrackCoordinateFrame {
+    /// Stable lowercase selector accepted as a string alias.
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::ECEF => "ecef",
+            Self::ENU => "enu",
+            Self::CALLER_DEFINED_CARTESIAN => "caller_defined_cartesian",
+        }
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::ECEF => "TrackCoordinateFrame.ECEF",
+            Self::ENU => "TrackCoordinateFrame.ENU",
+            Self::CALLER_DEFINED_CARTESIAN => "TrackCoordinateFrame.CALLER_DEFINED_CARTESIAN",
+        }
+    }
+}
+
+/// Configuration for a no-IMU constant-velocity track filter.
+#[pyclass(module = "sidereon._sidereon", name = "TrackFilterConfig")]
+#[derive(Clone)]
+pub struct PyTrackFilterConfig {
+    inner: TrackFilterConfig,
+}
+
+impl From<TrackFilterConfig> for PyTrackFilterConfig {
+    fn from(inner: TrackFilterConfig) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyTrackFilterConfig {
+    /// Build from position, velocity, covariance, and acceleration PSD.
+    #[new]
+    fn new(
+        frame: PyTrackCoordinateFrame,
+        initial_t_s: f64,
+        initial_position_m: PyReadonlyArray1<'_, f64>,
+        initial_velocity_m_s: PyReadonlyArray1<'_, f64>,
+        initial_covariance: PyReadonlyArray2<'_, f64>,
+        acceleration_variance_spectral_density_m2_s3: f64,
+    ) -> PyResult<Self> {
+        let position = vector_from_array(&initial_position_m, "initial_position_m")?;
+        let velocity = vector_from_array(&initial_velocity_m_s, "initial_velocity_m_s")?;
+        let covariance = square_matrix_from_array(&initial_covariance, "initial_covariance", None)?;
+        TrackFilterConfig::from_position_velocity(
+            frame.into(),
+            initial_t_s,
+            position,
+            velocity,
+            covariance,
+            acceleration_variance_spectral_density_m2_s3,
+        )
+        .map(Into::into)
+        .map_err(track_error)
+    }
+
+    /// Build from a position fix and an uncertain zero initial velocity.
+    #[staticmethod]
+    fn from_position(
+        frame: PyTrackCoordinateFrame,
+        initial_t_s: f64,
+        initial_position_m: PyReadonlyArray1<'_, f64>,
+        position_covariance_m2: PyReadonlyArray2<'_, f64>,
+        initial_velocity_variance_m2_s2: f64,
+        acceleration_variance_spectral_density_m2_s3: f64,
+    ) -> PyResult<Self> {
+        let position = vector_from_array(&initial_position_m, "initial_position_m")?;
+        let covariance =
+            square_matrix_from_array(&position_covariance_m2, "position_covariance_m2", None)?;
+        TrackFilterConfig::from_position(
+            frame.into(),
+            initial_t_s,
+            position,
+            covariance,
+            initial_velocity_variance_m2_s2,
+            acceleration_variance_spectral_density_m2_s3,
+        )
+        .map(Into::into)
+        .map_err(track_error)
+    }
+
+    #[getter]
+    fn frame(&self) -> PyTrackCoordinateFrame {
+        self.inner.frame.into()
+    }
+
+    #[getter]
+    fn initial_t_s(&self) -> f64 {
+        self.inner.initial_t_s
+    }
+
+    #[getter]
+    fn initial_position_m<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.initial_position_m)
+    }
+
+    #[getter]
+    fn initial_velocity_m_s<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.initial_velocity_m_s)
+    }
+
+    #[getter]
+    fn initial_covariance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        matrix_to_array(py, &self.inner.initial_covariance)
+    }
+
+    #[getter]
+    fn acceleration_variance_spectral_density_m2_s3(&self) -> f64 {
+        self.inner.acceleration_variance_spectral_density_m2_s3
+    }
+
+    #[getter]
+    fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TrackFilterConfig(frame={}, initial_t_s={}, dimension={})",
+            self.frame().label(),
+            self.inner.initial_t_s,
+            self.inner.dimension()
+        )
+    }
+}
+
+/// Track state and covariance over `[position, velocity]`.
+#[pyclass(module = "sidereon._sidereon", name = "TrackState")]
+#[derive(Clone)]
+pub struct PyTrackState {
+    inner: TrackState,
+}
+
+impl From<TrackState> for PyTrackState {
+    fn from(inner: TrackState) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyTrackState {
+    /// Build a track state.
+    #[new]
+    fn new(
+        frame: PyTrackCoordinateFrame,
+        t_s: f64,
+        position_m: PyReadonlyArray1<'_, f64>,
+        velocity_m_s: PyReadonlyArray1<'_, f64>,
+        covariance: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<Self> {
+        let position = vector_from_array(&position_m, "position_m")?;
+        let velocity = vector_from_array(&velocity_m_s, "velocity_m_s")?;
+        let covariance = square_matrix_from_array(&covariance, "covariance", None)?;
+        TrackState::new(frame.into(), t_s, position, velocity, covariance)
+            .map(Into::into)
+            .map_err(track_error)
+    }
+
+    #[getter]
+    fn frame(&self) -> PyTrackCoordinateFrame {
+        self.inner.frame.into()
+    }
+
+    #[getter]
+    fn t_s(&self) -> f64 {
+        self.inner.t_s
+    }
+
+    #[getter]
+    fn position_m<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.position_m)
+    }
+
+    #[getter]
+    fn velocity_m_s<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.velocity_m_s)
+    }
+
+    #[getter]
+    fn covariance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        matrix_to_array(py, &self.inner.covariance)
+    }
+
+    #[getter]
+    fn state_vector<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.state_vector())
+    }
+
+    #[getter]
+    fn position_covariance_m2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        matrix_to_array(py, &self.inner.position_covariance_m2())
+    }
+
+    #[getter]
+    fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
+
+    #[getter]
+    fn state_dimension(&self) -> usize {
+        self.inner.state_dimension()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TrackState(frame={}, t_s={}, dimension={})",
+            self.frame().label(),
+            self.inner.t_s,
+            self.inner.dimension()
+        )
+    }
+}
+
+/// Prediction result from `TrackFilter.predict`.
+#[pyclass(module = "sidereon._sidereon", name = "TrackPrediction")]
+#[derive(Clone)]
+pub struct PyTrackPrediction {
+    inner: TrackPrediction,
+}
+
+impl From<TrackPrediction> for PyTrackPrediction {
+    fn from(inner: TrackPrediction) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyTrackPrediction {
+    #[getter]
+    fn dt_s(&self) -> f64 {
+        self.inner.dt_s
+    }
+
+    #[getter]
+    fn transition<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        matrix_to_array(py, &self.inner.transition)
+    }
+
+    #[getter]
+    fn process_noise<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        matrix_to_array(py, &self.inner.process_noise)
+    }
+
+    #[getter]
+    fn predicted(&self) -> PyTrackState {
+        self.inner.predicted.clone().into()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("TrackPrediction(dt_s={})", self.inner.dt_s)
+    }
+}
+
+/// Innovation report for a pending or applied track update.
+#[pyclass(module = "sidereon._sidereon", name = "TrackInnovation")]
+#[derive(Clone)]
+pub struct PyTrackInnovation {
+    inner: TrackInnovation,
+}
+
+impl From<TrackInnovation> for PyTrackInnovation {
+    fn from(inner: TrackInnovation) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyTrackInnovation {
+    #[getter]
+    fn innovation<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.innovation)
+    }
+
+    #[getter]
+    fn innovation_covariance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        matrix_to_array(py, &self.inner.innovation_covariance)
+    }
+
+    #[getter]
+    fn nis(&self) -> f64 {
+        self.inner.nis
+    }
+
+    /// Evaluate this innovation against a chi-square NIS gate.
+    fn gate(&self, confidence: f64) -> PyResult<PyNisGate> {
+        self.inner
+            .gate(confidence)
+            .map(Into::into)
+            .map_err(track_error)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TrackInnovation(nis={}, dof={})",
+            self.inner.nis,
+            self.inner.innovation.len()
+        )
+    }
+}
+
+/// Update result from a covariance-weighted correction.
+#[pyclass(module = "sidereon._sidereon", name = "TrackUpdate")]
+#[derive(Clone)]
+pub struct PyTrackUpdate {
+    inner: TrackUpdate,
+}
+
+impl From<TrackUpdate> for PyTrackUpdate {
+    fn from(inner: TrackUpdate) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyTrackUpdate {
+    #[getter]
+    fn predicted(&self) -> PyTrackState {
+        self.inner.predicted.clone().into()
+    }
+
+    #[getter]
+    fn updated(&self) -> PyTrackState {
+        self.inner.updated.clone().into()
+    }
+
+    #[getter]
+    fn innovation(&self) -> PyTrackInnovation {
+        self.inner.innovation.clone().into()
+    }
+
+    #[getter]
+    fn kalman_gain<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        matrix_to_array(py, &self.inner.kalman_gain)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("TrackUpdate(nis={})", self.inner.innovation.nis)
+    }
+}
+
+/// Gated update result.
+#[pyclass(module = "sidereon._sidereon", name = "TrackGatedUpdate")]
+#[derive(Clone)]
+pub struct PyTrackGatedUpdate {
+    inner: TrackGatedUpdate,
+}
+
+impl From<TrackGatedUpdate> for PyTrackGatedUpdate {
+    fn from(inner: TrackGatedUpdate) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyTrackGatedUpdate {
+    #[getter]
+    fn gate(&self) -> PyNisGate {
+        self.inner.gate.into()
+    }
+
+    #[getter]
+    fn update(&self) -> Option<PyTrackUpdate> {
+        self.inner.update.clone().map(Into::into)
+    }
+
+    #[getter]
+    fn state(&self) -> PyTrackState {
+        self.inner.state.clone().into()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("TrackGatedUpdate(in_gate={})", self.inner.gate.in_gate)
+    }
+}
+
+/// One epoch in a recorded RTS history.
+#[pyclass(module = "sidereon._sidereon", name = "TrackRtsEpoch")]
+#[derive(Clone)]
+pub struct PyTrackRtsEpoch {
+    inner: TrackRtsEpoch,
+}
+
+impl From<TrackRtsEpoch> for PyTrackRtsEpoch {
+    fn from(inner: TrackRtsEpoch) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyTrackRtsEpoch {
+    #[getter]
+    fn t_s(&self) -> f64 {
+        self.inner.t_s
+    }
+
+    #[getter]
+    fn predicted(&self) -> PyTrackState {
+        self.inner.predicted.clone().into()
+    }
+
+    #[getter]
+    fn updated(&self) -> PyTrackState {
+        self.inner.updated.clone().into()
+    }
+
+    #[getter]
+    fn transition_from_previous<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.inner
+            .transition_from_previous
+            .as_ref()
+            .map(|transition| matrix_to_array(py, transition))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("TrackRtsEpoch(t_s={})", self.inner.t_s)
+    }
+}
+
+/// Recorded forward-pass history accepted by `smooth_track_rts`.
+#[pyclass(module = "sidereon._sidereon", name = "TrackRtsHistory")]
+#[derive(Clone)]
+pub struct PyTrackRtsHistory {
+    inner: TrackRtsHistory,
+}
+
+impl From<TrackRtsHistory> for PyTrackRtsHistory {
+    fn from(inner: TrackRtsHistory) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyTrackRtsHistory {
+    #[getter]
+    fn epochs(&self) -> Vec<PyTrackRtsEpoch> {
+        self.inner
+            .epochs
+            .clone()
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.epochs.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("TrackRtsHistory(epochs={})", self.inner.epochs.len())
+    }
+}
+
+/// Builder for recording a forward filter pass before RTS smoothing.
+#[pyclass(module = "sidereon._sidereon", name = "TrackRtsHistoryBuilder")]
+#[derive(Clone)]
+pub struct PyTrackRtsHistoryBuilder {
+    inner: TrackRtsHistoryBuilder,
+}
+
+#[pymethods]
+impl PyTrackRtsHistoryBuilder {
+    /// Start an empty history for manual recording.
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: TrackRtsHistoryBuilder::empty(),
+        }
+    }
+
+    /// Start a history from the filter's current state.
+    #[staticmethod]
+    fn from_filter(filter: &PyTrackFilter) -> PyResult<Self> {
+        TrackRtsHistoryBuilder::from_filter(&filter.inner)
+            .map(|inner| Self { inner })
+            .map_err(track_error)
+    }
+
+    /// Return a validated history.
+    fn finish(&self) -> PyResult<PyTrackRtsHistory> {
+        self.inner
+            .clone()
+            .finish()
+            .map(Into::into)
+            .map_err(track_error)
+    }
+
+    fn __repr__(&self) -> &'static str {
+        "TrackRtsHistoryBuilder()"
+    }
+}
+
+/// One epoch in a smoothed track.
+#[pyclass(module = "sidereon._sidereon", name = "SmoothedTrackEpoch")]
+#[derive(Clone)]
+pub struct PySmoothedTrackEpoch {
+    inner: SmoothedTrackEpoch,
+}
+
+impl From<SmoothedTrackEpoch> for PySmoothedTrackEpoch {
+    fn from(inner: SmoothedTrackEpoch) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySmoothedTrackEpoch {
+    #[getter]
+    fn t_s(&self) -> f64 {
+        self.inner.t_s
+    }
+
+    #[getter]
+    fn state(&self) -> PyTrackState {
+        self.inner.state.clone().into()
+    }
+
+    #[getter]
+    fn rts_gain_to_next<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.inner
+            .rts_gain_to_next
+            .as_ref()
+            .map(|gain| matrix_to_array(py, gain))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("SmoothedTrackEpoch(t_s={})", self.inner.t_s)
+    }
+}
+
+/// Smoothed track returned by fixed-interval RTS smoothing.
+#[pyclass(module = "sidereon._sidereon", name = "SmoothedTrack")]
+#[derive(Clone)]
+pub struct PySmoothedTrack {
+    inner: SmoothedTrack,
+}
+
+impl From<SmoothedTrack> for PySmoothedTrack {
+    fn from(inner: SmoothedTrack) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySmoothedTrack {
+    #[getter]
+    fn epochs(&self) -> Vec<PySmoothedTrackEpoch> {
+        self.inner
+            .epochs
+            .clone()
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.epochs.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("SmoothedTrack(epochs={})", self.inner.epochs.len())
+    }
+}
+
+/// Stateful no-IMU constant-velocity track filter.
+#[pyclass(module = "sidereon._sidereon", name = "TrackFilter")]
+#[derive(Clone)]
+pub struct PyTrackFilter {
+    inner: TrackFilter,
+}
+
+#[pymethods]
+impl PyTrackFilter {
+    /// Build a filter from a validated configuration.
+    #[new]
+    fn new(config: &PyTrackFilterConfig) -> PyResult<Self> {
+        TrackFilter::new(config.inner.clone())
+            .map(|inner| Self { inner })
+            .map_err(track_error)
+    }
+
+    /// Build from a position fix and an uncertain zero initial velocity.
+    #[staticmethod]
+    fn from_position(
+        frame: PyTrackCoordinateFrame,
+        initial_t_s: f64,
+        initial_position_m: PyReadonlyArray1<'_, f64>,
+        position_covariance_m2: PyReadonlyArray2<'_, f64>,
+        initial_velocity_variance_m2_s2: f64,
+        acceleration_variance_spectral_density_m2_s3: f64,
+    ) -> PyResult<Self> {
+        let config = PyTrackFilterConfig::from_position(
+            frame,
+            initial_t_s,
+            initial_position_m,
+            position_covariance_m2,
+            initial_velocity_variance_m2_s2,
+            acceleration_variance_spectral_density_m2_s3,
+        )?;
+        Self::new(&config)
+    }
+
+    #[getter]
+    fn state(&self) -> PyTrackState {
+        self.inner.state().clone().into()
+    }
+
+    #[getter]
+    fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
+
+    #[getter]
+    fn acceleration_variance_spectral_density_m2_s3(&self) -> f64 {
+        self.inner.acceleration_variance_spectral_density_m2_s3()
+    }
+
+    /// Advance the filter with the constant-velocity prediction model.
+    fn predict(&mut self, dt_s: f64) -> PyResult<PyTrackPrediction> {
+        self.inner
+            .predict(dt_s)
+            .map(Into::into)
+            .map_err(track_error)
+    }
+
+    /// Advance the filter and record the prediction for RTS smoothing.
+    fn predict_recorded(
+        &mut self,
+        dt_s: f64,
+        history: &mut PyTrackRtsHistoryBuilder,
+    ) -> PyResult<PyTrackPrediction> {
+        self.inner
+            .predict_recorded(dt_s, &mut history.inner)
+            .map(Into::into)
+            .map_err(track_error)
+    }
+
+    /// Compute the position innovation without applying the update.
+    fn position_innovation(
+        &self,
+        observation_position_m: PyReadonlyArray1<'_, f64>,
+        observation_covariance_m2: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<PyTrackInnovation> {
+        let observation = vector_from_array(&observation_position_m, "observation_position_m")?;
+        let covariance = square_matrix_from_array(
+            &observation_covariance_m2,
+            "observation_covariance_m2",
+            Some(self.inner.dimension()),
+        )?;
+        self.inner
+            .position_innovation(&observation, &covariance)
+            .map(Into::into)
+            .map_err(track_error)
+    }
+
+    /// Compute the full state innovation without applying the update.
+    fn state_innovation(
+        &self,
+        observation_state: PyReadonlyArray1<'_, f64>,
+        observation_covariance: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<PyTrackInnovation> {
+        let observation = vector_from_array(&observation_state, "observation_state")?;
+        let covariance = square_matrix_from_array(
+            &observation_covariance,
+            "observation_covariance",
+            Some(self.inner.state().state_dimension()),
+        )?;
+        self.inner
+            .state_innovation(&observation, &covariance)
+            .map(Into::into)
+            .map_err(track_error)
+    }
+
+    /// Apply a position fix plus covariance.
+    fn update_position(
+        &mut self,
+        observation_position_m: PyReadonlyArray1<'_, f64>,
+        observation_covariance_m2: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<PyTrackUpdate> {
+        let observation = vector_from_array(&observation_position_m, "observation_position_m")?;
+        let covariance = square_matrix_from_array(
+            &observation_covariance_m2,
+            "observation_covariance_m2",
+            Some(self.inner.dimension()),
+        )?;
+        self.inner
+            .update_position(&observation, &covariance)
+            .map(Into::into)
+            .map_err(track_error)
+    }
+
+    /// Apply a full position-and-velocity state fix plus covariance.
+    fn update_state(
+        &mut self,
+        observation_state: PyReadonlyArray1<'_, f64>,
+        observation_covariance: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<PyTrackUpdate> {
+        let observation = vector_from_array(&observation_state, "observation_state")?;
+        let covariance = square_matrix_from_array(
+            &observation_covariance,
+            "observation_covariance",
+            Some(self.inner.state().state_dimension()),
+        )?;
+        self.inner
+            .update_state(&observation, &covariance)
+            .map(Into::into)
+            .map_err(track_error)
+    }
+
+    /// Apply a gated position fix plus covariance.
+    fn update_position_gated(
+        &mut self,
+        observation_position_m: PyReadonlyArray1<'_, f64>,
+        observation_covariance_m2: PyReadonlyArray2<'_, f64>,
+        confidence: f64,
+    ) -> PyResult<PyTrackGatedUpdate> {
+        let observation = vector_from_array(&observation_position_m, "observation_position_m")?;
+        let covariance = square_matrix_from_array(
+            &observation_covariance_m2,
+            "observation_covariance_m2",
+            Some(self.inner.dimension()),
+        )?;
+        self.inner
+            .update_position_gated(&observation, &covariance, confidence)
+            .map(Into::into)
+            .map_err(track_error)
+    }
+
+    /// Apply a position update and record the epoch for RTS smoothing.
+    fn update_position_recorded(
+        &mut self,
+        observation_position_m: PyReadonlyArray1<'_, f64>,
+        observation_covariance_m2: PyReadonlyArray2<'_, f64>,
+        history: &mut PyTrackRtsHistoryBuilder,
+    ) -> PyResult<PyTrackUpdate> {
+        let observation = vector_from_array(&observation_position_m, "observation_position_m")?;
+        let covariance = square_matrix_from_array(
+            &observation_covariance_m2,
+            "observation_covariance_m2",
+            Some(self.inner.dimension()),
+        )?;
+        self.inner
+            .update_position_recorded(&observation, &covariance, &mut history.inner)
+            .map(Into::into)
+            .map_err(track_error)
+    }
+
+    /// Apply a gated position update and record accepted or rejected epochs.
+    fn update_position_gated_recorded(
+        &mut self,
+        observation_position_m: PyReadonlyArray1<'_, f64>,
+        observation_covariance_m2: PyReadonlyArray2<'_, f64>,
+        confidence: f64,
+        history: &mut PyTrackRtsHistoryBuilder,
+    ) -> PyResult<PyTrackGatedUpdate> {
+        let observation = vector_from_array(&observation_position_m, "observation_position_m")?;
+        let covariance = square_matrix_from_array(
+            &observation_covariance_m2,
+            "observation_covariance_m2",
+            Some(self.inner.dimension()),
+        )?;
+        self.inner
+            .update_position_gated_recorded(
+                &observation,
+                &covariance,
+                confidence,
+                &mut history.inner,
+            )
+            .map(Into::into)
+            .map_err(track_error)
+    }
+
+    /// Record the current predicted state as an epoch without measurement update.
+    fn record_prediction_only(&self, history: &mut PyTrackRtsHistoryBuilder) -> PyResult<()> {
+        self.inner
+            .record_prediction_only(&mut history.inner)
+            .map_err(track_error)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TrackFilter(frame={}, t_s={}, dimension={})",
+            PyTrackCoordinateFrame::from(self.inner.state().frame).label(),
+            self.inner.state().t_s,
+            self.inner.dimension()
+        )
+    }
+}
+
+/// Apply fixed-interval RTS smoothing to a recorded no-IMU track history.
+#[pyfunction]
+fn smooth_track_rts(history: &PyTrackRtsHistory) -> PyResult<PySmoothedTrack> {
+    core_smooth_track_rts(&history.inner)
+        .map(Into::into)
+        .map_err(track_error)
 }
 
 /// State of a scalar level plus rate alpha-beta estimator.
@@ -411,6 +1323,19 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAlphaBetaStep>()?;
     m.add_class::<PyScalarKalmanGains>()?;
     m.add_class::<PyNisGate>()?;
+    m.add_class::<PyTrackCoordinateFrame>()?;
+    m.add_class::<PyTrackFilterConfig>()?;
+    m.add_class::<PyTrackState>()?;
+    m.add_class::<PyTrackPrediction>()?;
+    m.add_class::<PyTrackInnovation>()?;
+    m.add_class::<PyTrackUpdate>()?;
+    m.add_class::<PyTrackGatedUpdate>()?;
+    m.add_class::<PyTrackFilter>()?;
+    m.add_class::<PyTrackRtsEpoch>()?;
+    m.add_class::<PyTrackRtsHistory>()?;
+    m.add_class::<PyTrackRtsHistoryBuilder>()?;
+    m.add_class::<PySmoothedTrackEpoch>()?;
+    m.add_class::<PySmoothedTrack>()?;
     m.add("MAD_GAUSSIAN_CONSISTENCY", MAD_GAUSSIAN_CONSISTENCY)?;
     m.add_function(wrap_pyfunction!(alpha_beta_steady_state_gains, m)?)?;
     m.add_function(wrap_pyfunction!(alpha_beta_predict, m)?)?;
@@ -430,5 +1355,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cfar_ca_pfa_from_multiplier, m)?)?;
     m.add_function(wrap_pyfunction!(cfar_ca_threshold, m)?)?;
     m.add_function(wrap_pyfunction!(cfar_ca_false_alarm_probability, m)?)?;
+    m.add_function(wrap_pyfunction!(smooth_track_rts, m)?)?;
     Ok(())
 }

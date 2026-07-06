@@ -371,7 +371,10 @@ def test_emission_media_batch_statuses_and_arrays():
     )
     assert np.isnan(batch.clocks_s[3])
     assert np.isnan(batch.troposphere_delays_m[[0, 2, 3]]).all()
-    assert _bits(batch.troposphere_delays_m[1]) == 0x40259A5E1E5E4264
+    # Re-pinned after the tide-force frame-provider wiring shifted paths
+    # through the Earth-orientation chain by one ULP (disclosed in the core
+    # changelog).
+    assert _bits(batch.troposphere_delays_m[1]) == 0x40259A5E1E5E4265
     assert np.isnan(batch.ionosphere_slant_delays_m[[0, 2, 3]]).all()
     assert batch.ionosphere_slant_delays_m[1] == 0.0
 
