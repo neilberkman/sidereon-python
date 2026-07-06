@@ -371,9 +371,13 @@ def test_emission_media_batch_statuses_and_arrays():
     )
     assert np.isnan(batch.clocks_s[3])
     assert np.isnan(batch.troposphere_delays_m[[0, 2, 3]]).all()
-    # The current 0.19.0 build returns the adjacent ULP after the
-    # station-displacement refactor.
-    assert _bits(batch.troposphere_delays_m[1]) == 0x40259A5E1E5E4265
+    # The last bit of this value is build- and arch-sensitive (arm64 macOS and
+    # x86_64 Linux libm land on adjacent ULPs on the mapping-function path, and
+    # it has flipped between builds), so the pin is a one-ULP band around the
+    # canonical value. Anything past one ULP is a real regression.
+    assert abs(_bits(batch.troposphere_delays_m[1]) - 0x40259A5E1E5E4264) <= 1, _bits(
+        batch.troposphere_delays_m[1]
+    )
     assert np.isnan(batch.ionosphere_slant_delays_m[[0, 2, 3]]).all()
     assert batch.ionosphere_slant_delays_m[1] == 0.0
 
