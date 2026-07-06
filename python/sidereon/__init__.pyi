@@ -2821,6 +2821,8 @@ class RtkFloatSolution:
     @property
     def ambiguities_m(self) -> dict[str, float]: ...
     @property
+    def ambiguity_covariance(self) -> npt.NDArray[np.float64]: ...
+    @property
     def code_rms_m(self) -> float: ...
     @property
     def phase_rms_m(self) -> float: ...
@@ -3134,6 +3136,8 @@ class RtkArcSolution:
     def elevation_masked_sats(self) -> list[str]: ...
     @property
     def measurement_covariance(self) -> list[float]: ...
+    @property
+    def measurement_covariance_matrix(self) -> npt.NDArray[np.float64]: ...
     def __repr__(self) -> str: ...
 
 def solve_rtk_arc(
@@ -3182,6 +3186,192 @@ def solve_static_rtk_arc(
     epochs: Sequence[RtkArcEpoch],
     config: RtkStaticArcConfig,
 ) -> RtkStaticArcSolution: ...
+
+class RtkRinexSignalPair:
+    """One single-frequency RINEX code/carrier pair used for RTK arc records."""
+
+    def __init__(
+        self,
+        system: GnssSystem,
+        code_observable: str,
+        phase_observable: str,
+    ) -> None: ...
+    @staticmethod
+    def gps_l1_c() -> RtkRinexSignalPair: ...
+    @property
+    def system(self) -> GnssSystem: ...
+    @property
+    def code_observable(self) -> str: ...
+    @property
+    def phase_observable(self) -> str: ...
+    def __repr__(self) -> str: ...
+
+class RtkRinexArcOptions:
+    """Options for building single-frequency RTK arc records from RINEX."""
+
+    def __init__(
+        self,
+        signal_pairs: Sequence[RtkRinexSignalPair] | None = ...,
+        max_epochs: int | None = ...,
+        min_common_satellites: int = ...,
+        include_prediction_time: bool = ...,
+    ) -> None: ...
+    @staticmethod
+    def gps_l1_c() -> RtkRinexArcOptions: ...
+    @property
+    def signal_pairs(self) -> list[RtkRinexSignalPair]: ...
+    @property
+    def max_epochs(self) -> int | None: ...
+    @property
+    def min_common_satellites(self) -> int: ...
+    @property
+    def include_prediction_time(self) -> bool: ...
+    def __repr__(self) -> str: ...
+
+class RinexRtkArc:
+    """Single-frequency RTK arc records built from RINEX."""
+
+    @property
+    def epochs(self) -> list[RtkArcEpoch]: ...
+    @property
+    def wavelengths_m(self) -> dict[str, float]: ...
+    @property
+    def offsets_m(self) -> dict[str, float]: ...
+    @property
+    def skipped_epoch_count(self) -> int: ...
+    def __repr__(self) -> str: ...
+
+def build_rinex_rtk_arc(
+    ephemeris: Any,
+    base_obs: RinexObs,
+    rover_obs: RinexObs,
+    options: RtkRinexArcOptions | None = ...,
+) -> RinexRtkArc: ...
+def solve_static_rinex_rtk_baseline(
+    ephemeris: Any,
+    base_obs: RinexObs,
+    rover_obs: RinexObs,
+    base: Sequence[float],
+    model: RtkMeasurementModel | None = ...,
+    arc_options: RtkRinexArcOptions | None = ...,
+    preprocessing: RtkArcPreprocessing | None = ...,
+    update_options: RtkArcUpdateOptions | None = ...,
+    float_options: RtkFloatOptions | None = ...,
+    fixed_options: RtkFixedOptions | None = ...,
+    residual_options: RtkResidualValidationOptions | None = ...,
+    initial_baseline_m: Sequence[float] = ...,
+    baseline_prior_sigma_m: float = ...,
+    ambiguity_prior_sigma_m: float = ...,
+) -> RtkStaticArcSolution: ...
+
+class RtkRinexDualSignalPair:
+    """One dual-frequency RINEX signal selection for one constellation."""
+
+    def __init__(
+        self,
+        system: GnssSystem,
+        code1_observable: str,
+        phase1_observable: str,
+        code2_observable: str,
+        phase2_observable: str,
+    ) -> None: ...
+    @staticmethod
+    def gps_l1_l2_cw() -> RtkRinexDualSignalPair: ...
+    @property
+    def system(self) -> GnssSystem: ...
+    @property
+    def code1_observable(self) -> str: ...
+    @property
+    def phase1_observable(self) -> str: ...
+    @property
+    def code2_observable(self) -> str: ...
+    @property
+    def phase2_observable(self) -> str: ...
+    def __repr__(self) -> str: ...
+
+class RtkRinexDualArcOptions:
+    """Options for building dual-frequency RTK arc records from RINEX."""
+
+    def __init__(
+        self,
+        signal_pairs: Sequence[RtkRinexDualSignalPair] | None = ...,
+        max_epochs: int | None = ...,
+        min_common_satellites: int = ...,
+        include_prediction_time: bool = ...,
+    ) -> None: ...
+    @staticmethod
+    def gps_l1_l2_cw() -> RtkRinexDualArcOptions: ...
+    @property
+    def signal_pairs(self) -> list[RtkRinexDualSignalPair]: ...
+    @property
+    def max_epochs(self) -> int | None: ...
+    @property
+    def min_common_satellites(self) -> int: ...
+    @property
+    def include_prediction_time(self) -> bool: ...
+    def __repr__(self) -> str: ...
+
+class RinexDualFrequencyRtkArc:
+    """Dual-frequency RTK arc records built from RINEX."""
+
+    @property
+    def epochs(self) -> list[RtkDualFrequencyArcEpoch]: ...
+    @property
+    def skipped_epoch_count(self) -> int: ...
+    def __repr__(self) -> str: ...
+
+def build_dual_frequency_rinex_rtk_arc(
+    ephemeris: Any,
+    base_obs: RinexObs,
+    rover_obs: RinexObs,
+    options: RtkRinexDualArcOptions | None = ...,
+) -> RinexDualFrequencyRtkArc: ...
+
+class RinexWideLaneFixedRtkSolution:
+    """Static dual-frequency wide-lane fixed RTK solution built from RINEX."""
+
+    @property
+    def wide_lane(self) -> RtkWideLaneArcSolution: ...
+    @property
+    def ionosphere_free(self) -> RtkIonosphereFreeArcSolution: ...
+    @property
+    def solution(self) -> RtkStaticArcSolution: ...
+    @property
+    def fixed_baseline(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def fixed_baseline_m(self) -> tuple[float, float, float]: ...
+    @property
+    def float_baseline(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def float_baseline_m(self) -> tuple[float, float, float]: ...
+    @property
+    def integer_status(self) -> IntegerStatus: ...
+    @property
+    def integer_ratio(self) -> float | None: ...
+    @property
+    def float_ambiguity_covariance(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def wide_lane_fixed(self) -> bool: ...
+    @property
+    def wide_lane_ambiguities_cycles(self) -> dict[str, int]: ...
+    def __repr__(self) -> str: ...
+
+def solve_wide_lane_fixed_rinex_rtk_baseline(
+    ephemeris: Any,
+    base_obs: RinexObs,
+    rover_obs: RinexObs,
+    base: Sequence[float],
+    model: RtkMeasurementModel | None = ...,
+    arc_options: RtkRinexDualArcOptions | None = ...,
+    update_options: RtkArcUpdateOptions | None = ...,
+    float_options: RtkFloatOptions | None = ...,
+    fixed_options: RtkFixedOptions | None = ...,
+    residual_options: RtkResidualValidationOptions | None = ...,
+    initial_baseline_m: Sequence[float] = ...,
+    baseline_prior_sigma_m: float = ...,
+    ambiguity_prior_sigma_m: float = ...,
+    apply_troposphere: bool = ...,
+) -> RinexWideLaneFixedRtkSolution: ...
 
 class RtkDualFrequencyObservation:
     """One dual-frequency observation at a receiver."""

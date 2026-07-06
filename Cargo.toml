@@ -37,3 +37,8 @@ serde_json = "1"
 # `nalgebra` matrix/vector types directly. Pinned to the same 0.33 line the engine
 # resolves so the binding shares one linear-algebra version with the core.
 nalgebra = "0.33"
+
+[patch.crates-io]
+# Pre-release core API override for the RTK RINEX arc builders.
+# Remove this once the core crate release includes build/rtk-arc-api.
+sidereon-core = { git = "file:///Users/neil/xuku/sidereon", branch = "build/rtk-arc-api" }
