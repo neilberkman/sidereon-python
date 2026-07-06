@@ -509,7 +509,9 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sidereon"
-version = "0.18.0"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4e86f09e8ad7cb55e7740ab362d2fc27a94c89f0bc00f75b2aa7cc946763363"
 dependencies = [
  "flate2",
  "sidereon-core",
@@ -517,7 +519,9 @@ dependencies = [
 
 [[package]]
 name = "sidereon-core"
-version = "0.18.0"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff780da343d9ea3dc4a580766a7c7e75843f073f6d819dfd7ee14563dedf5db5"
 dependencies = [
  "cc",
  "libm",
@@ -527,12 +531,12 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
- "trust-region-least-squares 0.9.1",
+ "trust-region-least-squares",
 ]
 
 [[package]]
 name = "sidereon-py"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "nalgebra",
  "numpy",
@@ -542,7 +546,7 @@ dependencies = [
  "serde_json",
  "sidereon",
  "sidereon-core",
- "trust-region-least-squares 0.9.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trust-region-least-squares",
 ]
 
 [[package]]
@@ -599,15 +603,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "trust-region-least-squares"
-version = "0.9.1"
-dependencies = [
- "libloading",
- "nalgebra",
- "rayon",
 ]
 
 [[package]]
