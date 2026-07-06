@@ -47,6 +47,20 @@ Query a precise SP3 product and the analytic Sun/Moon ephemerides:
     >>> bodies = sidereon.sun_moon_ecef(epochs)       # epochs = int64 unix us
     >>> bodies.sun.shape                              # (n, 3) ECEF metres
 
+Filter position fixes with covariance and smooth the recorded track:
+
+    >>> import numpy as np, sidereon
+    >>> cov = np.eye(3) * 4.0
+    >>> pos0 = np.zeros(3)
+    >>> filt = sidereon.TrackFilter.from_position(
+    ...     sidereon.TrackCoordinateFrame.ECEF, 0.0, pos0, cov, 100.0, 0.1)
+    >>> hist = sidereon.TrackRtsHistoryBuilder.from_filter(filt)
+    >>> filt.predict_recorded(1.0, hist)
+    >>> fix = np.asarray([1.0, 0.0, 0.0])
+    >>> step = filt.update_position_gated_recorded(fix, cov, 0.99, hist)
+    >>> smooth = sidereon.smooth_track_rts(hist.finish())
+    >>> step.state.position_m, smooth.epochs[-1].state.covariance
+
 Failures raise an exception from the :class:`SidereonError` hierarchy:
 :class:`Sp3ParseError` and :class:`TleParseError` (both :class:`ParseError`) for
 malformed input, and :class:`SolveError` for a solve or propagation failure.
@@ -926,6 +940,19 @@ from ._sidereon import (
     AlphaBetaStep,
     ScalarKalmanGains,
     NisGate,
+    TrackCoordinateFrame,
+    TrackFilterConfig,
+    TrackState,
+    TrackPrediction,
+    TrackInnovation,
+    TrackUpdate,
+    TrackGatedUpdate,
+    TrackFilter,
+    TrackRtsEpoch,
+    TrackRtsHistory,
+    TrackRtsHistoryBuilder,
+    SmoothedTrackEpoch,
+    SmoothedTrack,
     MAD_GAUSSIAN_CONSISTENCY,
     alpha_beta_steady_state_gains,
     alpha_beta_predict,
@@ -938,6 +965,7 @@ from ._sidereon import (
     nis_expected_value,
     nis_gate_threshold,
     nis_gate_test,
+    smooth_track_rts,
     mad_spread,
     ewma_update,
     ewma_update_power_of_two,
@@ -1863,6 +1891,19 @@ __all__ = [
     "AlphaBetaStep",
     "ScalarKalmanGains",
     "NisGate",
+    "TrackCoordinateFrame",
+    "TrackFilterConfig",
+    "TrackState",
+    "TrackPrediction",
+    "TrackInnovation",
+    "TrackUpdate",
+    "TrackGatedUpdate",
+    "TrackFilter",
+    "TrackRtsEpoch",
+    "TrackRtsHistory",
+    "TrackRtsHistoryBuilder",
+    "SmoothedTrackEpoch",
+    "SmoothedTrack",
     "MAD_GAUSSIAN_CONSISTENCY",
     "alpha_beta_steady_state_gains",
     "alpha_beta_predict",
@@ -1875,6 +1916,7 @@ __all__ = [
     "nis_expected_value",
     "nis_gate_threshold",
     "nis_gate_test",
+    "smooth_track_rts",
     "mad_spread",
     "ewma_update",
     "ewma_update_power_of_two",
