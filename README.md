@@ -136,6 +136,17 @@ The Python package mirrors the full breadth of the engine.
 - **Terrain:** DTED elevation lookup with batch probes, a memory-mappable
   terrain store, and geoid height conversion from EGM96 and EGM2008 grids.
 - **RF:** link budget (FSPL, EIRP, C/N0, antenna gain).
+- **GNSS/INS fusion:** strapdown mechanization with an error-state EKF (UKF
+  option), loose and tight coupling, robust loose updates with an outlier
+  guard, an RTS fixed-interval smoother, checkpointed time synchronization,
+  and a serializable filter state.
+- **Scenario simulation:** deterministic synthetic GNSS observables from a
+  versioned scenario with a per-term error budget, plus a ground-truth ledger
+  attributing solver error to each term; same scenario and seed give identical
+  bytes.
+- **Signal analysis:** closed-form BPSK/BOC spectra, spectral separation
+  coefficients, DLL thermal-noise jitter, and multipath error envelopes,
+  validated against published constants.
 - **Formats:** parse and serialize TLE/OMM, CCSDS OEM/OPM/CDM/TDM, RINEX,
   CRINEX, SP3, IONEX, ANTEX, Bias-SINEX, SBAS logs, RTCM, and NMEA.
 - **Data acquisition:** the `sidereon.data` module downloads and caches GNSS
