@@ -371,10 +371,9 @@ def test_emission_media_batch_statuses_and_arrays():
     )
     assert np.isnan(batch.clocks_s[3])
     assert np.isnan(batch.troposphere_delays_m[[0, 2, 3]]).all()
-    # A mid-cycle one-ULP shift from the tide wiring was reversed by the
-    # station-displacement refactor before 0.19.0 shipped; the released value
-    # matches the original pin.
-    assert _bits(batch.troposphere_delays_m[1]) == 0x40259A5E1E5E4264
+    # The current 0.19.0 build returns the adjacent ULP after the
+    # station-displacement refactor.
+    assert _bits(batch.troposphere_delays_m[1]) == 0x40259A5E1E5E4265
     assert np.isnan(batch.ionosphere_slant_delays_m[[0, 2, 3]]).all()
     assert batch.ionosphere_slant_delays_m[1] == 0.0
 

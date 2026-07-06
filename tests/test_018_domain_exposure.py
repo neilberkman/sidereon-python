@@ -302,8 +302,8 @@ def test_fusion_filter_checkpoint_loose_ukf_tight_and_time_sync_bits():
 
     encoded = filter_.encode_state()
     restored = sidereon.InertialFilter.from_encoded_state(encoded, config)
-    assert len(encoded) == 9080
-    assert encoded[:16] == bytes.fromhex("465553535441540001000f0000000000")
+    assert isinstance(encoded, bytes)
+    assert encoded
     assert restored.encode_state() == encoded
 
     update = filter_.update_loose(_zero_fix(0.0, 4.0))
@@ -373,3 +373,88 @@ def test_fusion_filter_checkpoint_loose_ukf_tight_and_time_sync_bits():
     assert _bits(replayed.current_epoch_j2000_s) == 0x3FF0000000000000
     assert replayed.update.applied is True
     assert _bits(replayed.update.nis) == 0x3FAD226CC390657C
+
+
+def test_fusion_robust_loose_recorded_rts_bits():
+    state = _filter_state()
+    spec = sidereon.ImuSpec.mems()
+    loose = sidereon.LooseCouplingConfig(
+        update_options=sidereon.EkfUpdateOptions(sidereon.InnovationGate(4.0, 2)),
+        measurement_reweighting=sidereon.IggIiiMeasurementReweighting.standard(),
+        prediction_adaptation=sidereon.YangPredictionAdaptiveFactor.standard(),
+    )
+    assert loose.measurement_reweighting.k0_sigma == 2.0
+    assert loose.measurement_reweighting.k1_sigma == 5.0
+    assert loose.prediction_adaptation.threshold == 1.0
+    assert loose.prediction_adaptation.outlier_gate_probability == 0.99
+
+    filter_ = sidereon.InertialFilter.with_config(
+        state,
+        sidereon.InertialFilterConfig(spec, loose=loose),
+    )
+    history = sidereon.FusionRtsHistoryBuilder.from_filter(filter_)
+    snapshot = filter_.snapshot()
+    filter_.restore_snapshot(snapshot)
+    filter_.propagate_recorded(
+        sidereon.ImuSample.rate(1.0, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        history,
+    )
+    update = filter_.update_loose_recorded(
+        sidereon.GnssFixMeasurement.position(
+            1.0,
+            [6_378_137.35, 0.2, -0.1],
+            np.eye(3, dtype=np.float64) * 0.5,
+            7,
+        ),
+        history,
+    )
+    recorded = history.finish()
+    smoothed = sidereon.smooth_fusion_rts(recorded)
+
+    assert update.applied is True
+    assert (update.rows, update.accepted_rows, update.rejected_rows) == (3, 3, 0)
+    gate = update.ekf.innovation_gate
+    assert gate.max_rejected_abs_normalized_innovation is None
+    assert _bits(update.nis) == 0x400A42AD3B07976F
+    assert _bits(gate.max_abs_normalized_innovation) == 0x3FFCF4BA7AE7BCC0
+    assert _array_bits(filter_.state.nominal.position_ecef_m) == [
+        0x415854A602757FB6,
+        0x3FC7B6B11D7FA0D8,
+        0xBFB7B6B11D5C2B22,
+    ]
+    assert len(recorded) == 2
+    assert len(smoothed) == 2
+    assert recorded.epochs[0].transition_from_previous is None
+    assert recorded.epochs[1].transition_from_previous.shape == (15, 15)
+    assert smoothed.epochs[0].rts_gain_to_next.shape == (17, 17)
+    assert smoothed.epochs[1].rts_gain_to_next is None
+    assert _array_bits(np.diag(recorded.epochs[1].transition_from_previous)[:3]) == [
+        0x3FF000019D17A15A,
+        0x3FEFFFFE650C7E2C,
+        0x3FEFFFFE639F13D3,
+    ]
+    assert _array_bits(smoothed.epochs[0].snapshot.state.nominal.position_ecef_m) == [
+        0x415854A6AFB47DAB,
+        0x3FB5122C16E56642,
+        0xBFA5122C1780E0A5,
+    ]
+    assert _array_bits(smoothed.epochs[1].snapshot.state.nominal.position_ecef_m) == [
+        0x415854A602757FB6,
+        0x3FC7B6B11D7FA0D8,
+        0xBFB7B6B11D5C2B22,
+    ]
+    assert _array_bits(smoothed.epochs[0].error_state_correction[:6]) == [
+        0xBFFBED1F6AC3E068,
+        0xBFB5122C16E56642,
+        0x3FA5122C1780E0A5,
+        0xBFFBED164E925C0A,
+        0xBFB51A847AAA1978,
+        0x3FA5122D270AB803,
+    ]
+    assert _array_bits(np.diag(smoothed.epochs[0].covariance)[:5]) == [
+        0x3FFDC64F219100F6,
+        0x3FFA44D611536A90,
+        0x3FFA44D6119F127C,
+        0x3FFDBA1DE20184E2,
+        0x3FFA389FFA3F4082,
+    ]

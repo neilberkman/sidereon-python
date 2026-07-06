@@ -14,12 +14,15 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyByteArray, PyBytes, PyModule};
 
 use sidereon_core::fusion::{
-    EkfCorrectionReport, EkfUpdateOptions, ErrorStateLayout, FusionFilterKind, FusionUpdate,
-    GnssFixMeasurement, InertialFilter, InertialFilterConfig, InnovationGate, InnovationGateReport,
-    InsFilterState, LooseCouplingConfig, SerializableFusionState, TightCarrierPhaseObservation,
-    TightClockState, TightCouplingConfig, TightGnssEpoch, TightGnssObservation,
-    TightRangeRateObservation, TimeSyncHistoryConfig, TimeSyncHistoryStatus, TimeSyncUpdate,
-    UkfUpdateOptions, UnscentedTransformOptions,
+    smooth_fusion_rts as core_smooth_fusion_rts, EkfCorrectionReport, EkfUpdateOptions,
+    ErrorStateLayout, FusionFilterKind, FusionRtsEpoch, FusionRtsHistory, FusionRtsHistoryBuilder,
+    FusionUpdate, GnssFixMeasurement, IggIiiMeasurementReweighting, InertialFilter,
+    InertialFilterConfig, InertialFilterSnapshot, InnovationGate, InnovationGateReport,
+    InsFilterState, LooseCouplingConfig, SerializableFusionState, SmoothedFusionEpoch,
+    SmoothedFusionTrajectory, TightCarrierPhaseObservation, TightClockState, TightCouplingConfig,
+    TightFilterSnapshot, TightGnssEpoch, TightGnssObservation, TightRangeRateObservation,
+    TimeSyncHistoryConfig, TimeSyncHistoryStatus, TimeSyncUpdate, UkfUpdateOptions,
+    UnscentedTransformOptions, YangPredictionAdaptiveFactor,
 };
 use sidereon_core::inertial::{
     ImuGrade, ImuSample, ImuSampleKind, ImuSpec, MechanizationConfig, NavState,
@@ -827,6 +830,99 @@ impl PyUkfUpdateOptions {
     }
 }
 
+/// IGG-III measurement variance inflation for loose GNSS updates.
+#[pyclass(module = "sidereon._sidereon", name = "IggIiiMeasurementReweighting")]
+#[derive(Clone, Copy)]
+pub struct PyIggIiiMeasurementReweighting {
+    inner: IggIiiMeasurementReweighting,
+}
+
+impl PyIggIiiMeasurementReweighting {
+    fn inner(&self) -> IggIiiMeasurementReweighting {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyIggIiiMeasurementReweighting {
+    /// Build IGG-III break points for robust loose updates.
+    #[new]
+    #[pyo3(signature = (k0_sigma=2.0, k1_sigma=5.0))]
+    fn new(k0_sigma: f64, k1_sigma: f64) -> PyResult<Self> {
+        let inner = IggIiiMeasurementReweighting { k0_sigma, k1_sigma };
+        inner.validate().map_err(fusion_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Common loose-GNSS break points from the core defaults.
+    #[staticmethod]
+    fn standard() -> Self {
+        Self {
+            inner: IggIiiMeasurementReweighting::standard(),
+        }
+    }
+
+    /// Lower standardized-innovation break point in sigma.
+    #[getter]
+    fn k0_sigma(&self) -> f64 {
+        self.inner.k0_sigma
+    }
+
+    /// Upper standardized-innovation break point in sigma.
+    #[getter]
+    fn k1_sigma(&self) -> f64 {
+        self.inner.k1_sigma
+    }
+}
+
+/// Yang prediction adaptive factor for loose GNSS updates.
+#[pyclass(module = "sidereon._sidereon", name = "YangPredictionAdaptiveFactor")]
+#[derive(Clone, Copy)]
+pub struct PyYangPredictionAdaptiveFactor {
+    inner: YangPredictionAdaptiveFactor,
+}
+
+impl PyYangPredictionAdaptiveFactor {
+    fn inner(&self) -> YangPredictionAdaptiveFactor {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyYangPredictionAdaptiveFactor {
+    /// Build the two-segment prediction inflation settings.
+    #[new]
+    #[pyo3(signature = (threshold=1.0, outlier_gate_probability=0.99))]
+    fn new(threshold: f64, outlier_gate_probability: f64) -> PyResult<Self> {
+        let inner = YangPredictionAdaptiveFactor {
+            threshold,
+            outlier_gate_probability,
+        };
+        inner.validate().map_err(fusion_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Conservative core default for prediction inflation and outlier gating.
+    #[staticmethod]
+    fn standard() -> Self {
+        Self {
+            inner: YangPredictionAdaptiveFactor::standard(),
+        }
+    }
+
+    /// Two-segment threshold for the predicted-residual statistic.
+    #[getter]
+    fn threshold(&self) -> f64 {
+        self.inner.threshold
+    }
+
+    /// Chi-square probability used for the Mahalanobis outlier gate.
+    #[getter]
+    fn outlier_gate_probability(&self) -> f64 {
+        self.inner.outlier_gate_probability
+    }
+}
+
 /// Loose-coupled GNSS update options.
 #[pyclass(module = "sidereon._sidereon", name = "LooseCouplingConfig")]
 #[derive(Clone, Copy)]
@@ -844,17 +940,26 @@ impl PyLooseCouplingConfig {
 impl PyLooseCouplingConfig {
     /// Build loose-coupling options.
     #[new]
-    #[pyo3(signature = (lever_arm_body_m=[0.0; 3], update_options=None))]
+    #[pyo3(signature = (
+        lever_arm_body_m=[0.0; 3],
+        update_options=None,
+        measurement_reweighting=None,
+        prediction_adaptation=None,
+    ))]
     fn new(
         lever_arm_body_m: [f64; 3],
         update_options: Option<&PyEkfUpdateOptions>,
+        measurement_reweighting: Option<&PyIggIiiMeasurementReweighting>,
+        prediction_adaptation: Option<&PyYangPredictionAdaptiveFactor>,
     ) -> PyResult<Self> {
         let inner = LooseCouplingConfig {
             lever_arm_body_m,
             update_options: update_options
                 .map(PyEkfUpdateOptions::inner)
                 .unwrap_or_default(),
-            ..LooseCouplingConfig::default()
+            measurement_reweighting: measurement_reweighting
+                .map(PyIggIiiMeasurementReweighting::inner),
+            prediction_adaptation: prediction_adaptation.map(PyYangPredictionAdaptiveFactor::inner),
         };
         inner.validate().map_err(fusion_err)?;
         Ok(Self { inner })
@@ -872,6 +977,22 @@ impl PyLooseCouplingConfig {
         PyEkfUpdateOptions {
             inner: self.inner.update_options,
         }
+    }
+
+    /// Optional IGG-III measurement variance inflation settings.
+    #[getter]
+    fn measurement_reweighting(&self) -> Option<PyIggIiiMeasurementReweighting> {
+        self.inner
+            .measurement_reweighting
+            .map(|inner| PyIggIiiMeasurementReweighting { inner })
+    }
+
+    /// Optional Yang predicted-covariance adaptation settings.
+    #[getter]
+    fn prediction_adaptation(&self) -> Option<PyYangPredictionAdaptiveFactor> {
+        self.inner
+            .prediction_adaptation
+            .map(|inner| PyYangPredictionAdaptiveFactor { inner })
     }
 }
 
@@ -1444,6 +1565,18 @@ impl PyInnovationGateReport {
         self.inner.rejected_rows
     }
 
+    /// Largest accepted absolute normalized innovation, if any row was accepted.
+    #[getter]
+    fn max_abs_normalized_innovation(&self) -> Option<f64> {
+        self.inner.max_abs_normalized_innovation
+    }
+
+    /// Largest rejected absolute normalized innovation, if any row was rejected.
+    #[getter]
+    fn max_rejected_abs_normalized_innovation(&self) -> Option<f64> {
+        self.inner.max_rejected_abs_normalized_innovation
+    }
+
     /// Whether too few rows remained to apply the update.
     #[getter]
     fn coasted(&self) -> bool {
@@ -1758,6 +1891,294 @@ impl PyTimeSyncUpdate {
     }
 }
 
+/// Snapshot of tight receiver-clock augmentation and augmented covariance.
+#[pyclass(module = "sidereon._sidereon", name = "TightFilterSnapshot")]
+#[derive(Clone)]
+pub struct PyTightFilterSnapshot {
+    inner: TightFilterSnapshot,
+}
+
+impl From<TightFilterSnapshot> for PyTightFilterSnapshot {
+    fn from(inner: TightFilterSnapshot) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyTightFilterSnapshot {
+    /// Receiver-clock range bias in metres.
+    #[getter]
+    fn clock_bias_m(&self) -> f64 {
+        self.inner.clock_bias_m
+    }
+
+    /// Receiver-clock drift in metres per second.
+    #[getter]
+    fn clock_drift_m_s(&self) -> f64 {
+        self.inner.clock_drift_m_s
+    }
+
+    /// Full covariance over INS error-state and tight clock states.
+    #[getter]
+    fn augmented_covariance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        matrix_to_array(py, &self.inner.augmented_covariance)
+    }
+}
+
+/// Closed-loop inertial filter checkpoint used by replay and RTS smoothing.
+#[pyclass(module = "sidereon._sidereon", name = "InertialFilterSnapshot")]
+#[derive(Clone)]
+pub struct PyInertialFilterSnapshot {
+    inner: InertialFilterSnapshot,
+}
+
+impl From<InertialFilterSnapshot> for PyInertialFilterSnapshot {
+    fn from(inner: InertialFilterSnapshot) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyInertialFilterSnapshot {
+    /// Closed-loop INS state and covariance.
+    #[getter]
+    fn state(&self) -> PyInsFilterState {
+        self.inner.state.clone().into()
+    }
+
+    /// Most recent body angular rate relative to ECEF in body axes.
+    #[getter]
+    fn last_body_rate_wrt_ecef_rps(&self) -> [f64; 3] {
+        self.inner.last_body_rate_wrt_ecef_rps
+    }
+
+    /// Tight receiver-clock checkpoint.
+    #[getter]
+    fn tight(&self) -> PyTightFilterSnapshot {
+        self.inner.tight.clone().into()
+    }
+}
+
+/// One epoch in a recorded fusion RTS history.
+#[pyclass(module = "sidereon._sidereon", name = "FusionRtsEpoch")]
+#[derive(Clone)]
+pub struct PyFusionRtsEpoch {
+    inner: FusionRtsEpoch,
+}
+
+impl From<FusionRtsEpoch> for PyFusionRtsEpoch {
+    fn from(inner: FusionRtsEpoch) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyFusionRtsEpoch {
+    /// Epoch in seconds since J2000.
+    #[getter]
+    fn t_j2000_s(&self) -> f64 {
+        self.inner.t_j2000_s
+    }
+
+    /// Pre-update checkpoint at this epoch.
+    #[getter]
+    fn predicted(&self) -> PyInertialFilterSnapshot {
+        self.inner.predicted.clone().into()
+    }
+
+    /// Post-update checkpoint at this epoch.
+    #[getter]
+    fn updated(&self) -> PyInertialFilterSnapshot {
+        self.inner.updated.clone().into()
+    }
+
+    /// Error-state transition from the previous updated epoch, if present.
+    #[getter]
+    fn transition_from_previous<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.inner
+            .transition_from_previous
+            .as_ref()
+            .map(|transition| matrix_to_array(py, transition))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("FusionRtsEpoch(t_j2000_s={})", self.inner.t_j2000_s)
+    }
+}
+
+/// Recorded forward-pass history accepted by `smooth_fusion_rts`.
+#[pyclass(module = "sidereon._sidereon", name = "FusionRtsHistory")]
+#[derive(Clone)]
+pub struct PyFusionRtsHistory {
+    inner: FusionRtsHistory,
+}
+
+impl From<FusionRtsHistory> for PyFusionRtsHistory {
+    fn from(inner: FusionRtsHistory) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyFusionRtsHistory {
+    /// Recorded epochs in forward time order.
+    #[getter]
+    fn epochs(&self) -> Vec<PyFusionRtsEpoch> {
+        self.inner
+            .epochs
+            .clone()
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.epochs.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("FusionRtsHistory(epochs={})", self.inner.epochs.len())
+    }
+}
+
+/// Builder for recording a forward fusion pass before RTS smoothing.
+#[pyclass(module = "sidereon._sidereon", name = "FusionRtsHistoryBuilder")]
+#[derive(Clone)]
+pub struct PyFusionRtsHistoryBuilder {
+    inner: FusionRtsHistoryBuilder,
+}
+
+#[pymethods]
+impl PyFusionRtsHistoryBuilder {
+    /// Start an empty history for manual recording.
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: FusionRtsHistoryBuilder::empty(),
+        }
+    }
+
+    /// Start a history from the filter's current checkpoint.
+    #[staticmethod]
+    fn from_filter(filter: &PyInertialFilter) -> PyResult<Self> {
+        FusionRtsHistoryBuilder::from_filter(&filter.inner)
+            .map(|inner| Self { inner })
+            .map_err(fusion_err)
+    }
+
+    /// Return a validated history.
+    fn finish(&self) -> PyResult<PyFusionRtsHistory> {
+        self.inner
+            .clone()
+            .finish()
+            .map(Into::into)
+            .map_err(fusion_err)
+    }
+
+    fn __repr__(&self) -> &'static str {
+        "FusionRtsHistoryBuilder()"
+    }
+}
+
+/// One epoch in a smoothed fusion trajectory.
+#[pyclass(module = "sidereon._sidereon", name = "SmoothedFusionEpoch")]
+#[derive(Clone)]
+pub struct PySmoothedFusionEpoch {
+    inner: SmoothedFusionEpoch,
+}
+
+impl From<SmoothedFusionEpoch> for PySmoothedFusionEpoch {
+    fn from(inner: SmoothedFusionEpoch) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySmoothedFusionEpoch {
+    /// Epoch in seconds since J2000.
+    #[getter]
+    fn t_j2000_s(&self) -> f64 {
+        self.inner.t_j2000_s
+    }
+
+    /// Smoothed closed-loop checkpoint.
+    #[getter]
+    fn snapshot(&self) -> PyInertialFilterSnapshot {
+        self.inner.snapshot.clone().into()
+    }
+
+    /// Error-state and tight-clock correction applied by the smoother.
+    #[getter]
+    fn error_state_correction<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.error_state_correction)
+    }
+
+    /// Smoothed covariance over the INS error-state and tight clock states.
+    #[getter]
+    fn covariance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        matrix_to_array(py, &self.inner.covariance)
+    }
+
+    /// RTS gain from this epoch to the next, absent at the final epoch.
+    #[getter]
+    fn rts_gain_to_next<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.inner
+            .rts_gain_to_next
+            .as_ref()
+            .map(|gain| matrix_to_array(py, gain))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("SmoothedFusionEpoch(t_j2000_s={})", self.inner.t_j2000_s)
+    }
+}
+
+/// Smoothed fusion trajectory returned by fixed-interval RTS smoothing.
+#[pyclass(module = "sidereon._sidereon", name = "SmoothedFusionTrajectory")]
+#[derive(Clone)]
+pub struct PySmoothedFusionTrajectory {
+    inner: SmoothedFusionTrajectory,
+}
+
+impl From<SmoothedFusionTrajectory> for PySmoothedFusionTrajectory {
+    fn from(inner: SmoothedFusionTrajectory) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySmoothedFusionTrajectory {
+    /// Smoothed epochs in the same order as the recorded history.
+    #[getter]
+    fn epochs(&self) -> Vec<PySmoothedFusionEpoch> {
+        self.inner
+            .epochs
+            .clone()
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.epochs.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SmoothedFusionTrajectory(epochs={})",
+            self.inner.epochs.len()
+        )
+    }
+}
+
+/// Apply fixed-interval RTS smoothing to recorded fusion history.
+#[pyfunction]
+fn smooth_fusion_rts(history: &PyFusionRtsHistory) -> PyResult<PySmoothedFusionTrajectory> {
+    core_smooth_fusion_rts(&history.inner)
+        .map(Into::into)
+        .map_err(fusion_err)
+}
+
 /// Stateful closed-loop INS filter with loose and tight GNSS update methods.
 #[pyclass(module = "sidereon._sidereon", name = "InertialFilter")]
 #[derive(Clone)]
@@ -1820,9 +2241,33 @@ impl PyInertialFilter {
         self.inner.last_body_rate_wrt_ecef_rps()
     }
 
+    /// Capture a closed-loop checkpoint for inspection or later restore.
+    fn snapshot(&self) -> PyInertialFilterSnapshot {
+        self.inner.snapshot().into()
+    }
+
+    /// Restore the filter from a closed-loop checkpoint.
+    fn restore_snapshot(&mut self, snapshot: &PyInertialFilterSnapshot) -> PyResult<()> {
+        self.inner
+            .restore_snapshot(&snapshot.inner)
+            .map_err(fusion_err)
+    }
+
     /// Propagate the nominal INS state and covariance with one IMU sample.
     fn propagate(&mut self, sample: &PyImuSample) -> PyResult<PyInsFilterState> {
         self.inner.propagate(sample.inner()).map_err(fusion_err)?;
+        Ok(self.inner.state().clone().into())
+    }
+
+    /// Propagate and record the transition for later RTS smoothing.
+    fn propagate_recorded(
+        &mut self,
+        sample: &PyImuSample,
+        history: &mut PyFusionRtsHistoryBuilder,
+    ) -> PyResult<PyInsFilterState> {
+        self.inner
+            .propagate_recorded(sample.inner(), &mut history.inner)
+            .map_err(fusion_err)?;
         Ok(self.inner.state().clone().into())
     }
 
@@ -1830,6 +2275,18 @@ impl PyInertialFilter {
     fn update_loose(&mut self, measurement: &PyGnssFixMeasurement) -> PyResult<PyFusionUpdate> {
         self.inner
             .update_loose(&measurement.inner())
+            .map(Into::into)
+            .map_err(fusion_err)
+    }
+
+    /// Apply a loose GNSS update and record checkpoints for RTS smoothing.
+    fn update_loose_recorded(
+        &mut self,
+        measurement: &PyGnssFixMeasurement,
+        history: &mut PyFusionRtsHistoryBuilder,
+    ) -> PyResult<PyFusionUpdate> {
+        self.inner
+            .update_loose_recorded(&measurement.inner(), &mut history.inner)
             .map(Into::into)
             .map_err(fusion_err)
     }
@@ -1854,6 +2311,21 @@ impl PyInertialFilter {
         with_observable_source(source, |source| {
             self.inner
                 .update_tight(source, &epoch.inner())
+                .map(Into::into)
+                .map_err(fusion_err)
+        })
+    }
+
+    /// Apply a tight raw GNSS update and record checkpoints for RTS smoothing.
+    fn update_tight_recorded(
+        &mut self,
+        source: &Bound<'_, PyAny>,
+        epoch: &PyTightGnssEpoch,
+        history: &mut PyFusionRtsHistoryBuilder,
+    ) -> PyResult<PyFusionUpdate> {
+        with_observable_source(source, |source| {
+            self.inner
+                .update_tight_recorded(source, &epoch.inner(), &mut history.inner)
                 .map(Into::into)
                 .map_err(fusion_err)
         })
@@ -1926,6 +2398,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEkfUpdateOptions>()?;
     m.add_class::<PyUnscentedTransformOptions>()?;
     m.add_class::<PyUkfUpdateOptions>()?;
+    m.add_class::<PyIggIiiMeasurementReweighting>()?;
+    m.add_class::<PyYangPredictionAdaptiveFactor>()?;
     m.add_class::<PyLooseCouplingConfig>()?;
     m.add_class::<PyTightCouplingConfig>()?;
     m.add_class::<PyInertialFilterConfig>()?;
@@ -1941,6 +2415,14 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTimeSyncHistoryConfig>()?;
     m.add_class::<PyTimeSyncHistoryStatus>()?;
     m.add_class::<PyTimeSyncUpdate>()?;
+    m.add_class::<PyTightFilterSnapshot>()?;
+    m.add_class::<PyInertialFilterSnapshot>()?;
+    m.add_class::<PyFusionRtsEpoch>()?;
+    m.add_class::<PyFusionRtsHistory>()?;
+    m.add_class::<PyFusionRtsHistoryBuilder>()?;
+    m.add_class::<PySmoothedFusionEpoch>()?;
+    m.add_class::<PySmoothedFusionTrajectory>()?;
     m.add_class::<PyInertialFilter>()?;
+    m.add_function(wrap_pyfunction!(smooth_fusion_rts, m)?)?;
     Ok(())
 }
