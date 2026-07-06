@@ -1,8 +1,8 @@
 """0.18 domain exposure parity tests against patched core outputs."""
 
-import re
 import math
 import pathlib
+import re
 import struct
 
 import numpy as np
