@@ -1,6 +1,6 @@
 [package]
 name = "sidereon-py"
-version = "0.19.0"
+version = "0.19.1"
 authors = []
 edition = "2021"
 description = "Python (PyO3) bindings over the sidereon ergonomic API: SP3 loading and SPP/RTK/PPP positioning solves"
