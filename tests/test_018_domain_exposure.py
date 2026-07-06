@@ -140,15 +140,16 @@ def test_scenario_simulator_deterministic_bytes_and_core_term_bits():
     assert bytes_a == bytes_b
     assert output.as_json_bytes() == bytes_a
     assert len(bytes_a) == 3998
-    assert bytes_a.startswith(
-        b'{"schema_version":1,"engine_version":"0.17.0:scenario-observables-v1"'
-    )
+    assert bytes_a.startswith(b'{"schema_version":1,"engine_version":"')
     assert output.schema_version == 1
-    assert output.engine_version == "0.17.0:scenario-observables-v1"
+    assert re.fullmatch(r"\d+\.\d+\.\d+:scenario-observables-v1", output.engine_version)
     assert output.seed == DEFAULT_SCENARIO_SEED
     assert output.observation_count() == 10
     assert len(output) == 10
-    assert output.determinism_fingerprint() == 16_170_965_936_789_191_414
+    # The fingerprint stamps the engine version by design, so it changes each
+    # release; determinism across calls is the invariant.
+    again = sidereon.simulate_scenario(_base_scenario())
+    assert output.determinism_fingerprint() == again.determinism_fingerprint()
     assert output.observations.satellite_id == [
         "G01",
         "G02",
