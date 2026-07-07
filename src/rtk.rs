@@ -15,6 +15,13 @@ use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyModule};
 
+use sidereon_core::positioning::{
+    solve_static_reference_station_rinex as core_solve_static_reference_station_rinex,
+    RinexSppOptions, StaticReferenceCarrierRinexOptions, StaticReferenceCarrierSolution,
+    StaticReferenceCodeSolution, StaticReferenceEpochDiagnostic, StaticReferenceFixStatus,
+    StaticReferenceModeReport, StaticReferenceModeStatus, StaticReferenceStationCovariance,
+    StaticReferenceStationMode, StaticReferenceStationRinexOptions, StaticReferenceStationSolution,
+};
 use sidereon_core::rtk::{BaselineReferenceSelection, CycleSlipReceiver};
 use sidereon_core::rtk_filter::defaults::{
     AMBIGUITY_TOL_M, MAX_ITERATIONS, PARTIAL_MIN_AMBIGUITIES, POSITION_TOL_M, RATIO_THRESHOLD,
@@ -46,9 +53,9 @@ use sidereon_core::rtk_filter::{
 
 use crate::ephemeris::with_observable_source;
 use crate::geometry_quality::PyGeometryQuality;
-use crate::marshal::{option_py_or_default, PyGnssSystem};
+use crate::marshal::{mat3_to_array, option_py_or_default, PyGnssSystem};
 use crate::rinex::PyRinexObs;
-use crate::{np_array, to_solve_err};
+use crate::{np_array, to_solve_err, PySp3};
 
 // --- input value/config objects -------------------------------------------
 
@@ -858,6 +865,12 @@ impl PyRtkFloatSolution {
         self.inner.baseline_m
     }
 
+    /// Baseline covariance matrix, metres squared.
+    #[getter]
+    fn baseline_covariance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.baseline_covariance_m2)
+    }
+
     /// Float single-difference ambiguities in metres, keyed by ambiguity id.
     #[getter]
     fn ambiguities_m(&self) -> BTreeMap<String, f64> {
@@ -938,6 +951,12 @@ impl PyRtkFixedSolution {
     #[getter]
     fn fixed_baseline_m(&self) -> [f64; 3] {
         self.inner.fixed_solution.baseline_m
+    }
+
+    /// Fixed baseline covariance matrix, metres squared.
+    #[getter]
+    fn fixed_baseline_covariance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.fixed_solution.baseline_covariance_m2)
     }
 
     /// The underlying float baseline as a numpy array `[dx, dy, dz]` metres.
@@ -2986,6 +3005,494 @@ fn solve_static_rinex_rtk_baseline(
     })
 }
 
+fn reference_station_mode_label(mode: StaticReferenceStationMode) -> &'static str {
+    match mode {
+        StaticReferenceStationMode::CodeDgnss => "code_dgnss",
+        StaticReferenceStationMode::CarrierFloat => "carrier_float",
+        StaticReferenceStationMode::CarrierFixed => "carrier_fixed",
+    }
+}
+
+fn reference_station_fix_status_label(status: StaticReferenceFixStatus) -> &'static str {
+    match status {
+        StaticReferenceFixStatus::CodeDgnss => "code_dgnss",
+        StaticReferenceFixStatus::CarrierFloat => "carrier_float",
+        StaticReferenceFixStatus::CarrierFixed => "carrier_fixed",
+    }
+}
+
+fn reference_mode_status_label(status: StaticReferenceModeStatus) -> &'static str {
+    match status {
+        StaticReferenceModeStatus::Solved => "solved",
+        StaticReferenceModeStatus::Failed => "failed",
+    }
+}
+
+/// Position covariance for a static reference-station coordinate.
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "StaticReferenceStationCovariance"
+)]
+#[derive(Clone)]
+pub struct PyStaticReferenceStationCovariance {
+    inner: StaticReferenceStationCovariance,
+}
+
+#[pymethods]
+impl PyStaticReferenceStationCovariance {
+    /// ECEF covariance matrix, metres squared.
+    #[getter]
+    fn position_ecef<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.position_ecef_m2)
+    }
+
+    /// Local ENU covariance matrix, metres squared.
+    #[getter]
+    fn position_enu<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.position_enu_m2)
+    }
+
+    fn __repr__(&self) -> String {
+        "StaticReferenceStationCovariance()".to_string()
+    }
+}
+
+/// Per-epoch diagnostic row from the selected static station mode.
+#[pyclass(module = "sidereon._sidereon", name = "StaticReferenceEpochDiagnostic")]
+#[derive(Clone)]
+pub struct PyStaticReferenceEpochDiagnostic {
+    inner: StaticReferenceEpochDiagnostic,
+}
+
+#[pymethods]
+impl PyStaticReferenceEpochDiagnostic {
+    #[getter]
+    fn mode(&self) -> &'static str {
+        reference_station_mode_label(self.inner.mode)
+    }
+
+    #[getter]
+    fn epoch_index(&self) -> usize {
+        self.inner.epoch_index
+    }
+
+    #[getter]
+    fn used_satellites(&self) -> Vec<String> {
+        self.inner.used_satellites.clone()
+    }
+
+    #[getter]
+    fn rejected_satellite_count(&self) -> usize {
+        self.inner.rejected_satellite_count
+    }
+
+    #[getter]
+    fn code_residual_rms_m(&self) -> Option<f64> {
+        self.inner.code_residual_rms_m
+    }
+
+    #[getter]
+    fn phase_residual_rms_m(&self) -> Option<f64> {
+        self.inner.phase_residual_rms_m
+    }
+
+    #[getter]
+    fn residual_rms_m(&self) -> Option<f64> {
+        self.inner.residual_rms_m
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "StaticReferenceEpochDiagnostic(mode={}, epoch_index={}, used={})",
+            reference_station_mode_label(self.inner.mode),
+            self.inner.epoch_index,
+            self.inner.used_satellites.len()
+        )
+    }
+}
+
+/// Per-mode attempt report for the static reference-station wrapper.
+#[pyclass(module = "sidereon._sidereon", name = "StaticReferenceModeReport")]
+#[derive(Clone)]
+pub struct PyStaticReferenceModeReport {
+    inner: StaticReferenceModeReport,
+}
+
+#[pymethods]
+impl PyStaticReferenceModeReport {
+    #[getter]
+    fn mode(&self) -> &'static str {
+        reference_station_mode_label(self.inner.mode)
+    }
+
+    #[getter]
+    fn status(&self) -> &'static str {
+        reference_mode_status_label(self.inner.status)
+    }
+
+    #[getter]
+    fn used_epochs(&self) -> usize {
+        self.inner.used_epochs
+    }
+
+    #[getter]
+    fn skipped_epochs(&self) -> usize {
+        self.inner.skipped_epochs
+    }
+
+    #[getter]
+    fn used_measurements(&self) -> usize {
+        self.inner.used_measurements
+    }
+
+    #[getter]
+    fn error(&self) -> Option<String> {
+        self.inner.error.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "StaticReferenceModeReport(mode={}, status={})",
+            reference_station_mode_label(self.inner.mode),
+            reference_mode_status_label(self.inner.status)
+        )
+    }
+}
+
+/// Code-DGNSS detail from a static reference-station solve.
+#[pyclass(module = "sidereon._sidereon", name = "StaticReferenceCodeSolution")]
+#[derive(Clone)]
+pub struct PyStaticReferenceCodeSolution {
+    inner: StaticReferenceCodeSolution,
+}
+
+#[pymethods]
+impl PyStaticReferenceCodeSolution {
+    /// ECEF coordinate as a numpy array `[x, y, z]` metres.
+    #[getter]
+    fn position<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        let p = self.inner.position;
+        np_array(py, &[p.x_m, p.y_m, p.z_m])
+    }
+
+    #[getter]
+    fn position_m(&self) -> [f64; 3] {
+        self.inner.position.as_array()
+    }
+
+    #[getter]
+    fn covariance(&self) -> PyStaticReferenceStationCovariance {
+        PyStaticReferenceStationCovariance {
+            inner: self.inner.covariance,
+        }
+    }
+
+    /// Rover-minus-reference baseline vector as a numpy array, metres.
+    #[getter]
+    fn baseline_vector<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.baseline_vector_m)
+    }
+
+    #[getter]
+    fn baseline_vector_m(&self) -> [f64; 3] {
+        self.inner.baseline_vector_m
+    }
+
+    #[getter]
+    fn baseline_m(&self) -> f64 {
+        self.inner.baseline_m
+    }
+
+    #[getter]
+    fn diagnostics(&self) -> Vec<PyStaticReferenceEpochDiagnostic> {
+        self.inner
+            .diagnostics
+            .iter()
+            .cloned()
+            .map(|inner| PyStaticReferenceEpochDiagnostic { inner })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "StaticReferenceCodeSolution(baseline_m={:.3}, epochs={})",
+            self.inner.baseline_m,
+            self.inner.diagnostics.len()
+        )
+    }
+}
+
+/// Carrier RTK detail from a static reference-station solve.
+#[pyclass(module = "sidereon._sidereon", name = "StaticReferenceCarrierSolution")]
+#[derive(Clone)]
+pub struct PyStaticReferenceCarrierSolution {
+    inner: StaticReferenceCarrierSolution,
+}
+
+#[pymethods]
+impl PyStaticReferenceCarrierSolution {
+    /// ECEF coordinate as a numpy array `[x, y, z]` metres.
+    #[getter]
+    fn position<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        let p = self.inner.position;
+        np_array(py, &[p.x_m, p.y_m, p.z_m])
+    }
+
+    #[getter]
+    fn position_m(&self) -> [f64; 3] {
+        self.inner.position.as_array()
+    }
+
+    #[getter]
+    fn covariance(&self) -> PyStaticReferenceStationCovariance {
+        PyStaticReferenceStationCovariance {
+            inner: self.inner.covariance,
+        }
+    }
+
+    /// Selected rover-minus-reference baseline vector as a numpy array, metres.
+    #[getter]
+    fn baseline_vector<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.baseline_vector_m)
+    }
+
+    #[getter]
+    fn baseline_vector_m(&self) -> [f64; 3] {
+        self.inner.baseline_vector_m
+    }
+
+    #[getter]
+    fn baseline_m(&self) -> f64 {
+        self.inner.baseline_m
+    }
+
+    #[getter]
+    fn integer_status(&self) -> PyIntegerStatus {
+        self.inner.integer_status.into()
+    }
+
+    #[getter]
+    fn integer_ratio(&self) -> Option<f64> {
+        self.inner.integer_ratio
+    }
+
+    #[getter]
+    fn rtk_solution(&self) -> PyRtkStaticArcSolution {
+        PyRtkStaticArcSolution {
+            inner: self.inner.rtk_solution.clone(),
+        }
+    }
+
+    #[getter]
+    fn diagnostics(&self) -> Vec<PyStaticReferenceEpochDiagnostic> {
+        self.inner
+            .diagnostics
+            .iter()
+            .cloned()
+            .map(|inner| PyStaticReferenceEpochDiagnostic { inner })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "StaticReferenceCarrierSolution(baseline_m={:.4}, integer_status={})",
+            self.inner.baseline_m,
+            self.integer_status().__repr__()
+        )
+    }
+}
+
+/// Static reference-station coordinate with covariance and mode diagnostics.
+#[pyclass(module = "sidereon._sidereon", name = "StaticReferenceStationSolution")]
+pub struct PyStaticReferenceStationSolution {
+    inner: StaticReferenceStationSolution,
+}
+
+#[pymethods]
+impl PyStaticReferenceStationSolution {
+    #[getter]
+    fn mode(&self) -> &'static str {
+        reference_station_mode_label(self.inner.mode)
+    }
+
+    #[getter]
+    fn fix_status(&self) -> &'static str {
+        reference_station_fix_status_label(self.inner.fix_status)
+    }
+
+    /// ECEF coordinate as a numpy array `[x, y, z]` metres.
+    #[getter]
+    fn position<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        let p = self.inner.position;
+        np_array(py, &[p.x_m, p.y_m, p.z_m])
+    }
+
+    #[getter]
+    fn position_m(&self) -> [f64; 3] {
+        self.inner.position.as_array()
+    }
+
+    #[getter]
+    fn covariance(&self) -> PyStaticReferenceStationCovariance {
+        PyStaticReferenceStationCovariance {
+            inner: self.inner.covariance,
+        }
+    }
+
+    /// Selected rover-minus-reference baseline vector as a numpy array, metres.
+    #[getter]
+    fn baseline_vector<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.baseline_vector_m)
+    }
+
+    #[getter]
+    fn baseline_vector_m(&self) -> [f64; 3] {
+        self.inner.baseline_vector_m
+    }
+
+    #[getter]
+    fn baseline_m(&self) -> f64 {
+        self.inner.baseline_m
+    }
+
+    #[getter]
+    fn code_solution(&self) -> Option<PyStaticReferenceCodeSolution> {
+        self.inner
+            .code_solution
+            .clone()
+            .map(|inner| PyStaticReferenceCodeSolution { inner })
+    }
+
+    #[getter]
+    fn carrier_solution(&self) -> Option<PyStaticReferenceCarrierSolution> {
+        self.inner
+            .carrier_solution
+            .clone()
+            .map(|inner| PyStaticReferenceCarrierSolution { inner })
+    }
+
+    #[getter]
+    fn mode_reports(&self) -> Vec<PyStaticReferenceModeReport> {
+        self.inner
+            .mode_reports
+            .iter()
+            .cloned()
+            .map(|inner| PyStaticReferenceModeReport { inner })
+            .collect()
+    }
+
+    #[getter]
+    fn diagnostics(&self) -> Vec<PyStaticReferenceEpochDiagnostic> {
+        self.inner
+            .diagnostics
+            .iter()
+            .cloned()
+            .map(|inner| PyStaticReferenceEpochDiagnostic { inner })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "StaticReferenceStationSolution(mode={}, baseline_m={:.4}, epochs={})",
+            reference_station_mode_label(self.inner.mode),
+            self.inner.baseline_m,
+            self.inner.diagnostics.len()
+        )
+    }
+}
+
+/// Solve one static reference-station coordinate from paired RINEX observations.
+#[pyfunction]
+#[pyo3(signature = (
+    sp3,
+    reference_obs,
+    rover_obs,
+    reference_position_m,
+    *,
+    model=None,
+    arc_options=None,
+    preprocessing=None,
+    update_options=None,
+    float_options=None,
+    fixed_options=None,
+    residual_options=None,
+    initial_baseline_m=[0.0; 3],
+    baseline_prior_sigma_m=30.0,
+    ambiguity_prior_sigma_m=30.0,
+    enable_code_dgnss=true,
+    enable_carrier_rtk=true,
+    with_geodetic=false,
+))]
+#[allow(clippy::too_many_arguments)]
+fn solve_static_reference_station_rinex(
+    py: Python<'_>,
+    sp3: &PySp3,
+    reference_obs: &PyRinexObs,
+    rover_obs: &PyRinexObs,
+    reference_position_m: [f64; 3],
+    model: Option<Py<PyRtkMeasurementModel>>,
+    arc_options: Option<Py<PyRtkRinexArcOptions>>,
+    preprocessing: Option<Py<PyRtkArcPreprocessing>>,
+    update_options: Option<Py<PyRtkArcUpdateOptions>>,
+    float_options: Option<Py<PyRtkFloatOptions>>,
+    fixed_options: Option<Py<PyRtkFixedOptions>>,
+    residual_options: Option<Py<PyRtkResidualValidationOptions>>,
+    initial_baseline_m: [f64; 3],
+    baseline_prior_sigma_m: f64,
+    ambiguity_prior_sigma_m: f64,
+    enable_code_dgnss: bool,
+    enable_carrier_rtk: bool,
+    with_geodetic: bool,
+) -> PyResult<PyStaticReferenceStationSolution> {
+    let code_options = if enable_code_dgnss {
+        Some(
+            RinexSppOptions::default_for(rover_obs.inner())
+                .map_err(|error| PyValueError::new_err(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    let carrier_options = if enable_carrier_rtk {
+        let arc_options = rinex_arc_options_from_py(py, arc_options);
+        let model = model_from_optional(py, model);
+        let static_config = static_arc_config_from_parts(
+            py,
+            reference_position_m,
+            model,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            initial_baseline_m,
+            baseline_prior_sigma_m,
+            ambiguity_prior_sigma_m,
+            update_options,
+            preprocessing,
+            float_options,
+            fixed_options,
+            residual_options,
+        );
+        Some(StaticReferenceCarrierRinexOptions {
+            arc_options,
+            static_config,
+        })
+    } else {
+        None
+    };
+    let options = StaticReferenceStationRinexOptions {
+        code_options,
+        carrier_options,
+        with_geodetic,
+    };
+    let inner = core_solve_static_reference_station_rinex(
+        &sp3.inner,
+        reference_obs.inner(),
+        rover_obs.inner(),
+        reference_position_m,
+        &options,
+    )
+    .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    Ok(PyStaticReferenceStationSolution { inner })
+}
+
 /// Static dual-frequency wide-lane fixed RTK solution built from RINEX.
 #[pyclass(module = "sidereon._sidereon", name = "RinexWideLaneFixedRtkSolution")]
 pub struct PyRinexWideLaneFixedRtkSolution {
@@ -3856,6 +4363,13 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRinexRtkArc>()?;
     m.add_function(wrap_pyfunction!(build_rinex_rtk_arc, m)?)?;
     m.add_function(wrap_pyfunction!(solve_static_rinex_rtk_baseline, m)?)?;
+    m.add_class::<PyStaticReferenceStationCovariance>()?;
+    m.add_class::<PyStaticReferenceEpochDiagnostic>()?;
+    m.add_class::<PyStaticReferenceModeReport>()?;
+    m.add_class::<PyStaticReferenceCodeSolution>()?;
+    m.add_class::<PyStaticReferenceCarrierSolution>()?;
+    m.add_class::<PyStaticReferenceStationSolution>()?;
+    m.add_function(wrap_pyfunction!(solve_static_reference_station_rinex, m)?)?;
     m.add_class::<PyRtkRinexDualSignalPair>()?;
     m.add_class::<PyRtkRinexDualArcOptions>()?;
     m.add_class::<PyRinexDualFrequencyRtkArc>()?;
