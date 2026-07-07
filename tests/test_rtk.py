@@ -10,6 +10,7 @@ engine path, so it must return the identical baselines (bit-exact).
 import json
 import os
 
+import _helpers
 import numpy as np
 import pytest
 import sidereon
@@ -19,6 +20,75 @@ from _helpers import FIXTURES
 def _fixture():
     with open(os.path.join(FIXTURES, "rtk_wtzr.json")) as fh:
         return json.load(fh)
+
+
+WTZR_MARKER_M = np.array([4075580.3111, 931854.0543, 4801568.2808])
+WTZZ_MARKER_M = np.array([4075579.1913, 931853.3696, 4801569.1897])
+WTZR_OBS = "WTZR00DEU_R_20201770000_01D_30S_MO_120epoch.rnx"
+WTZZ_OBS = "WTZZ00DEU_R_20201770000_01D_30S_MO_120epoch.rnx"
+WTZR_WTZZ_SP3 = "GBM0MGXRAP_20201770000_01D_05M_ORB_120epoch.sp3"
+
+
+def _core_fixture(*parts):
+    return os.path.join(_helpers.CORE_FIXTURES, *parts)
+
+
+def _wettzell_rinex_inputs():
+    sp3 = sidereon.load_sp3(_core_fixture("sp3", WTZR_WTZZ_SP3))
+    base_obs = sidereon.load_rinex_obs(_core_fixture("obs", WTZR_OBS))
+    rover_obs = sidereon.load_rinex_obs(_core_fixture("obs", WTZZ_OBS))
+    base_arp_m = _arp_position(WTZR_MARKER_M, base_obs)
+    rover_arp_m = _arp_position(WTZZ_MARKER_M, rover_obs)
+    return sp3, base_obs, rover_obs, base_arp_m, rover_arp_m - base_arp_m
+
+
+def _arp_position(marker_m, obs):
+    delta_hen = obs.header.antenna_delta_hen_m
+    assert delta_hen is not None
+    height_m, east_m, north_m = delta_hen
+    assert east_m == 0.0
+    assert north_m == 0.0
+    return marker_m + marker_m / np.linalg.norm(marker_m) * height_m
+
+
+def _real_arc_model():
+    return sidereon.RtkMeasurementModel(
+        code_sigma_m=2.0,
+        phase_sigma_m=0.01,
+        sagnac=True,
+        stochastic=sidereon.RtkStochasticModel.SIMPLE,
+        elevation_weighting=True,
+    )
+
+
+def _real_arc_float_options():
+    return sidereon.RtkFloatOptions(
+        position_tol_m=1.0e-4,
+        ambiguity_tol_m=1.0e-4,
+        max_iterations=10,
+    )
+
+
+def _real_arc_fixed_options():
+    return sidereon.RtkFixedOptions(
+        position_tol_m=1.0e-4,
+        ambiguity_tol_m=1.0e-4,
+        max_iterations=10,
+        ratio_threshold=3.0,
+        partial_ambiguity_resolution=False,
+        partial_min_ambiguities=4,
+    )
+
+
+def _vector_error_m(vector, truth):
+    return float(np.linalg.norm(np.asarray(vector, dtype=np.float64) - truth))
+
+
+def _assert_square_covariance(covariance, dim):
+    assert covariance.ndim == 2
+    assert len(covariance) == dim
+    assert len(covariance[0]) == dim
+    assert np.all(np.diag(covariance) > 0.0)
 
 
 def _sat(row):
@@ -133,6 +203,7 @@ def test_rtk_float_matches_reference():
     assert np.array_equal(sol.baseline, expected)
     assert sol.converged
     assert isinstance(sol.geometry_quality, sidereon.GeometryQuality)
+    _assert_square_covariance(sol.ambiguity_covariance, len(sol.ambiguities_m))
     assert "RtkFloatSolution(" in repr(sol)
 
 
@@ -334,6 +405,16 @@ def test_rtk_arc_preprocessing_metadata_fields_are_exposed():
     dim = 3 + len(split_sol.final_state.sd_ambiguity_ids)
     assert len(covariance) == dim * dim
     assert all(isinstance(value, float) for value in covariance)
+    covariance_matrix = split_sol.measurement_covariance_matrix
+    assert covariance_matrix.ndim == 2
+    assert len(covariance_matrix) == dim
+    assert len(covariance_matrix[0]) == dim
+    np.testing.assert_allclose(
+        covariance_matrix.ravel(),
+        np.array(covariance),
+        rtol=0.0,
+        atol=0.0,
+    )
 
     drop_sol = sidereon.solve_rtk_arc(
         _arc_epochs(fx, lli_by_epoch_side_sat=lli),
@@ -418,6 +499,123 @@ def test_rtk_arc_exposes_innovation_screen_when_enabled():
 def test_rtk_arc_rejects_empty_arc():
     with pytest.raises(sidereon.SolveError):
         sidereon.solve_rtk_arc([], _arc_config(_fixture()))
+
+
+def test_rinex_rtk_arc_options_round_trip_getters():
+    pair = sidereon.RtkRinexSignalPair.gps_l1_c()
+    assert pair.system == sidereon.GnssSystem.GPS
+    assert pair.code_observable == "C1C"
+    assert pair.phase_observable == "L1C"
+
+    opts = sidereon.RtkRinexArcOptions(
+        signal_pairs=[pair],
+        max_epochs=12,
+        min_common_satellites=5,
+        include_prediction_time=False,
+    )
+    assert opts.signal_pairs[0].code_observable == "C1C"
+    assert opts.max_epochs == 12
+    assert opts.min_common_satellites == 5
+    assert opts.include_prediction_time is False
+
+    dual_pair = sidereon.RtkRinexDualSignalPair.gps_l1_l2_cw()
+    assert dual_pair.system == sidereon.GnssSystem.GPS
+    assert dual_pair.code1_observable == "C1C"
+    assert dual_pair.phase1_observable == "L1C"
+    assert dual_pair.code2_observable == "C2W"
+    assert dual_pair.phase2_observable == "L2W"
+
+    dual_opts = sidereon.RtkRinexDualArcOptions(
+        signal_pairs=[dual_pair],
+        max_epochs=12,
+        min_common_satellites=5,
+        include_prediction_time=False,
+    )
+    assert dual_opts.signal_pairs[0].code2_observable == "C2W"
+    assert dual_opts.max_epochs == 12
+    assert dual_opts.min_common_satellites == 5
+    assert dual_opts.include_prediction_time is False
+
+
+def test_rinex_rtk_static_convenience_solves_real_wettzell_arc():
+    sp3, base_obs, rover_obs, base_arp_m, truth_baseline_m = _wettzell_rinex_inputs()
+    arc_options = sidereon.RtkRinexArcOptions(
+        max_epochs=120,
+        include_prediction_time=False,
+    )
+
+    arc = sidereon.build_rinex_rtk_arc(sp3, base_obs, rover_obs, arc_options)
+    assert len(arc.epochs) == 120
+    assert arc.skipped_epoch_count == 0
+    assert arc.wavelengths_m
+    assert set(arc.offsets_m.values()) == {0.0}
+
+    solution = sidereon.solve_static_rinex_rtk_baseline(
+        sp3,
+        base_obs,
+        rover_obs,
+        base_arp_m.tolist(),
+        model=_real_arc_model(),
+        arc_options=arc_options,
+        preprocessing=sidereon.RtkArcPreprocessing(cycle_slip="split_arc"),
+        float_options=_real_arc_float_options(),
+        fixed_options=_real_arc_fixed_options(),
+    )
+
+    assert solution.references == {"G": "G30"}
+    assert len(solution.split_cycle_slip_arcs) == 4
+    assert solution.float_solution.converged
+    assert _vector_error_m(solution.float_solution.baseline, truth_baseline_m) < 0.08
+    _assert_square_covariance(
+        solution.float_solution.ambiguity_covariance,
+        len(solution.float_solution.ambiguities_m),
+    )
+
+    fixed = solution.fixed_solution
+    assert fixed.integer_status == sidereon.IntegerStatus.NOT_FIXED
+    assert fixed.integer_ratio is not None
+    assert fixed.integer_ratio < 3.0
+    assert _vector_error_m(fixed.fixed_baseline, truth_baseline_m) < 0.01
+
+
+def test_rinex_wide_lane_fixed_convenience_solves_real_wettzell_arc():
+    sp3, base_obs, rover_obs, base_arp_m, truth_baseline_m = _wettzell_rinex_inputs()
+    arc_options = sidereon.RtkRinexDualArcOptions(
+        max_epochs=120,
+        include_prediction_time=False,
+    )
+
+    arc = sidereon.build_dual_frequency_rinex_rtk_arc(
+        sp3,
+        base_obs,
+        rover_obs,
+        arc_options,
+    )
+    assert len(arc.epochs) == 120
+    assert arc.skipped_epoch_count == 0
+
+    solution = sidereon.solve_wide_lane_fixed_rinex_rtk_baseline(
+        sp3,
+        base_obs,
+        rover_obs,
+        base_arp_m.tolist(),
+        model=_real_arc_model(),
+        arc_options=arc_options,
+        float_options=_real_arc_float_options(),
+        fixed_options=_real_arc_fixed_options(),
+    )
+
+    assert solution.wide_lane_fixed
+    assert solution.integer_status == sidereon.IntegerStatus.FIXED
+    assert solution.integer_ratio is not None
+    assert solution.integer_ratio > 3.0
+    assert solution.wide_lane_ambiguities_cycles
+    assert _vector_error_m(solution.fixed_baseline, truth_baseline_m) < 0.01
+    assert _vector_error_m(solution.float_baseline, truth_baseline_m) < 0.1
+    _assert_square_covariance(
+        solution.float_ambiguity_covariance,
+        len(solution.solution.float_solution.ambiguities_m),
+    )
 
 
 _F_L1_HZ = 1_575_420_000.0

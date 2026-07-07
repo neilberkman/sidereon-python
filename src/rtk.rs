@@ -9,8 +9,9 @@
 
 use std::collections::BTreeMap;
 
-use numpy::PyArray1;
-use pyo3::exceptions::PyValueError;
+use numpy::ndarray::Array2;
+use numpy::{PyArray1, PyArray2};
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyModule};
 
@@ -19,24 +20,34 @@ use sidereon_core::rtk_filter::defaults::{
     AMBIGUITY_TOL_M, MAX_ITERATIONS, PARTIAL_MIN_AMBIGUITIES, POSITION_TOL_M, RATIO_THRESHOLD,
 };
 use sidereon_core::rtk_filter::{
+    build_dual_frequency_rinex_rtk_arc as core_build_dual_frequency_rinex_rtk_arc,
+    build_rinex_rtk_arc as core_build_rinex_rtk_arc,
     fix_wide_lane_rtk_arc as core_fix_wide_lane_rtk_arc,
     prepare_ionosphere_free_rtk_arc as core_prepare_ionosphere_free_rtk_arc,
     solve_moving_baseline as core_solve_moving_baseline, solve_rtk_arc as core_solve_rtk_arc,
-    solve_static_rtk_arc as core_solve_static_rtk_arc, AmbiguityScale, AmbiguitySet,
-    CycleSlipOptions, CycleSlipPolicy, CycleSlipSplitArc, DynamicsModel, Epoch, FilterState,
-    FixedSolveOpts, FloatBaselineSolution, FloatResidual, FloatSolveOpts, InnovationScreen,
-    InnovationScreenOpts, IntegerSearchMeta, IntegerStatus as RtkIntegerStatus, MeasModel,
-    MovingBaselineEpoch, MovingBaselineEpochSolution, MovingBaselineOpts, MovingBaselineStatus,
-    ResidualValidationOpts, RtkArcConfig, RtkArcEpoch, RtkArcEpochSolution, RtkArcObservation,
-    RtkArcPreprocessing, RtkArcSolution, RtkDualCycleSlipConfig, RtkDualFrequencyArcEpoch,
-    RtkDualFrequencyObservation, RtkDualFrequencySatelliteObservation, RtkIonosphereFreeArcConfig,
-    RtkIonosphereFreeArcSolution, RtkStaticArcConfig, RtkStaticArcSolution, RtkWideLaneArcConfig,
-    RtkWideLaneArcSolution, SatMeas, SearchOpts, StochasticModel, UpdateOpts,
-    ValidatedFixedBaselineSolution, ValidatedFixedSolveOpts, WideLaneOptions,
+    solve_static_rtk_arc as core_solve_static_rtk_arc,
+    solve_wide_lane_fixed_rtk_arc as core_solve_wide_lane_fixed_rtk_arc, AmbiguityScale,
+    AmbiguitySet, CycleSlipOptions, CycleSlipPolicy, CycleSlipSplitArc, DynamicsModel, Epoch,
+    FilterState, FixedSolveOpts, FloatBaselineSolution, FloatResidual, FloatSolveOpts,
+    InnovationScreen, InnovationScreenOpts, IntegerSearchMeta, IntegerStatus as RtkIntegerStatus,
+    MeasModel, MovingBaselineEpoch, MovingBaselineEpochSolution, MovingBaselineOpts,
+    MovingBaselineStatus, ResidualValidationOpts, RtkArcConfig, RtkArcEpoch, RtkArcEpochSolution,
+    RtkArcObservation, RtkArcPreprocessing, RtkArcSolution, RtkDualCycleSlipConfig,
+    RtkDualFrequencyArcEpoch, RtkDualFrequencyObservation, RtkDualFrequencySatelliteObservation,
+    RtkIonosphereFreeArcConfig, RtkIonosphereFreeArcSolution, RtkRinexArc as CoreRtkRinexArc,
+    RtkRinexArcOptions as CoreRtkRinexArcOptions, RtkRinexDualArcOptions,
+    RtkRinexDualFrequencyArc as CoreRtkRinexDualFrequencyArc, RtkRinexDualSignalPair,
+    RtkRinexSignalPair, RtkStaticArcConfig, RtkStaticArcSolution, RtkWideLaneArcConfig,
+    RtkWideLaneArcSolution, RtkWideLaneFixedArcConfig, RtkWideLaneFixedArcSolution,
+    RtkWideLaneFixedArcSolveConfig, RtkWideLaneFixedStaticArcSolution, SatMeas, SearchOpts,
+    StochasticModel, UpdateOpts, ValidatedFixedBaselineSolution, ValidatedFixedSolveOpts,
+    WideLaneOptions,
 };
 
+use crate::ephemeris::with_observable_source;
 use crate::geometry_quality::PyGeometryQuality;
-use crate::marshal::option_py_or_default;
+use crate::marshal::{option_py_or_default, PyGnssSystem};
+use crate::rinex::PyRinexObs;
 use crate::{np_array, to_solve_err};
 
 // --- input value/config objects -------------------------------------------
@@ -128,6 +139,34 @@ fn extract_stochastic_model(obj: &Bound<'_, PyAny>) -> PyResult<PyRtkStochasticM
         return Ok(model);
     }
     PyRtkStochasticModel::from_label(&obj.extract::<String>()?)
+}
+
+fn default_rtk_model() -> MeasModel {
+    MeasModel {
+        code_sigma_m: sidereon_core::rtk_filter::defaults::CODE_SIGMA_M,
+        phase_sigma_m: sidereon_core::rtk_filter::defaults::PHASE_SIGMA_M,
+        sagnac: true,
+        stochastic: StochasticModel::Rtklib,
+    }
+}
+
+fn flat_square_to_array<'py>(
+    py: Python<'py>,
+    values: &[f64],
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let n = (values.len() as f64).sqrt() as usize;
+    if n * n != values.len() {
+        return Err(PyValueError::new_err(
+            "covariance length is not a square matrix",
+        ));
+    }
+    let mut array = Array2::<f64>::zeros((n, n));
+    for row in 0..n {
+        for col in 0..n {
+            array[[row, col]] = values[row * n + col];
+        }
+    }
+    Ok(PyArray2::from_owned_array(py, array))
 }
 
 /// One satellite's base/rover measurements for an RTK epoch.
@@ -823,6 +862,12 @@ impl PyRtkFloatSolution {
     #[getter]
     fn ambiguities_m(&self) -> BTreeMap<String, f64> {
         self.inner.ambiguities_m.iter().cloned().collect()
+    }
+
+    /// Float ambiguity covariance matrix, metres squared.
+    #[getter]
+    fn ambiguity_covariance<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        flat_square_to_array(py, &self.inner.ambiguity_covariance_m)
     }
 
     #[getter]
@@ -2198,6 +2243,15 @@ impl PyRtkArcSolution {
         self.inner.measurement_covariance.clone()
     }
 
+    /// Posterior measurement covariance as a square numpy matrix.
+    #[getter]
+    fn measurement_covariance_matrix<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        flat_square_to_array(py, &self.inner.measurement_covariance)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "RtkArcSolution(references={}, epochs={})",
@@ -2366,6 +2420,773 @@ fn solve_static_rtk_arc(
         .collect();
     let inner = core_solve_static_rtk_arc(&epochs, &config.inner).map_err(to_solve_err)?;
     Ok(PyRtkStaticArcSolution { inner })
+}
+
+/// One single-frequency RINEX code/carrier pair used to build RTK arc records.
+#[pyclass(module = "sidereon._sidereon", name = "RtkRinexSignalPair")]
+#[derive(Clone)]
+pub struct PyRtkRinexSignalPair {
+    inner: RtkRinexSignalPair,
+}
+
+#[pymethods]
+impl PyRtkRinexSignalPair {
+    /// Create a RINEX signal pair for one constellation.
+    #[new]
+    fn new(system: PyGnssSystem, code_observable: String, phase_observable: String) -> Self {
+        Self {
+            inner: RtkRinexSignalPair {
+                system: system.into(),
+                code_observable,
+                phase_observable,
+            },
+        }
+    }
+
+    /// GPS `C1C` plus `L1C`.
+    #[staticmethod]
+    fn gps_l1_c() -> Self {
+        Self {
+            inner: RtkRinexSignalPair::gps_l1_c(),
+        }
+    }
+
+    #[getter]
+    fn system(&self) -> PyGnssSystem {
+        self.inner.system.into()
+    }
+
+    #[getter]
+    fn code_observable(&self) -> &str {
+        &self.inner.code_observable
+    }
+
+    #[getter]
+    fn phase_observable(&self) -> &str {
+        &self.inner.phase_observable
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkRinexSignalPair(code_observable={:?}, phase_observable={:?})",
+            self.inner.code_observable, self.inner.phase_observable
+        )
+    }
+}
+
+/// Options for building single-frequency RTK arc records from RINEX.
+#[pyclass(module = "sidereon._sidereon", name = "RtkRinexArcOptions")]
+#[derive(Clone)]
+pub struct PyRtkRinexArcOptions {
+    inner: CoreRtkRinexArcOptions,
+}
+
+#[pymethods]
+impl PyRtkRinexArcOptions {
+    /// Create RINEX RTK arc build options.
+    #[new]
+    #[pyo3(signature = (
+        signal_pairs=None,
+        max_epochs=None,
+        min_common_satellites=4,
+        include_prediction_time=true,
+    ))]
+    fn new(
+        py: Python<'_>,
+        signal_pairs: Option<Vec<Py<PyRtkRinexSignalPair>>>,
+        max_epochs: Option<usize>,
+        min_common_satellites: usize,
+        include_prediction_time: bool,
+    ) -> Self {
+        let signal_pairs = signal_pairs
+            .map(|pairs| {
+                pairs
+                    .iter()
+                    .map(|pair| pair.borrow(py).inner.clone())
+                    .collect()
+            })
+            .unwrap_or_else(|| CoreRtkRinexArcOptions::gps_l1_c().signal_pairs);
+        Self {
+            inner: CoreRtkRinexArcOptions {
+                signal_pairs,
+                max_epochs,
+                min_common_satellites,
+                include_prediction_time,
+            },
+        }
+    }
+
+    /// GPS `C1C` plus `L1C` defaults.
+    #[staticmethod]
+    fn gps_l1_c() -> Self {
+        Self {
+            inner: CoreRtkRinexArcOptions::gps_l1_c(),
+        }
+    }
+
+    #[getter]
+    fn signal_pairs(&self) -> Vec<PyRtkRinexSignalPair> {
+        self.inner
+            .signal_pairs
+            .iter()
+            .cloned()
+            .map(|inner| PyRtkRinexSignalPair { inner })
+            .collect()
+    }
+
+    #[getter]
+    fn max_epochs(&self) -> Option<usize> {
+        self.inner.max_epochs
+    }
+
+    #[getter]
+    fn min_common_satellites(&self) -> usize {
+        self.inner.min_common_satellites
+    }
+
+    #[getter]
+    fn include_prediction_time(&self) -> bool {
+        self.inner.include_prediction_time
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkRinexArcOptions(signal_pairs={}, max_epochs={:?})",
+            self.inner.signal_pairs.len(),
+            self.inner.max_epochs
+        )
+    }
+}
+
+/// Single-frequency RTK arc records built from RINEX.
+#[pyclass(module = "sidereon._sidereon", name = "RinexRtkArc")]
+pub struct PyRinexRtkArc {
+    inner: CoreRtkRinexArc,
+}
+
+#[pymethods]
+impl PyRinexRtkArc {
+    #[getter]
+    fn epochs(&self) -> Vec<PyRtkArcEpoch> {
+        self.inner
+            .epochs
+            .iter()
+            .cloned()
+            .map(|inner| PyRtkArcEpoch { inner })
+            .collect()
+    }
+
+    #[getter]
+    fn wavelengths_m(&self) -> BTreeMap<String, f64> {
+        self.inner.wavelengths_m.clone()
+    }
+
+    #[getter]
+    fn offsets_m(&self) -> BTreeMap<String, f64> {
+        self.inner.offsets_m.clone()
+    }
+
+    #[getter]
+    fn skipped_epoch_count(&self) -> usize {
+        self.inner.skipped_epoch_count
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RinexRtkArc(epochs={}, ambiguities={})",
+            self.inner.epochs.len(),
+            self.inner.wavelengths_m.len()
+        )
+    }
+}
+
+/// One dual-frequency RINEX signal selection for one constellation.
+#[pyclass(module = "sidereon._sidereon", name = "RtkRinexDualSignalPair")]
+#[derive(Clone)]
+pub struct PyRtkRinexDualSignalPair {
+    inner: RtkRinexDualSignalPair,
+}
+
+#[pymethods]
+impl PyRtkRinexDualSignalPair {
+    /// Create a dual-frequency RINEX signal selection.
+    #[new]
+    #[pyo3(signature = (
+        system,
+        code1_observable,
+        phase1_observable,
+        code2_observable,
+        phase2_observable,
+    ))]
+    fn new(
+        system: PyGnssSystem,
+        code1_observable: String,
+        phase1_observable: String,
+        code2_observable: String,
+        phase2_observable: String,
+    ) -> Self {
+        Self {
+            inner: RtkRinexDualSignalPair {
+                system: system.into(),
+                code1_observable,
+                phase1_observable,
+                code2_observable,
+                phase2_observable,
+            },
+        }
+    }
+
+    /// GPS `C1C`/`L1C` plus `C2W`/`L2W`.
+    #[staticmethod]
+    fn gps_l1_l2_cw() -> Self {
+        Self {
+            inner: RtkRinexDualSignalPair::gps_l1_l2_cw(),
+        }
+    }
+
+    #[getter]
+    fn system(&self) -> PyGnssSystem {
+        self.inner.system.into()
+    }
+
+    #[getter]
+    fn code1_observable(&self) -> &str {
+        &self.inner.code1_observable
+    }
+
+    #[getter]
+    fn phase1_observable(&self) -> &str {
+        &self.inner.phase1_observable
+    }
+
+    #[getter]
+    fn code2_observable(&self) -> &str {
+        &self.inner.code2_observable
+    }
+
+    #[getter]
+    fn phase2_observable(&self) -> &str {
+        &self.inner.phase2_observable
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkRinexDualSignalPair(code1_observable={:?}, code2_observable={:?})",
+            self.inner.code1_observable, self.inner.code2_observable
+        )
+    }
+}
+
+/// Options for building dual-frequency RTK arc records from RINEX.
+#[pyclass(module = "sidereon._sidereon", name = "RtkRinexDualArcOptions")]
+#[derive(Clone)]
+pub struct PyRtkRinexDualArcOptions {
+    inner: RtkRinexDualArcOptions,
+}
+
+#[pymethods]
+impl PyRtkRinexDualArcOptions {
+    /// Create dual-frequency RINEX RTK arc build options.
+    #[new]
+    #[pyo3(signature = (
+        signal_pairs=None,
+        max_epochs=None,
+        min_common_satellites=4,
+        include_prediction_time=true,
+    ))]
+    fn new(
+        py: Python<'_>,
+        signal_pairs: Option<Vec<Py<PyRtkRinexDualSignalPair>>>,
+        max_epochs: Option<usize>,
+        min_common_satellites: usize,
+        include_prediction_time: bool,
+    ) -> Self {
+        let signal_pairs = signal_pairs
+            .map(|pairs| {
+                pairs
+                    .iter()
+                    .map(|pair| pair.borrow(py).inner.clone())
+                    .collect()
+            })
+            .unwrap_or_else(|| RtkRinexDualArcOptions::gps_l1_l2_cw().signal_pairs);
+        Self {
+            inner: RtkRinexDualArcOptions {
+                signal_pairs,
+                max_epochs,
+                min_common_satellites,
+                include_prediction_time,
+            },
+        }
+    }
+
+    /// GPS `C1C`/`L1C` plus `C2W`/`L2W` defaults.
+    #[staticmethod]
+    fn gps_l1_l2_cw() -> Self {
+        Self {
+            inner: RtkRinexDualArcOptions::gps_l1_l2_cw(),
+        }
+    }
+
+    #[getter]
+    fn signal_pairs(&self) -> Vec<PyRtkRinexDualSignalPair> {
+        self.inner
+            .signal_pairs
+            .iter()
+            .cloned()
+            .map(|inner| PyRtkRinexDualSignalPair { inner })
+            .collect()
+    }
+
+    #[getter]
+    fn max_epochs(&self) -> Option<usize> {
+        self.inner.max_epochs
+    }
+
+    #[getter]
+    fn min_common_satellites(&self) -> usize {
+        self.inner.min_common_satellites
+    }
+
+    #[getter]
+    fn include_prediction_time(&self) -> bool {
+        self.inner.include_prediction_time
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkRinexDualArcOptions(signal_pairs={}, max_epochs={:?})",
+            self.inner.signal_pairs.len(),
+            self.inner.max_epochs
+        )
+    }
+}
+
+/// Dual-frequency RTK arc records built from RINEX.
+#[pyclass(module = "sidereon._sidereon", name = "RinexDualFrequencyRtkArc")]
+pub struct PyRinexDualFrequencyRtkArc {
+    inner: CoreRtkRinexDualFrequencyArc,
+}
+
+#[pymethods]
+impl PyRinexDualFrequencyRtkArc {
+    #[getter]
+    fn epochs(&self) -> Vec<PyRtkDualFrequencyArcEpoch> {
+        self.inner
+            .epochs
+            .iter()
+            .cloned()
+            .map(|inner| PyRtkDualFrequencyArcEpoch { inner })
+            .collect()
+    }
+
+    #[getter]
+    fn skipped_epoch_count(&self) -> usize {
+        self.inner.skipped_epoch_count
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RinexDualFrequencyRtkArc(epochs={})",
+            self.inner.epochs.len()
+        )
+    }
+}
+
+fn rinex_arc_options_from_py(
+    py: Python<'_>,
+    options: Option<Py<PyRtkRinexArcOptions>>,
+) -> CoreRtkRinexArcOptions {
+    option_py_or_default(
+        py,
+        options.as_ref(),
+        |value| value.inner.clone(),
+        CoreRtkRinexArcOptions::gps_l1_c,
+    )
+}
+
+fn rinex_dual_arc_options_from_py(
+    py: Python<'_>,
+    options: Option<Py<PyRtkRinexDualArcOptions>>,
+) -> RtkRinexDualArcOptions {
+    option_py_or_default(
+        py,
+        options.as_ref(),
+        |value| value.inner.clone(),
+        RtkRinexDualArcOptions::gps_l1_l2_cw,
+    )
+}
+
+fn model_from_optional(py: Python<'_>, model: Option<Py<PyRtkMeasurementModel>>) -> MeasModel {
+    option_py_or_default(py, model.as_ref(), |value| value.inner, default_rtk_model)
+}
+
+fn arc_update_options_from_optional(
+    py: Python<'_>,
+    update_options: Option<Py<PyRtkArcUpdateOptions>>,
+) -> UpdateOpts {
+    option_py_or_default(
+        py,
+        update_options.as_ref(),
+        |value| value.inner.clone(),
+        || PyRtkArcUpdateOptions::default().inner,
+    )
+}
+
+fn preprocessing_from_optional(
+    py: Python<'_>,
+    preprocessing: Option<Py<PyRtkArcPreprocessing>>,
+) -> RtkArcPreprocessing {
+    option_py_or_default(
+        py,
+        preprocessing.as_ref(),
+        |value| value.inner.clone(),
+        RtkArcPreprocessing::default,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn static_arc_config_from_parts(
+    py: Python<'_>,
+    base: [f64; 3],
+    model: MeasModel,
+    wavelengths_m: BTreeMap<String, f64>,
+    offsets_m: BTreeMap<String, f64>,
+    initial_baseline_m: [f64; 3],
+    baseline_prior_sigma_m: f64,
+    ambiguity_prior_sigma_m: f64,
+    update_options: Option<Py<PyRtkArcUpdateOptions>>,
+    preprocessing: Option<Py<PyRtkArcPreprocessing>>,
+    float_options: Option<Py<PyRtkFloatOptions>>,
+    fixed_options: Option<Py<PyRtkFixedOptions>>,
+    residual_options: Option<Py<PyRtkResidualValidationOptions>>,
+) -> RtkStaticArcConfig {
+    RtkStaticArcConfig {
+        arc: RtkArcConfig {
+            base_m: base,
+            reference: BaselineReferenceSelection::Auto,
+            model,
+            baseline_prior_sigma_m,
+            ambiguity_prior_sigma_m,
+            initial_baseline_m,
+            wavelengths_m,
+            offsets_m,
+            update_opts: arc_update_options_from_optional(py, update_options),
+            preprocessing: preprocessing_from_optional(py, preprocessing),
+        },
+        opts: validated_fixed_opts_from_py(
+            py,
+            float_options.as_ref(),
+            fixed_options.as_ref(),
+            residual_options.as_ref(),
+        ),
+    }
+}
+
+/// Build single-frequency RTK arc records from parsed RINEX OBS products.
+#[pyfunction]
+#[pyo3(signature = (ephemeris, base_obs, rover_obs, options=None))]
+fn build_rinex_rtk_arc(
+    py: Python<'_>,
+    ephemeris: &Bound<'_, PyAny>,
+    base_obs: &PyRinexObs,
+    rover_obs: &PyRinexObs,
+    options: Option<Py<PyRtkRinexArcOptions>>,
+) -> PyResult<PyRinexRtkArc> {
+    let options = rinex_arc_options_from_py(py, options);
+    with_observable_source(ephemeris, |source| {
+        core_build_rinex_rtk_arc(source, base_obs.inner(), rover_obs.inner(), &options)
+            .map(|inner| PyRinexRtkArc { inner })
+            .map_err(to_solve_err)
+    })
+}
+
+/// Build dual-frequency RTK arc records from parsed RINEX OBS products.
+#[pyfunction]
+#[pyo3(signature = (ephemeris, base_obs, rover_obs, options=None))]
+fn build_dual_frequency_rinex_rtk_arc(
+    py: Python<'_>,
+    ephemeris: &Bound<'_, PyAny>,
+    base_obs: &PyRinexObs,
+    rover_obs: &PyRinexObs,
+    options: Option<Py<PyRtkRinexDualArcOptions>>,
+) -> PyResult<PyRinexDualFrequencyRtkArc> {
+    let options = rinex_dual_arc_options_from_py(py, options);
+    with_observable_source(ephemeris, |source| {
+        core_build_dual_frequency_rinex_rtk_arc(
+            source,
+            base_obs.inner(),
+            rover_obs.inner(),
+            &options,
+        )
+        .map(|inner| PyRinexDualFrequencyRtkArc { inner })
+        .map_err(to_solve_err)
+    })
+}
+
+/// Solve a static single-frequency RTK baseline directly from RINEX OBS.
+#[pyfunction]
+#[pyo3(signature = (
+    ephemeris,
+    base_obs,
+    rover_obs,
+    base,
+    model=None,
+    arc_options=None,
+    preprocessing=None,
+    update_options=None,
+    float_options=None,
+    fixed_options=None,
+    residual_options=None,
+    initial_baseline_m=[0.0; 3],
+    baseline_prior_sigma_m=30.0,
+    ambiguity_prior_sigma_m=30.0,
+))]
+#[allow(clippy::too_many_arguments)]
+fn solve_static_rinex_rtk_baseline(
+    py: Python<'_>,
+    ephemeris: &Bound<'_, PyAny>,
+    base_obs: &PyRinexObs,
+    rover_obs: &PyRinexObs,
+    base: [f64; 3],
+    model: Option<Py<PyRtkMeasurementModel>>,
+    arc_options: Option<Py<PyRtkRinexArcOptions>>,
+    preprocessing: Option<Py<PyRtkArcPreprocessing>>,
+    update_options: Option<Py<PyRtkArcUpdateOptions>>,
+    float_options: Option<Py<PyRtkFloatOptions>>,
+    fixed_options: Option<Py<PyRtkFixedOptions>>,
+    residual_options: Option<Py<PyRtkResidualValidationOptions>>,
+    initial_baseline_m: [f64; 3],
+    baseline_prior_sigma_m: f64,
+    ambiguity_prior_sigma_m: f64,
+) -> PyResult<PyRtkStaticArcSolution> {
+    let arc_options = rinex_arc_options_from_py(py, arc_options);
+    let model = model_from_optional(py, model);
+    with_observable_source(ephemeris, |source| {
+        let arc =
+            core_build_rinex_rtk_arc(source, base_obs.inner(), rover_obs.inner(), &arc_options)
+                .map_err(to_solve_err)?;
+        let config = static_arc_config_from_parts(
+            py,
+            base,
+            model,
+            arc.wavelengths_m.clone(),
+            arc.offsets_m.clone(),
+            initial_baseline_m,
+            baseline_prior_sigma_m,
+            ambiguity_prior_sigma_m,
+            update_options,
+            preprocessing,
+            float_options,
+            fixed_options,
+            residual_options,
+        );
+        core_solve_static_rtk_arc(&arc.epochs, &config)
+            .map(|inner| PyRtkStaticArcSolution { inner })
+            .map_err(to_solve_err)
+    })
+}
+
+/// Static dual-frequency wide-lane fixed RTK solution built from RINEX.
+#[pyclass(module = "sidereon._sidereon", name = "RinexWideLaneFixedRtkSolution")]
+pub struct PyRinexWideLaneFixedRtkSolution {
+    inner: RtkWideLaneFixedStaticArcSolution,
+}
+
+#[pymethods]
+impl PyRinexWideLaneFixedRtkSolution {
+    #[getter]
+    fn wide_lane(&self) -> PyRtkWideLaneArcSolution {
+        PyRtkWideLaneArcSolution {
+            inner: self.inner.wide_lane.clone(),
+        }
+    }
+
+    #[getter]
+    fn ionosphere_free(&self) -> PyRtkIonosphereFreeArcSolution {
+        PyRtkIonosphereFreeArcSolution {
+            inner: self.inner.ionosphere_free.clone(),
+        }
+    }
+
+    #[getter]
+    fn solution(&self) -> PyRtkStaticArcSolution {
+        PyRtkStaticArcSolution {
+            inner: self.inner.solution.clone(),
+        }
+    }
+
+    /// Integer-fixed baseline as a numpy array `[dx, dy, dz]` metres.
+    #[getter]
+    fn fixed_baseline<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(
+            py,
+            &self.inner.solution.fixed_solution.fixed_solution.baseline_m,
+        )
+    }
+
+    #[getter]
+    fn fixed_baseline_m(&self) -> [f64; 3] {
+        self.inner.solution.fixed_solution.fixed_solution.baseline_m
+    }
+
+    /// Underlying float baseline as a numpy array `[dx, dy, dz]` metres.
+    #[getter]
+    fn float_baseline<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.solution.float_solution.baseline_m)
+    }
+
+    #[getter]
+    fn float_baseline_m(&self) -> [f64; 3] {
+        self.inner.solution.float_solution.baseline_m
+    }
+
+    #[getter]
+    fn integer_status(&self) -> PyIntegerStatus {
+        self.inner
+            .solution
+            .fixed_solution
+            .fixed_solution
+            .search
+            .integer_status
+            .into()
+    }
+
+    #[getter]
+    fn integer_ratio(&self) -> Option<f64> {
+        self.inner
+            .solution
+            .fixed_solution
+            .fixed_solution
+            .search
+            .integer_ratio
+    }
+
+    #[getter]
+    fn float_ambiguity_covariance<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        flat_square_to_array(
+            py,
+            &self.inner.solution.float_solution.ambiguity_covariance_m,
+        )
+    }
+
+    #[getter]
+    fn wide_lane_fixed(&self) -> bool {
+        self.inner.metadata.wide_lane_fixed
+    }
+
+    #[getter]
+    fn wide_lane_ambiguities_cycles(&self) -> BTreeMap<String, i64> {
+        self.inner.metadata.wide_lane_ambiguities_cycles.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RinexWideLaneFixedRtkSolution(fixed_baseline=[{:.4}, {:.4}, {:.4}], integer_status={:?})",
+            self.inner.solution.fixed_solution.fixed_solution.baseline_m[0],
+            self.inner.solution.fixed_solution.fixed_solution.baseline_m[1],
+            self.inner.solution.fixed_solution.fixed_solution.baseline_m[2],
+            self.inner.solution.fixed_solution.fixed_solution.search.integer_status
+        )
+    }
+}
+
+/// Solve a static dual-frequency wide-lane fixed RTK baseline from RINEX OBS.
+#[pyfunction]
+#[pyo3(signature = (
+    ephemeris,
+    base_obs,
+    rover_obs,
+    base,
+    model=None,
+    arc_options=None,
+    update_options=None,
+    float_options=None,
+    fixed_options=None,
+    residual_options=None,
+    initial_baseline_m=[0.0; 3],
+    baseline_prior_sigma_m=30.0,
+    ambiguity_prior_sigma_m=30.0,
+    apply_troposphere=true,
+))]
+#[allow(clippy::too_many_arguments)]
+fn solve_wide_lane_fixed_rinex_rtk_baseline(
+    py: Python<'_>,
+    ephemeris: &Bound<'_, PyAny>,
+    base_obs: &PyRinexObs,
+    rover_obs: &PyRinexObs,
+    base: [f64; 3],
+    model: Option<Py<PyRtkMeasurementModel>>,
+    arc_options: Option<Py<PyRtkRinexDualArcOptions>>,
+    update_options: Option<Py<PyRtkArcUpdateOptions>>,
+    float_options: Option<Py<PyRtkFloatOptions>>,
+    fixed_options: Option<Py<PyRtkFixedOptions>>,
+    residual_options: Option<Py<PyRtkResidualValidationOptions>>,
+    initial_baseline_m: [f64; 3],
+    baseline_prior_sigma_m: f64,
+    ambiguity_prior_sigma_m: f64,
+    apply_troposphere: bool,
+) -> PyResult<PyRinexWideLaneFixedRtkSolution> {
+    let arc_options = rinex_dual_arc_options_from_py(py, arc_options);
+    let model = model_from_optional(py, model);
+    with_observable_source(ephemeris, |source| {
+        let arc = core_build_dual_frequency_rinex_rtk_arc(
+            source,
+            base_obs.inner(),
+            rover_obs.inner(),
+            &arc_options,
+        )
+        .map_err(to_solve_err)?;
+        let static_config = static_arc_config_from_parts(
+            py,
+            base,
+            model,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            initial_baseline_m,
+            baseline_prior_sigma_m,
+            ambiguity_prior_sigma_m,
+            update_options,
+            None,
+            float_options,
+            fixed_options,
+            residual_options,
+        );
+        let config = RtkWideLaneFixedArcConfig {
+            wide_lane: RtkWideLaneArcConfig {
+                base_m: base,
+                reference: BaselineReferenceSelection::Auto,
+                options: WideLaneOptions {
+                    min_epochs: 2,
+                    tolerance_cycles: 0.5,
+                    skip_short_fragments: false,
+                },
+                cycle_slip: Some(RtkDualCycleSlipConfig {
+                    policy: CycleSlipPolicy::DropSatellite,
+                    options: CycleSlipOptions::default(),
+                }),
+            },
+            ionosphere_free: RtkIonosphereFreeArcConfig {
+                base_m: base,
+                initial_baseline_m,
+                reference: BaselineReferenceSelection::Auto,
+                apply_troposphere,
+            },
+            solve: RtkWideLaneFixedArcSolveConfig::Static(static_config),
+        };
+        let inner =
+            core_solve_wide_lane_fixed_rtk_arc(&arc.epochs, &config).map_err(to_solve_err)?;
+        match inner {
+            RtkWideLaneFixedArcSolution::Static(inner) => {
+                Ok(PyRinexWideLaneFixedRtkSolution { inner })
+            }
+            RtkWideLaneFixedArcSolution::Sequential(_) => Err(PyTypeError::new_err(
+                "wide-lane RINEX convenience expected a static solution",
+            )),
+        }
+    })
 }
 
 /// One dual-frequency observation at a receiver.
@@ -3030,6 +3851,20 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRtkStaticArcConfig>()?;
     m.add_class::<PyRtkStaticArcSolution>()?;
     m.add_function(wrap_pyfunction!(solve_static_rtk_arc, m)?)?;
+    m.add_class::<PyRtkRinexSignalPair>()?;
+    m.add_class::<PyRtkRinexArcOptions>()?;
+    m.add_class::<PyRinexRtkArc>()?;
+    m.add_function(wrap_pyfunction!(build_rinex_rtk_arc, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_static_rinex_rtk_baseline, m)?)?;
+    m.add_class::<PyRtkRinexDualSignalPair>()?;
+    m.add_class::<PyRtkRinexDualArcOptions>()?;
+    m.add_class::<PyRinexDualFrequencyRtkArc>()?;
+    m.add_function(wrap_pyfunction!(build_dual_frequency_rinex_rtk_arc, m)?)?;
+    m.add_class::<PyRinexWideLaneFixedRtkSolution>()?;
+    m.add_function(wrap_pyfunction!(
+        solve_wide_lane_fixed_rinex_rtk_baseline,
+        m
+    )?)?;
     m.add_class::<PyRtkDualFrequencyObservation>()?;
     m.add_class::<PyRtkDualFrequencySatelliteObservation>()?;
     m.add_class::<PyRtkDualFrequencyArcEpoch>()?;
