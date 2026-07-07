@@ -14,15 +14,19 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyByteArray, PyBytes, PyModule};
 
 use sidereon_core::fusion::{
-    smooth_fusion_rts as core_smooth_fusion_rts, EkfCorrectionReport, EkfUpdateOptions,
+    smooth_fusion_rts as core_smooth_fusion_rts,
+    velocity_match_outage as core_velocity_match_outage, EkfCorrectionReport, EkfUpdateOptions,
     ErrorStateLayout, FusionFilterKind, FusionRtsEpoch, FusionRtsHistory, FusionRtsHistoryBuilder,
-    FusionUpdate, GnssFixMeasurement, IggIiiMeasurementReweighting, InertialFilter,
-    InertialFilterConfig, InertialFilterSnapshot, InnovationGate, InnovationGateReport,
-    InsFilterState, LooseCouplingConfig, SerializableFusionState, SmoothedFusionEpoch,
-    SmoothedFusionTrajectory, TightCarrierPhaseObservation, TightClockState, TightCouplingConfig,
-    TightFilterSnapshot, TightGnssEpoch, TightGnssObservation, TightRangeRateObservation,
-    TimeSyncHistoryConfig, TimeSyncHistoryStatus, TimeSyncUpdate, UkfUpdateOptions,
-    UnscentedTransformOptions, YangPredictionAdaptiveFactor,
+    FusionUpdate, GnssFixMeasurement, GnssFixStatus, GnssFixStatusWeighting,
+    IggIiiMeasurementReweighting, InertialFilter, InertialFilterConfig, InertialFilterSnapshot,
+    InnovationGate, InnovationGateReport, InsFilterState, LooseCouplingConfig,
+    NonHolonomicConstraintConfig, SerializableFusionState, SmoothedFusionEpoch,
+    SmoothedFusionTrajectory, StationaryDetectorConfig, StationaryUpdateConfig,
+    TightCarrierPhaseObservation, TightClockState, TightCouplingConfig, TightFilterSnapshot,
+    TightGnssEpoch, TightGnssObservation, TightRangeRateObservation, TimeSyncHistoryConfig,
+    TimeSyncHistoryStatus, TimeSyncUpdate, UkfUpdateOptions, UnscentedTransformOptions,
+    VelocityMatchState, VelocityMatchedTrajectory, VelocityMatchingConfig,
+    YangPredictionAdaptiveFactor,
 };
 use sidereon_core::inertial::{
     ImuGrade, ImuSample, ImuSampleKind, ImuSpec, MechanizationConfig, NavState,
@@ -830,6 +834,115 @@ impl PyUkfUpdateOptions {
     }
 }
 
+/// Upstream GNSS fix class used by loose measurement weighting.
+#[pyclass(module = "sidereon._sidereon", name = "GnssFixStatus", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyGnssFixStatus {
+    /// Code-only or standalone GNSS fix.
+    SINGLE,
+    /// Float carrier-phase ambiguity solution.
+    FLOAT,
+    /// Fixed carrier-phase ambiguity solution.
+    FIXED,
+}
+
+impl From<PyGnssFixStatus> for GnssFixStatus {
+    fn from(value: PyGnssFixStatus) -> Self {
+        match value {
+            PyGnssFixStatus::SINGLE => Self::Single,
+            PyGnssFixStatus::FLOAT => Self::Float,
+            PyGnssFixStatus::FIXED => Self::Fixed,
+        }
+    }
+}
+
+impl From<GnssFixStatus> for PyGnssFixStatus {
+    fn from(value: GnssFixStatus) -> Self {
+        match value {
+            GnssFixStatus::Single => Self::SINGLE,
+            GnssFixStatus::Float => Self::FLOAT,
+            GnssFixStatus::Fixed => Self::FIXED,
+        }
+    }
+}
+
+#[pymethods]
+impl PyGnssFixStatus {
+    /// Stable lowercase fix-status label.
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::SINGLE => "single",
+            Self::FLOAT => "float",
+            Self::FIXED => "fixed",
+        }
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::SINGLE => "GnssFixStatus.SINGLE",
+            Self::FLOAT => "GnssFixStatus.FLOAT",
+            Self::FIXED => "GnssFixStatus.FIXED",
+        }
+    }
+}
+
+/// Per-fix-status sigma multipliers applied to loose GNSS covariance.
+#[pyclass(module = "sidereon._sidereon", name = "GnssFixStatusWeighting")]
+#[derive(Clone, Copy)]
+pub struct PyGnssFixStatusWeighting {
+    inner: GnssFixStatusWeighting,
+}
+
+impl PyGnssFixStatusWeighting {
+    fn inner(&self) -> GnssFixStatusWeighting {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyGnssFixStatusWeighting {
+    /// Build per-fix-status loose GNSS sigma multipliers.
+    #[new]
+    #[pyo3(signature = (
+        single_sigma_multiplier=1.0,
+        float_sigma_multiplier=1.0,
+        fixed_sigma_multiplier=1.0,
+    ))]
+    fn new(
+        single_sigma_multiplier: f64,
+        float_sigma_multiplier: f64,
+        fixed_sigma_multiplier: f64,
+    ) -> PyResult<Self> {
+        let inner = GnssFixStatusWeighting {
+            single_sigma_multiplier,
+            float_sigma_multiplier,
+            fixed_sigma_multiplier,
+        };
+        inner.validate().map_err(fusion_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Sigma multiplier for standalone GNSS fixes.
+    #[getter]
+    fn single_sigma_multiplier(&self) -> f64 {
+        self.inner.single_sigma_multiplier
+    }
+
+    /// Sigma multiplier for float carrier-phase fixes.
+    #[getter]
+    fn float_sigma_multiplier(&self) -> f64 {
+        self.inner.float_sigma_multiplier
+    }
+
+    /// Sigma multiplier for fixed carrier-phase fixes.
+    #[getter]
+    fn fixed_sigma_multiplier(&self) -> f64 {
+        self.inner.fixed_sigma_multiplier
+    }
+}
+
 /// IGG-III measurement variance inflation for loose GNSS updates.
 #[pyclass(module = "sidereon._sidereon", name = "IggIiiMeasurementReweighting")]
 #[derive(Clone, Copy)]
@@ -923,6 +1036,283 @@ impl PyYangPredictionAdaptiveFactor {
     }
 }
 
+/// Windowed accel and gyro magnitude detector for stationary updates.
+#[pyclass(module = "sidereon._sidereon", name = "StationaryDetectorConfig")]
+#[derive(Clone, Copy)]
+pub struct PyStationaryDetectorConfig {
+    inner: StationaryDetectorConfig,
+}
+
+impl PyStationaryDetectorConfig {
+    fn inner(&self) -> StationaryDetectorConfig {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyStationaryDetectorConfig {
+    /// Build a stationary detector over a trailing IMU epoch window.
+    #[new]
+    fn new(
+        window_len: usize,
+        max_specific_force_norm_error_mps2: f64,
+        max_body_rate_wrt_ecef_norm_rps: f64,
+    ) -> PyResult<Self> {
+        let inner = StationaryDetectorConfig {
+            window_len,
+            max_specific_force_norm_error_mps2,
+            max_body_rate_wrt_ecef_norm_rps,
+        };
+        inner.validate().map_err(fusion_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Required propagated IMU epochs before the detector can fire.
+    #[getter]
+    fn window_len(&self) -> usize {
+        self.inner.window_len
+    }
+
+    /// Maximum specific-force norm error from local gravity.
+    #[getter]
+    fn max_specific_force_norm_error_mps2(&self) -> f64 {
+        self.inner.max_specific_force_norm_error_mps2
+    }
+
+    /// Maximum body angular-rate norm relative to ECEF.
+    #[getter]
+    fn max_body_rate_wrt_ecef_norm_rps(&self) -> f64 {
+        self.inner.max_body_rate_wrt_ecef_norm_rps
+    }
+}
+
+/// Stationarity detector and pseudo-measurement sigmas for ZUPT/ZARU.
+#[pyclass(module = "sidereon._sidereon", name = "StationaryUpdateConfig")]
+#[derive(Clone, Copy)]
+pub struct PyStationaryUpdateConfig {
+    inner: StationaryUpdateConfig,
+}
+
+impl PyStationaryUpdateConfig {
+    fn inner(&self) -> StationaryUpdateConfig {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyStationaryUpdateConfig {
+    /// Build stationary zero-velocity and zero-angular-rate update settings.
+    #[new]
+    fn new(
+        detector: &PyStationaryDetectorConfig,
+        zero_velocity_sigma_mps: f64,
+        zero_angular_rate_sigma_rps: f64,
+    ) -> PyResult<Self> {
+        let inner = StationaryUpdateConfig {
+            detector: detector.inner(),
+            zero_velocity_sigma_mps,
+            zero_angular_rate_sigma_rps,
+        };
+        inner.validate().map_err(fusion_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Detector thresholds over a trailing IMU epoch window.
+    #[getter]
+    fn detector(&self) -> PyStationaryDetectorConfig {
+        PyStationaryDetectorConfig {
+            inner: self.inner.detector,
+        }
+    }
+
+    /// One-sigma zero-velocity pseudo-measurement noise in m/s.
+    #[getter]
+    fn zero_velocity_sigma_mps(&self) -> f64 {
+        self.inner.zero_velocity_sigma_mps
+    }
+
+    /// One-sigma zero-angular-rate pseudo-measurement noise in rad/s.
+    #[getter]
+    fn zero_angular_rate_sigma_rps(&self) -> f64 {
+        self.inner.zero_angular_rate_sigma_rps
+    }
+}
+
+/// Non-holonomic wheeled-vehicle velocity constraint settings.
+#[pyclass(module = "sidereon._sidereon", name = "NonHolonomicConstraintConfig")]
+#[derive(Clone, Copy)]
+pub struct PyNonHolonomicConstraintConfig {
+    inner: NonHolonomicConstraintConfig,
+}
+
+impl PyNonHolonomicConstraintConfig {
+    fn inner(&self) -> NonHolonomicConstraintConfig {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyNonHolonomicConstraintConfig {
+    /// Build wheeled-vehicle lateral and vertical velocity constraints.
+    #[new]
+    fn new(
+        lateral_velocity_sigma_mps: f64,
+        vertical_velocity_sigma_mps: f64,
+        min_speed_mps: f64,
+        max_body_rate_wrt_ecef_norm_rps: f64,
+    ) -> PyResult<Self> {
+        let inner = NonHolonomicConstraintConfig {
+            lateral_velocity_sigma_mps,
+            vertical_velocity_sigma_mps,
+            min_speed_mps,
+            max_body_rate_wrt_ecef_norm_rps,
+        };
+        inner.validate().map_err(fusion_err)?;
+        Ok(Self { inner })
+    }
+
+    /// One-sigma lateral body velocity pseudo-measurement noise in m/s.
+    #[getter]
+    fn lateral_velocity_sigma_mps(&self) -> f64 {
+        self.inner.lateral_velocity_sigma_mps
+    }
+
+    /// One-sigma vertical body velocity pseudo-measurement noise in m/s.
+    #[getter]
+    fn vertical_velocity_sigma_mps(&self) -> f64 {
+        self.inner.vertical_velocity_sigma_mps
+    }
+
+    /// Minimum ECEF speed required before applying the constraint.
+    #[getter]
+    fn min_speed_mps(&self) -> f64 {
+        self.inner.min_speed_mps
+    }
+
+    /// Maximum body angular-rate norm relative to ECEF.
+    #[getter]
+    fn max_body_rate_wrt_ecef_norm_rps(&self) -> f64 {
+        self.inner.max_body_rate_wrt_ecef_norm_rps
+    }
+}
+
+/// Endpoint matching settings for a GNSS outage span.
+#[pyclass(module = "sidereon._sidereon", name = "VelocityMatchingConfig")]
+#[derive(Clone, Copy)]
+pub struct PyVelocityMatchingConfig {
+    inner: VelocityMatchingConfig,
+}
+
+impl PyVelocityMatchingConfig {
+    fn inner(&self) -> VelocityMatchingConfig {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyVelocityMatchingConfig {
+    /// Build endpoint velocity matching settings for a GNSS outage span.
+    #[new]
+    fn new(max_outage_duration_s: f64) -> PyResult<Self> {
+        let inner = VelocityMatchingConfig {
+            max_outage_duration_s,
+        };
+        inner.validate().map_err(fusion_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Maximum outage interval accepted by the matcher.
+    #[getter]
+    fn max_outage_duration_s(&self) -> f64 {
+        self.inner.max_outage_duration_s
+    }
+}
+
+/// One position/velocity sample used by velocity matching.
+#[pyclass(module = "sidereon._sidereon", name = "VelocityMatchState")]
+#[derive(Clone, Copy)]
+pub struct PyVelocityMatchState {
+    inner: VelocityMatchState,
+}
+
+impl PyVelocityMatchState {
+    fn inner(&self) -> VelocityMatchState {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyVelocityMatchState {
+    /// Build one velocity-matching state sample.
+    #[new]
+    fn new(
+        t_j2000_s: f64,
+        position_ecef_m: [f64; 3],
+        velocity_ecef_mps: [f64; 3],
+    ) -> PyResult<Self> {
+        VelocityMatchState::new(t_j2000_s, position_ecef_m, velocity_ecef_mps)
+            .map(|inner| Self { inner })
+            .map_err(fusion_err)
+    }
+
+    /// Sample epoch in seconds since J2000.
+    #[getter]
+    fn t_j2000_s(&self) -> f64 {
+        self.inner.t_j2000_s
+    }
+
+    /// INS position in ECEF metres.
+    #[getter]
+    fn position_ecef_m<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.position_ecef_m)
+    }
+
+    /// INS velocity in ECEF metres per second.
+    #[getter]
+    fn velocity_ecef_mps<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.inner.velocity_ecef_mps)
+    }
+}
+
+/// Output from endpoint velocity matching across one outage.
+#[pyclass(module = "sidereon._sidereon", name = "VelocityMatchedTrajectory")]
+#[derive(Clone)]
+pub struct PyVelocityMatchedTrajectory {
+    inner: VelocityMatchedTrajectory,
+}
+
+impl From<VelocityMatchedTrajectory> for PyVelocityMatchedTrajectory {
+    fn from(inner: VelocityMatchedTrajectory) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyVelocityMatchedTrajectory {
+    /// Corrected states in input order.
+    #[getter]
+    fn states(&self) -> Vec<PyVelocityMatchState> {
+        self.inner
+            .states
+            .iter()
+            .copied()
+            .map(|inner| PyVelocityMatchState { inner })
+            .collect()
+    }
+
+    /// Position correction applied at the return-fix endpoint.
+    #[getter]
+    fn endpoint_position_correction_ecef_m(&self) -> [f64; 3] {
+        self.inner.endpoint_position_correction_ecef_m
+    }
+
+    /// Velocity correction applied at the return-fix endpoint.
+    #[getter]
+    fn endpoint_velocity_correction_ecef_mps(&self) -> [f64; 3] {
+        self.inner.endpoint_velocity_correction_ecef_mps
+    }
+}
+
 /// Loose-coupled GNSS update options.
 #[pyclass(module = "sidereon._sidereon", name = "LooseCouplingConfig")]
 #[derive(Clone, Copy)]
@@ -943,23 +1333,34 @@ impl PyLooseCouplingConfig {
     #[pyo3(signature = (
         lever_arm_body_m=[0.0; 3],
         update_options=None,
+        fix_status_weighting=None,
         measurement_reweighting=None,
         prediction_adaptation=None,
+        stationary_updates=None,
+        non_holonomic=None,
     ))]
     fn new(
         lever_arm_body_m: [f64; 3],
         update_options: Option<&PyEkfUpdateOptions>,
+        fix_status_weighting: Option<&PyGnssFixStatusWeighting>,
         measurement_reweighting: Option<&PyIggIiiMeasurementReweighting>,
         prediction_adaptation: Option<&PyYangPredictionAdaptiveFactor>,
+        stationary_updates: Option<&PyStationaryUpdateConfig>,
+        non_holonomic: Option<&PyNonHolonomicConstraintConfig>,
     ) -> PyResult<Self> {
         let inner = LooseCouplingConfig {
             lever_arm_body_m,
             update_options: update_options
                 .map(PyEkfUpdateOptions::inner)
                 .unwrap_or_default(),
+            fix_status_weighting: fix_status_weighting
+                .map(PyGnssFixStatusWeighting::inner)
+                .unwrap_or_default(),
             measurement_reweighting: measurement_reweighting
                 .map(PyIggIiiMeasurementReweighting::inner),
             prediction_adaptation: prediction_adaptation.map(PyYangPredictionAdaptiveFactor::inner),
+            stationary_updates: stationary_updates.map(PyStationaryUpdateConfig::inner),
+            non_holonomic: non_holonomic.map(PyNonHolonomicConstraintConfig::inner),
         };
         inner.validate().map_err(fusion_err)?;
         Ok(Self { inner })
@@ -979,6 +1380,14 @@ impl PyLooseCouplingConfig {
         }
     }
 
+    /// Per-fix-status sigma multipliers applied to GNSS covariance.
+    #[getter]
+    fn fix_status_weighting(&self) -> PyGnssFixStatusWeighting {
+        PyGnssFixStatusWeighting {
+            inner: self.inner.fix_status_weighting,
+        }
+    }
+
     /// Optional IGG-III measurement variance inflation settings.
     #[getter]
     fn measurement_reweighting(&self) -> Option<PyIggIiiMeasurementReweighting> {
@@ -993,6 +1402,22 @@ impl PyLooseCouplingConfig {
         self.inner
             .prediction_adaptation
             .map(|inner| PyYangPredictionAdaptiveFactor { inner })
+    }
+
+    /// Optional stationary zero-velocity and zero-angular-rate updates.
+    #[getter]
+    fn stationary_updates(&self) -> Option<PyStationaryUpdateConfig> {
+        self.inner
+            .stationary_updates
+            .map(|inner| PyStationaryUpdateConfig { inner })
+    }
+
+    /// Optional wheeled-vehicle lateral and vertical velocity constraints.
+    #[getter]
+    fn non_holonomic(&self) -> Option<PyNonHolonomicConstraintConfig> {
+        self.inner
+            .non_holonomic
+            .map(|inner| PyNonHolonomicConstraintConfig { inner })
     }
 }
 
@@ -1125,6 +1550,8 @@ impl PyInertialFilterConfig {
         loose=None,
         tight=None,
         ukf_update_options=None,
+        *,
+        imu_to_body_dcm=None,
     ))]
     fn new(
         imu_spec: &PyImuSpec,
@@ -1133,9 +1560,17 @@ impl PyInertialFilterConfig {
         loose: Option<&PyLooseCouplingConfig>,
         tight: Option<&PyTightCouplingConfig>,
         ukf_update_options: Option<&PyUkfUpdateOptions>,
+        imu_to_body_dcm: Option<PyReadonlyArray2<'_, f64>>,
     ) -> PyResult<Self> {
         let mut inner = InertialFilterConfig::new(imu_spec.inner()).map_err(fusion_err)?;
         inner.filter_kind = filter_kind.into();
+        if let Some(imu_to_body_dcm) = imu_to_body_dcm {
+            inner.imu_to_body_dcm = matrix3_from_array(
+                &imu_to_body_dcm,
+                "imu_to_body_dcm",
+                FinitePolicy::RequireFinite,
+            )?;
+        }
         if let Some(mechanization) = mechanization {
             inner.mechanization = mechanization.inner();
         }
@@ -1164,6 +1599,12 @@ impl PyInertialFilterConfig {
     #[getter]
     fn filter_kind(&self) -> PyFusionFilterKind {
         self.inner.filter_kind.into()
+    }
+
+    /// Direction cosine matrix rotating IMU sensor axes into body axes.
+    #[getter]
+    fn imu_to_body_dcm<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.imu_to_body_dcm)
     }
 
     /// Strapdown mechanization options.
@@ -1216,11 +1657,20 @@ impl PyGnssFixMeasurement {
 impl PyGnssFixMeasurement {
     /// Build a position-only GNSS fix measurement.
     #[staticmethod]
+    #[pyo3(signature = (
+        t_j2000_s,
+        position_ecef_m,
+        position_covariance_m2,
+        satellites_used,
+        *,
+        fix_status=PyGnssFixStatus::SINGLE,
+    ))]
     fn position(
         t_j2000_s: f64,
         position_ecef_m: [f64; 3],
         position_covariance_m2: PyReadonlyArray2<'_, f64>,
         satellites_used: usize,
+        fix_status: PyGnssFixStatus,
     ) -> PyResult<Self> {
         let covariance = matrix3_from_array(
             &position_covariance_m2,
@@ -1228,18 +1678,29 @@ impl PyGnssFixMeasurement {
             FinitePolicy::RequireFinite,
         )?;
         GnssFixMeasurement::position(t_j2000_s, position_ecef_m, covariance, satellites_used)
+            .map(|inner| inner.with_fix_status(fix_status.into()))
             .map(|inner| Self { inner })
             .map_err(fusion_err)
     }
 
     /// Build a position and velocity GNSS fix measurement.
     #[staticmethod]
+    #[pyo3(signature = (
+        t_j2000_s,
+        position_ecef_m,
+        velocity_ecef_mps,
+        covariance,
+        satellites_used,
+        *,
+        fix_status=PyGnssFixStatus::SINGLE,
+    ))]
     fn position_velocity(
         t_j2000_s: f64,
         position_ecef_m: [f64; 3],
         velocity_ecef_mps: [f64; 3],
         covariance: PyReadonlyArray2<'_, f64>,
         satellites_used: usize,
+        fix_status: PyGnssFixStatus,
     ) -> PyResult<Self> {
         let covariance = square_matrix_from_array(&covariance, "covariance", Some(6))?;
         GnssFixMeasurement::position_velocity(
@@ -1249,8 +1710,16 @@ impl PyGnssFixMeasurement {
             covariance,
             satellites_used,
         )
+        .map(|inner| inner.with_fix_status(fix_status.into()))
         .map(|inner| Self { inner })
         .map_err(fusion_err)
+    }
+
+    /// Return a copy tagged with a different upstream fix status.
+    fn with_fix_status(&self, fix_status: PyGnssFixStatus) -> Self {
+        Self {
+            inner: self.inner.clone().with_fix_status(fix_status.into()),
+        }
     }
 
     /// Measurement epoch in seconds since J2000.
@@ -1281,6 +1750,18 @@ impl PyGnssFixMeasurement {
     #[getter]
     fn satellites_used(&self) -> usize {
         self.inner.satellites_used
+    }
+
+    /// Whether the upstream solver reported a successful fix.
+    #[getter]
+    fn solution_valid(&self) -> bool {
+        self.inner.solution_valid
+    }
+
+    /// Upstream ambiguity or code-only fix class.
+    #[getter]
+    fn fix_status(&self) -> PyGnssFixStatus {
+        self.inner.fix_status.into()
     }
 }
 
@@ -2302,6 +2783,44 @@ impl PyInertialFilter {
             .map_err(fusion_err)
     }
 
+    /// Apply a gated zero-velocity and zero-angular-rate update.
+    fn update_stationary(&mut self) -> PyResult<Option<PyFusionUpdate>> {
+        self.inner
+            .update_stationary()
+            .map(|update| update.map(Into::into))
+            .map_err(fusion_err)
+    }
+
+    /// Apply a stationary update and record checkpoints when an update applies.
+    fn update_stationary_recorded(
+        &mut self,
+        history: &mut PyFusionRtsHistoryBuilder,
+    ) -> PyResult<Option<PyFusionUpdate>> {
+        self.inner
+            .update_stationary_recorded(&mut history.inner)
+            .map(|update| update.map(Into::into))
+            .map_err(fusion_err)
+    }
+
+    /// Apply a gated wheeled-vehicle non-holonomic constraint update.
+    fn update_non_holonomic(&mut self) -> PyResult<Option<PyFusionUpdate>> {
+        self.inner
+            .update_non_holonomic()
+            .map(|update| update.map(Into::into))
+            .map_err(fusion_err)
+    }
+
+    /// Apply a non-holonomic constraint and record checkpoints when an update applies.
+    fn update_non_holonomic_recorded(
+        &mut self,
+        history: &mut PyFusionRtsHistoryBuilder,
+    ) -> PyResult<Option<PyFusionUpdate>> {
+        self.inner
+            .update_non_holonomic_recorded(&mut history.inner)
+            .map(|update| update.map(Into::into))
+            .map_err(fusion_err)
+    }
+
     /// Apply a tight raw GNSS update at the current propagated epoch.
     fn update_tight(
         &mut self,
@@ -2385,6 +2904,23 @@ impl PyInertialFilter {
     }
 }
 
+/// Blend a first good post-outage fix back over an outage span.
+#[pyfunction]
+fn velocity_match_outage(
+    py: Python<'_>,
+    states: Vec<Py<PyVelocityMatchState>>,
+    first_good_fix: &PyGnssFixMeasurement,
+    config: &PyVelocityMatchingConfig,
+) -> PyResult<PyVelocityMatchedTrajectory> {
+    let states = states
+        .iter()
+        .map(|state| state.borrow(py).inner())
+        .collect::<Vec<_>>();
+    core_velocity_match_outage(&states, &first_good_fix.inner(), config.inner())
+        .map(Into::into)
+        .map_err(fusion_err)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyImuGrade>()?;
     m.add_class::<PyImuSpec>()?;
@@ -2398,8 +2934,16 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEkfUpdateOptions>()?;
     m.add_class::<PyUnscentedTransformOptions>()?;
     m.add_class::<PyUkfUpdateOptions>()?;
+    m.add_class::<PyGnssFixStatus>()?;
+    m.add_class::<PyGnssFixStatusWeighting>()?;
     m.add_class::<PyIggIiiMeasurementReweighting>()?;
     m.add_class::<PyYangPredictionAdaptiveFactor>()?;
+    m.add_class::<PyStationaryDetectorConfig>()?;
+    m.add_class::<PyStationaryUpdateConfig>()?;
+    m.add_class::<PyNonHolonomicConstraintConfig>()?;
+    m.add_class::<PyVelocityMatchingConfig>()?;
+    m.add_class::<PyVelocityMatchState>()?;
+    m.add_class::<PyVelocityMatchedTrajectory>()?;
     m.add_class::<PyLooseCouplingConfig>()?;
     m.add_class::<PyTightCouplingConfig>()?;
     m.add_class::<PyInertialFilterConfig>()?;
@@ -2424,5 +2968,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySmoothedFusionTrajectory>()?;
     m.add_class::<PyInertialFilter>()?;
     m.add_function(wrap_pyfunction!(smooth_fusion_rts, m)?)?;
+    m.add_function(wrap_pyfunction!(velocity_match_outage, m)?)?;
     Ok(())
 }

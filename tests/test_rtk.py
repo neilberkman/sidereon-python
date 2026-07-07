@@ -578,6 +578,58 @@ def test_rinex_rtk_static_convenience_solves_real_wettzell_arc():
     assert _vector_error_m(fixed.fixed_baseline, truth_baseline_m) < 0.01
 
 
+def test_static_reference_station_rinex_matches_core_oracle():
+    sp3, base_obs, rover_obs, base_arp_m, truth_baseline_m = _wettzell_rinex_inputs()
+    arc_options = sidereon.RtkRinexArcOptions(
+        max_epochs=24,
+        include_prediction_time=False,
+    )
+    fixed_options = sidereon.RtkFixedOptions(
+        position_tol_m=1.0e-4,
+        ambiguity_tol_m=1.0e-4,
+        max_iterations=10,
+        ratio_threshold=3.0,
+        partial_ambiguity_resolution=True,
+        partial_min_ambiguities=4,
+    )
+
+    solution = sidereon.solve_static_reference_station_rinex(
+        sp3,
+        base_obs,
+        rover_obs,
+        base_arp_m.tolist(),
+        model=_real_arc_model(),
+        arc_options=arc_options,
+        preprocessing=sidereon.RtkArcPreprocessing(cycle_slip="split_arc"),
+        float_options=_real_arc_float_options(),
+        fixed_options=fixed_options,
+        enable_code_dgnss=False,
+        enable_carrier_rtk=True,
+        with_geodetic=True,
+    )
+
+    core_position_m = np.array(
+        [4075579.3700862653, 931853.4127828529, 4801569.4021161515]
+    )
+    truth_position_m = base_arp_m + truth_baseline_m
+    error_m = np.asarray(solution.position) - truth_position_m
+    cov = solution.covariance.position_ecef
+    unit = error_m / np.linalg.norm(error_m)
+    three_sigma_m = 3.0 * float(np.sqrt(unit @ cov @ unit))
+
+    assert solution.mode == "carrier_fixed"
+    assert solution.fix_status == "carrier_fixed"
+    assert np.allclose(solution.position, core_position_m, atol=1.0e-9)
+    assert _vector_error_m(solution.position, truth_position_m) < 0.01
+    assert three_sigma_m > np.linalg.norm(error_m)
+    assert three_sigma_m < 0.03
+    assert np.linalg.eigvalsh(cov).min() >= -1.0e-12
+    assert solution.carrier_solution.integer_status == sidereon.IntegerStatus.FIXED
+    assert solution.carrier_solution.integer_ratio > 3.0
+    assert len(solution.diagnostics) == 24
+    assert solution.mode_reports[0].status == "solved"
+
+
 def test_rinex_wide_lane_fixed_convenience_solves_real_wettzell_arc():
     sp3, base_obs, rover_obs, base_arp_m, truth_baseline_m = _wettzell_rinex_inputs()
     arc_options = sidereon.RtkRinexDualArcOptions(
