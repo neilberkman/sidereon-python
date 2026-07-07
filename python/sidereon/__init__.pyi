@@ -12623,6 +12623,31 @@ class UkfUpdateOptions:
     @property
     def innovation_gate(self) -> InnovationGate | None: ...
 
+class GnssFixStatus(enum.Enum):
+    """Upstream GNSS fix class used by loose measurement weighting."""
+
+    SINGLE = ...
+    FLOAT = ...
+    FIXED = ...
+    @property
+    def label(self) -> str: ...
+
+class GnssFixStatusWeighting:
+    """Per-fix-status sigma multipliers applied to loose GNSS covariance."""
+
+    def __init__(
+        self,
+        single_sigma_multiplier: float = ...,
+        float_sigma_multiplier: float = ...,
+        fixed_sigma_multiplier: float = ...,
+    ) -> None: ...
+    @property
+    def single_sigma_multiplier(self) -> float: ...
+    @property
+    def float_sigma_multiplier(self) -> float: ...
+    @property
+    def fixed_sigma_multiplier(self) -> float: ...
+
 class IggIiiMeasurementReweighting:
     """IGG-III measurement variance inflation for loose GNSS updates."""
 
@@ -12649,6 +12674,90 @@ class YangPredictionAdaptiveFactor:
     @property
     def outlier_gate_probability(self) -> float: ...
 
+class StationaryDetectorConfig:
+    """Windowed accel and gyro magnitude detector for stationary updates."""
+
+    def __init__(
+        self,
+        window_len: int,
+        max_specific_force_norm_error_mps2: float,
+        max_body_rate_wrt_ecef_norm_rps: float,
+    ) -> None: ...
+    @property
+    def window_len(self) -> int: ...
+    @property
+    def max_specific_force_norm_error_mps2(self) -> float: ...
+    @property
+    def max_body_rate_wrt_ecef_norm_rps(self) -> float: ...
+
+class StationaryUpdateConfig:
+    """Stationarity detector and pseudo-measurement sigmas for ZUPT/ZARU."""
+
+    def __init__(
+        self,
+        detector: StationaryDetectorConfig,
+        zero_velocity_sigma_mps: float,
+        zero_angular_rate_sigma_rps: float,
+    ) -> None: ...
+    @property
+    def detector(self) -> StationaryDetectorConfig: ...
+    @property
+    def zero_velocity_sigma_mps(self) -> float: ...
+    @property
+    def zero_angular_rate_sigma_rps(self) -> float: ...
+
+class NonHolonomicConstraintConfig:
+    """Non-holonomic wheeled-vehicle velocity constraint settings."""
+
+    def __init__(
+        self,
+        lateral_velocity_sigma_mps: float,
+        vertical_velocity_sigma_mps: float,
+        min_speed_mps: float,
+        max_body_rate_wrt_ecef_norm_rps: float,
+    ) -> None: ...
+    @property
+    def lateral_velocity_sigma_mps(self) -> float: ...
+    @property
+    def vertical_velocity_sigma_mps(self) -> float: ...
+    @property
+    def min_speed_mps(self) -> float: ...
+    @property
+    def max_body_rate_wrt_ecef_norm_rps(self) -> float: ...
+
+class VelocityMatchingConfig:
+    """Endpoint matching settings for a GNSS outage span."""
+
+    def __init__(self, max_outage_duration_s: float) -> None: ...
+    @property
+    def max_outage_duration_s(self) -> float: ...
+
+class VelocityMatchState:
+    """One position/velocity sample used by velocity matching."""
+
+    def __init__(
+        self,
+        t_j2000_s: float,
+        position_ecef_m: Sequence[float],
+        velocity_ecef_mps: Sequence[float],
+    ) -> None: ...
+    @property
+    def t_j2000_s(self) -> float: ...
+    @property
+    def position_ecef_m(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def velocity_ecef_mps(self) -> npt.NDArray[np.float64]: ...
+
+class VelocityMatchedTrajectory:
+    """Output from endpoint velocity matching across one outage."""
+
+    @property
+    def states(self) -> list[VelocityMatchState]: ...
+    @property
+    def endpoint_position_correction_ecef_m(self) -> tuple[float, float, float]: ...
+    @property
+    def endpoint_velocity_correction_ecef_mps(self) -> tuple[float, float, float]: ...
+
 class LooseCouplingConfig:
     """Loose-coupled GNSS update options."""
 
@@ -12656,17 +12765,26 @@ class LooseCouplingConfig:
         self,
         lever_arm_body_m: Sequence[float] = ...,
         update_options: EkfUpdateOptions | None = ...,
+        fix_status_weighting: GnssFixStatusWeighting | None = ...,
         measurement_reweighting: IggIiiMeasurementReweighting | None = ...,
         prediction_adaptation: YangPredictionAdaptiveFactor | None = ...,
+        stationary_updates: StationaryUpdateConfig | None = ...,
+        non_holonomic: NonHolonomicConstraintConfig | None = ...,
     ) -> None: ...
     @property
     def lever_arm_body_m(self) -> tuple[float, float, float]: ...
     @property
     def update_options(self) -> EkfUpdateOptions: ...
     @property
+    def fix_status_weighting(self) -> GnssFixStatusWeighting: ...
+    @property
     def measurement_reweighting(self) -> IggIiiMeasurementReweighting | None: ...
     @property
     def prediction_adaptation(self) -> YangPredictionAdaptiveFactor | None: ...
+    @property
+    def stationary_updates(self) -> StationaryUpdateConfig | None: ...
+    @property
+    def non_holonomic(self) -> NonHolonomicConstraintConfig | None: ...
 
 class TightCouplingConfig:
     """Tight raw GNSS update options."""
@@ -12710,11 +12828,15 @@ class InertialFilterConfig:
         loose: LooseCouplingConfig | None = ...,
         tight: TightCouplingConfig | None = ...,
         ukf_update_options: UkfUpdateOptions | None = ...,
+        *,
+        imu_to_body_dcm: npt.NDArray[np.float64] | None = ...,
     ) -> None: ...
     @property
     def imu_spec(self) -> ImuSpec: ...
     @property
     def filter_kind(self) -> FusionFilterKind: ...
+    @property
+    def imu_to_body_dcm(self) -> npt.NDArray[np.float64]: ...
     @property
     def mechanization(self) -> MechanizationConfig: ...
     @property
@@ -12733,6 +12855,8 @@ class GnssFixMeasurement:
         position_ecef_m: Sequence[float],
         position_covariance_m2: npt.NDArray[np.float64],
         satellites_used: int,
+        *,
+        fix_status: GnssFixStatus = ...,
     ) -> GnssFixMeasurement: ...
     @staticmethod
     def position_velocity(
@@ -12741,7 +12865,10 @@ class GnssFixMeasurement:
         velocity_ecef_mps: Sequence[float],
         covariance: npt.NDArray[np.float64],
         satellites_used: int,
+        *,
+        fix_status: GnssFixStatus = ...,
     ) -> GnssFixMeasurement: ...
+    def with_fix_status(self, fix_status: GnssFixStatus) -> GnssFixMeasurement: ...
     @property
     def t_j2000_s(self) -> float: ...
     @property
@@ -12752,6 +12879,10 @@ class GnssFixMeasurement:
     def covariance(self) -> npt.NDArray[np.float64]: ...
     @property
     def satellites_used(self) -> int: ...
+    @property
+    def solution_valid(self) -> bool: ...
+    @property
+    def fix_status(self) -> GnssFixStatus: ...
 
 class TightRangeRateObservation:
     """Doppler-derived range-rate row for one satellite in a tight update."""
@@ -13004,6 +13135,13 @@ class SmoothedFusionTrajectory:
 def smooth_fusion_rts(history: FusionRtsHistory) -> SmoothedFusionTrajectory:
     """Apply fixed-interval RTS smoothing to recorded fusion history."""
     ...
+def velocity_match_outage(
+    states: Sequence[VelocityMatchState],
+    first_good_fix: GnssFixMeasurement,
+    config: VelocityMatchingConfig,
+) -> VelocityMatchedTrajectory:
+    """Blend a first good post-outage fix back over an outage span."""
+    ...
 
 class InertialFilter:
     """Stateful closed-loop INS filter with loose and tight GNSS update methods."""
@@ -13036,6 +13174,14 @@ class InertialFilter:
     def update_loose_time_sync(
         self, measurement: GnssFixMeasurement
     ) -> TimeSyncUpdate: ...
+    def update_stationary(self) -> FusionUpdate | None: ...
+    def update_stationary_recorded(
+        self, history: FusionRtsHistoryBuilder
+    ) -> FusionUpdate | None: ...
+    def update_non_holonomic(self) -> FusionUpdate | None: ...
+    def update_non_holonomic_recorded(
+        self, history: FusionRtsHistoryBuilder
+    ) -> FusionUpdate | None: ...
     def update_tight(self, source: Any, epoch: TightGnssEpoch) -> FusionUpdate: ...
     def update_tight_recorded(
         self, source: Any, epoch: TightGnssEpoch, history: FusionRtsHistoryBuilder
