@@ -139,7 +139,13 @@ The Python package mirrors the full breadth of the engine.
 - **GNSS/INS fusion:** strapdown mechanization with an error-state EKF (UKF
   option), loose and tight coupling, robust loose updates with an outlier
   guard, an RTS fixed-interval smoother, checkpointed time synchronization,
-  and a serializable filter state.
+  a serializable filter state, and field mode: zero-velocity and
+  zero-angular-rate updates with a stationarity detector, non-holonomic
+  vehicle constraints, per-fix-status measurement weighting, and an
+  IMU-to-body mounting matrix, all off by default.
+- **Reference-station static solve:** rover and reference observations across
+  epochs in, one station coordinate with covariance and typed per-mode errors
+  out, selecting fixed carrier, then code-DGNSS, then float.
 - **Scenario simulation:** deterministic synthetic GNSS observables from a
   versioned scenario with a per-term error budget, plus a ground-truth ledger
   attributing solver error to each term; same scenario and seed give identical
