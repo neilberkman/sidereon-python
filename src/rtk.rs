@@ -19,8 +19,9 @@ use sidereon_core::positioning::{
     solve_static_reference_station_rinex as core_solve_static_reference_station_rinex,
     RinexSppOptions, StaticReferenceCarrierRinexOptions, StaticReferenceCarrierSolution,
     StaticReferenceCodeSolution, StaticReferenceEpochDiagnostic, StaticReferenceFixStatus,
-    StaticReferenceModeReport, StaticReferenceModeStatus, StaticReferenceStationCovariance,
-    StaticReferenceStationMode, StaticReferenceStationRinexOptions, StaticReferenceStationSolution,
+    StaticReferenceModeError, StaticReferenceModeReport, StaticReferenceModeStatus,
+    StaticReferenceStationCovariance, StaticReferenceStationMode,
+    StaticReferenceStationRinexOptions, StaticReferenceStationSolution,
 };
 use sidereon_core::rtk::{BaselineReferenceSelection, CycleSlipReceiver};
 use sidereon_core::rtk_filter::defaults::{
@@ -3028,6 +3029,97 @@ fn reference_mode_status_label(status: StaticReferenceModeStatus) -> &'static st
     }
 }
 
+fn reference_mode_error_kind(error: &StaticReferenceModeError) -> &'static str {
+    match error {
+        StaticReferenceModeError::RinexAssembly { .. } => "rinex_assembly",
+        StaticReferenceModeError::NoMatchedCodeEpochs => "no_matched_code_epochs",
+        StaticReferenceModeError::CodeDgnss { .. } => "code_dgnss",
+        StaticReferenceModeError::StaticSolve { .. } => "static_solve",
+        StaticReferenceModeError::CarrierArc { .. } => "carrier_arc",
+        StaticReferenceModeError::CarrierSolve { .. } => "carrier_solve",
+        StaticReferenceModeError::Frame { .. } => "frame",
+        StaticReferenceModeError::CorrectedObservation { .. } => "corrected_observation",
+        StaticReferenceModeError::InvalidCorrectedSatelliteId { .. } => {
+            "invalid_corrected_satellite_id"
+        }
+    }
+}
+
+/// Failure detail for one attempted static reference-station mode.
+#[pyclass(module = "sidereon._sidereon", name = "StaticReferenceModeError")]
+#[derive(Clone)]
+pub struct PyStaticReferenceModeError {
+    inner: StaticReferenceModeError,
+}
+
+#[pymethods]
+impl PyStaticReferenceModeError {
+    /// Stable variant label.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        reference_mode_error_kind(&self.inner)
+    }
+
+    /// Human-readable failure text.
+    #[getter]
+    fn message(&self) -> String {
+        self.inner.to_string()
+    }
+
+    /// RINEX side when `kind == "rinex_assembly"`.
+    #[getter]
+    fn side(&self) -> Option<&'static str> {
+        match &self.inner {
+            StaticReferenceModeError::RinexAssembly { side, .. } => Some(*side),
+            _ => None,
+        }
+    }
+
+    /// Conversion field when `kind == "frame"`.
+    #[getter]
+    fn field(&self) -> Option<&'static str> {
+        match &self.inner {
+            StaticReferenceModeError::Frame { field, .. } => Some(*field),
+            _ => None,
+        }
+    }
+
+    /// Source failure text when the core variant carries one.
+    #[getter]
+    fn reason(&self) -> Option<String> {
+        match &self.inner {
+            StaticReferenceModeError::RinexAssembly { reason, .. }
+            | StaticReferenceModeError::CodeDgnss { reason }
+            | StaticReferenceModeError::StaticSolve { reason }
+            | StaticReferenceModeError::CarrierArc { reason }
+            | StaticReferenceModeError::CarrierSolve { reason }
+            | StaticReferenceModeError::Frame { reason, .. }
+            | StaticReferenceModeError::CorrectedObservation { reason } => Some(reason.clone()),
+            StaticReferenceModeError::NoMatchedCodeEpochs
+            | StaticReferenceModeError::InvalidCorrectedSatelliteId { .. } => None,
+        }
+    }
+
+    /// Invalid satellite id when `kind == "invalid_corrected_satellite_id"`.
+    #[getter]
+    fn satellite_id(&self) -> Option<String> {
+        match &self.inner {
+            StaticReferenceModeError::InvalidCorrectedSatelliteId { satellite_id } => {
+                Some(satellite_id.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "StaticReferenceModeError(kind={}, message={:?})",
+            reference_mode_error_kind(&self.inner),
+            self.inner.to_string()
+        )
+    }
+}
+
 /// Position covariance for a static reference-station coordinate.
 #[pyclass(
     module = "sidereon._sidereon",
@@ -3146,8 +3238,11 @@ impl PyStaticReferenceModeReport {
     }
 
     #[getter]
-    fn error(&self) -> Option<String> {
-        self.inner.error.clone()
+    fn error(&self) -> Option<PyStaticReferenceModeError> {
+        self.inner
+            .error
+            .clone()
+            .map(|inner| PyStaticReferenceModeError { inner })
     }
 
     fn __repr__(&self) -> String {
@@ -4365,6 +4460,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(solve_static_rinex_rtk_baseline, m)?)?;
     m.add_class::<PyStaticReferenceStationCovariance>()?;
     m.add_class::<PyStaticReferenceEpochDiagnostic>()?;
+    m.add_class::<PyStaticReferenceModeError>()?;
     m.add_class::<PyStaticReferenceModeReport>()?;
     m.add_class::<PyStaticReferenceCodeSolution>()?;
     m.add_class::<PyStaticReferenceCarrierSolution>()?;

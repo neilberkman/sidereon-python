@@ -115,9 +115,7 @@ def test_stationary_zupt_zaru_update_matches_core_bits():
         _state(), sidereon.InertialFilterConfig(_spec(), loose=loose)
     )
     filter_.propagate(
-        sidereon.ImuSample.increment(
-            1.0, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 1.0
-        )
+        sidereon.ImuSample.increment(1.0, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 1.0)
     )
 
     update = filter_.update_stationary()
@@ -143,9 +141,12 @@ def test_stationary_zupt_zaru_update_matches_core_bits():
         0x3FF00A36E71A6702,
         0x3FF00A36E71A2CB0,
     ]
-    assert sidereon.InertialFilter.with_config(
-        _state(), sidereon.InertialFilterConfig(_spec())
-    ).update_stationary() is None
+    assert (
+        sidereon.InertialFilter.with_config(
+            _state(), sidereon.InertialFilterConfig(_spec())
+        ).update_stationary()
+        is None
+    )
 
 
 def test_fix_status_weighting_covariance_ordering_matches_core_bits():
@@ -197,9 +198,12 @@ def test_fix_status_weighting_covariance_ordering_matches_core_bits():
     float_x = results["float"][1].state.covariance[0, 0]
     single_x = results["single"][1].state.covariance[0, 0]
     assert fixed_x < float_x < single_x
-    assert _position_velocity_fix().with_fix_status(
-        sidereon.GnssFixStatus.FLOAT
-    ).fix_status == sidereon.GnssFixStatus.FLOAT
+    assert (
+        _position_velocity_fix()
+        .with_fix_status(sidereon.GnssFixStatus.FLOAT)
+        .fix_status
+        == sidereon.GnssFixStatus.FLOAT
+    )
 
 
 def test_velocity_matching_and_imu_to_body_dcm_surface_match_core_bits():
