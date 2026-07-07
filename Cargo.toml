@@ -1,6 +1,6 @@
 [package]
 name = "sidereon-py"
-version = "0.19.1"
+version = "0.20.0"
 authors = []
 edition = "2021"
 description = "Python (PyO3) bindings over the sidereon ergonomic API: SP3 loading and SPP/RTK/PPP positioning solves"
@@ -17,8 +17,8 @@ crate-type = ["cdylib"]
 # The thin ergonomic engine surface this binding marshals to. No modeling logic
 # lives here: every solve delegates to a `sidereon` entry point, which in turn
 # delegates to `sidereon-core`.
-sidereon = "0.19.0"
-sidereon-core = "0.19.0"
+sidereon = "0.20.0"
+sidereon-core = "0.20.0"
 # The standalone general-purpose trust-region least-squares solver: a data-driven
 # `least_squares` whose residual and Jacobian are evaluated entirely in Rust, so
 # no per-iteration Python callback is paid.
@@ -38,7 +38,3 @@ serde_json = "1"
 # resolves so the binding shares one linear-algebra version with the core.
 nalgebra = "0.33"
 
-[patch.crates-io]
-# Pre-release core API override for the RTK RINEX arc builders.
-# Remove this once the core crate release includes build/rtk-arc-api.
-sidereon-core = { git = "file:///Users/neil/xuku/sidereon", branch = "build/rtk-arc-api" }
