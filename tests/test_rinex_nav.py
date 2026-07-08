@@ -156,11 +156,12 @@ def test_parse_rinex_v4_nav_fixture_records():
     text = _read_nav("KMS300DNK_R_20221591000_01H_MN.rnx")
 
     records = sidereon.parse_rinex_nav_records(text)
-    assert len(records) == 174
+    assert len(records) == 175
     assert _count_by(records, lambda r: r.satellite[0]) == {
         "G": 30,
         "E": 108,
         "C": 36,
+        "J": 1,
     }
     assert _count_by(records, lambda r: r.message.label) == {
         "gps_lnav": 30,
@@ -168,6 +169,7 @@ def test_parse_rinex_v4_nav_fixture_records():
         "galileo_fnav": 53,
         "beidou_d1": 33,
         "beidou_d2": 3,
+        "qzss_lnav": 1,
     }
 
     store = sidereon.parse_rinex_nav(text)
@@ -257,15 +259,22 @@ def test_rinex4_lenient_parse_lint_and_message_preference_are_exposed():
         text = fh.read()
 
     parsed = sidereon.parse_rinex_nav_lenient(text)
-    assert parsed.record_count == 2
+    assert parsed.record_count == 3
     assert parsed.skipped_count == 4
+    assert [(record.satellite, record.message) for record in parsed.records] == [
+        ("G01", sidereon.NavMessage.GPS_LNAV),
+        ("G03", sidereon.NavMessage.GPS_LNAV),
+        ("J02", sidereon.NavMessage.QZSS_LNAV),
+    ]
     assert {skipped.satellite for skipped in parsed.skipped} == {"G01", "G03", "J02"}
 
     report = sidereon.lint_rinex_nav(text)
     assert not report.is_clean
     assert report.count(sidereon.RinexLintSeverity.ERROR) == 4
-    assert [finding.code for finding in report.findings[:4]] == ["NAV-B01"] * 4
-    assert all(finding.kind == "NavDroppedBlock" for finding in report.findings[:4])
+    dropped = [
+        finding for finding in report.findings if finding.kind == "NavDroppedBlock"
+    ]
+    assert [finding.code for finding in dropped] == ["NAV-B01"] * 4
 
     store = sidereon.parse_rinex_nav(text)
     assert store.message_preference == sidereon.NavMessagePreference.PREFER_LEGACY

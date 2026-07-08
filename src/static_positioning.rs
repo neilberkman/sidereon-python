@@ -6,18 +6,20 @@
 
 use numpy::ndarray::Array2;
 use numpy::{PyArray1, PyArray2};
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyAny, PyModule};
 
 use sidereon_core::astro::math::least_squares::Status;
 use sidereon_core::positioning::{
-    solve_static as core_solve_static, RobustConfig, StaticCovariance, StaticEpoch,
-    StaticInfluenceStatus, StaticSolution, StaticSolveOptions,
+    solve_static as core_solve_static, EphemerisSource, RobustConfig, StaticCovariance,
+    StaticEpoch, StaticInfluenceStatus, StaticSolution, StaticSolveOptions,
 };
 
 use crate::events::PyWgs84Geodetic;
 use crate::geometry_quality::PyGeometryQuality;
 use crate::marshal::{mat3_to_array, PyGnssSystem};
+use crate::rinex::PyBroadcastEphemeris;
 use crate::spp::{PySppConfig, PySppRobustConfig};
 use crate::{np_array, to_solve_err, PySp3};
 
@@ -82,6 +84,21 @@ fn vec_matrix_to_array<'py>(py: Python<'py>, rows: &[Vec<f64>]) -> Bound<'py, Py
         }
     }
     PyArray2::from_owned_array(py, array)
+}
+
+fn with_static_ephemeris_source<R>(
+    source: &Bound<'_, PyAny>,
+    f: impl FnOnce(&dyn EphemerisSource) -> PyResult<R>,
+) -> PyResult<R> {
+    if let Ok(sp3) = source.extract::<PyRef<'_, PySp3>>() {
+        f(&sp3.inner)
+    } else if let Ok(broadcast) = source.extract::<PyRef<'_, PyBroadcastEphemeris>>() {
+        f(&broadcast.inner)
+    } else {
+        Err(PyTypeError::new_err(
+            "source must be Sp3 or BroadcastEphemeris",
+        ))
+    }
 }
 
 /// One receive epoch for a multi-epoch static positioning solve.
@@ -525,9 +542,9 @@ impl PyStaticSolution {
 
 /// Solve one static receiver position from multiple pseudorange epochs.
 #[pyfunction]
-#[pyo3(signature = (sp3, epochs, options=None))]
+#[pyo3(signature = (source, epochs, options=None))]
 fn solve_static(
-    sp3: &PySp3,
+    source: &Bound<'_, PyAny>,
     epochs: Vec<PyStaticEpoch>,
     options: Option<&PyStaticSolveOptions>,
 ) -> PyResult<PyStaticSolution> {
@@ -538,7 +555,9 @@ fn solve_static(
     let options = options
         .map(PyStaticSolveOptions::core_options)
         .unwrap_or_default();
-    let inner = core_solve_static(&sp3.inner, &epochs, options).map_err(to_solve_err)?;
+    let inner = with_static_ephemeris_source(source, |source| {
+        core_solve_static(source, &epochs, options).map_err(to_solve_err)
+    })?;
     Ok(PyStaticSolution { inner })
 }
 

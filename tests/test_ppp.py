@@ -68,6 +68,9 @@ def _state(fx):
         clocks_m=state["clocks_m"],
         ambiguities_m=dict(state["ambiguities_m"]),
         ztd_m=state["ztd_m"],
+        tropo_gradient_north_m=state.get("tropo_gradient_north_m", 0.0),
+        tropo_gradient_east_m=state.get("tropo_gradient_east_m", 0.0),
+        residual_ionosphere_m=state.get("residual_ionosphere_m"),
     )
 
 
@@ -83,6 +86,7 @@ def _tropo(raw):
     return sidereon.PppTroposphereOptions(
         enabled=raw["enabled"],
         estimate_ztd=raw["estimate_ztd"],
+        estimate_tropo_gradients=raw.get("estimate_tropo_gradients", False),
         pressure_hpa=raw["pressure_hpa"],
         temperature_k=raw["temperature_k"],
         relative_humidity=raw["relative_humidity"],
@@ -106,6 +110,8 @@ def _float_config(fx):
         tropo=_tropo(config["tropo"]),
         options=_options(config["opts"]),
         residual_screen=config["residual_screen"],
+        elevation_cutoff_deg=config.get("elevation_cutoff_deg"),
+        estimate_residual_ionosphere=config.get("estimate_residual_ionosphere", False),
     )
 
 
@@ -121,6 +127,8 @@ def _fixed_config(fx):
         weights=_weights(config["weights"]),
         tropo=_tropo(config["tropo"]),
         options=_options(config["opts"]),
+        elevation_cutoff_deg=config.get("elevation_cutoff_deg"),
+        estimate_residual_ionosphere=config.get("estimate_residual_ionosphere", False),
     )
 
 
@@ -129,6 +137,87 @@ def _integer_status(name):
         "Fixed": sidereon.IntegerStatus.FIXED,
         "NotFixed": sidereon.IntegerStatus.NOT_FIXED,
     }[name]
+
+
+def _assert_matrix_close(actual, expected):
+    assert isinstance(actual, np.ndarray)
+    assert actual.dtype == np.float64
+    assert np.allclose(actual, np.array(expected), rtol=0.0, atol=1.0e-12)
+
+
+def _assert_temporal_correlation(actual, expected):
+    assert actual.lag1_autocorrelation == pytest.approx(
+        expected["lag1_autocorrelation"], abs=1.0e-15
+    )
+    assert actual.decorrelation_time_epochs == pytest.approx(
+        expected["decorrelation_time_epochs"], abs=1.0e-15
+    )
+    assert actual.decorrelation_time_s == expected["decorrelation_time_s"]
+    assert actual.nominal_sample_count == expected["nominal_sample_count"]
+    assert actual.effective_sample_count == pytest.approx(
+        expected["effective_sample_count"], abs=1.0e-15
+    )
+    assert actual.variance_inflation_factor == pytest.approx(
+        expected["variance_inflation_factor"], abs=1.0e-15
+    )
+    assert actual.arcs_used == expected["arcs_used"]
+
+
+def _assert_ppp_metadata(sol, expected):
+    _assert_matrix_close(
+        sol.position_covariance_ecef_m2,
+        expected["position_covariance_ecef_m2"],
+    )
+    _assert_matrix_close(
+        sol.position_covariance_enu_m2,
+        expected["position_covariance_enu_m2"],
+    )
+    _assert_matrix_close(
+        sol.formal_position_covariance_ecef_m2,
+        expected["formal_position_covariance_ecef_m2"],
+    )
+    _assert_matrix_close(
+        sol.formal_position_covariance_enu_m2,
+        expected["formal_position_covariance_enu_m2"],
+    )
+    _assert_matrix_close(
+        sol.temporal_position_covariance_ecef_m2,
+        expected["temporal_position_covariance_ecef_m2"],
+    )
+    _assert_matrix_close(
+        sol.temporal_position_covariance_enu_m2,
+        expected["temporal_position_covariance_enu_m2"],
+    )
+    assert sol.posterior_variance_factor == pytest.approx(
+        expected["posterior_variance_factor"], abs=1.0e-15
+    )
+    assert sol.position_covariance_scale_factor == pytest.approx(
+        expected["position_covariance_scale_factor"], abs=1.0e-15
+    )
+    assert sol.temporal_position_covariance_scale_factor == pytest.approx(
+        expected["temporal_position_covariance_scale_factor"], abs=1.0e-15
+    )
+    _assert_temporal_correlation(
+        sol.temporal_correlation,
+        expected["temporal_correlation"],
+    )
+    assert sol.tropo_gradient_north_m == expected["tropo_gradient_north_m"]
+    assert sol.tropo_gradient_east_m == expected["tropo_gradient_east_m"]
+    if expected.get("tropo_gradient_covariance_m2") is None:
+        assert sol.tropo_gradient_covariance_m2 is None
+    else:
+        _assert_matrix_close(
+            sol.tropo_gradient_covariance_m2,
+            expected["tropo_gradient_covariance_m2"],
+        )
+    if expected.get("formal_tropo_gradient_covariance_m2") is None:
+        assert sol.formal_tropo_gradient_covariance_m2 is None
+    else:
+        _assert_matrix_close(
+            sol.formal_tropo_gradient_covariance_m2,
+            expected["formal_tropo_gradient_covariance_m2"],
+        )
+    assert sol.residual_ionosphere_m == expected["residual_ionosphere_m"]
 
 
 def test_ppp_float_matches_reference():
@@ -151,6 +240,7 @@ def test_ppp_float_matches_reference():
     assert sol.converged
     assert len(sol.used_sats) > 0
     assert "PppFloatSolution(" in repr(sol)
+    _assert_ppp_metadata(sol, fx["expected"]["float_solution"])
 
 
 def test_ppp_fixed_matches_reference():
@@ -189,6 +279,99 @@ def test_ppp_fixed_matches_reference():
     assert sol.fixed_ambiguities_cycles == exp["fixed_ambiguities_cycles"]
     assert sol.fixed_ambiguities_m == exp["fixed_ambiguities_m"]
     assert "PppFixedSolution(" in repr(sol)
+    _assert_ppp_metadata(sol, exp["fixed_solution"])
+    _assert_ppp_metadata(sol.float_solution, exp["fixed_float_solution"])
+
+
+def test_ppp_023_option_contracts():
+    state = sidereon.PppFloatState(
+        position_m=[1.0, 2.0, 3.0],
+        clocks_m=[4.0],
+        ambiguities_m={"G01": 5.0},
+        ztd_m=0.2,
+        tropo_gradient_north_m=0.03,
+        tropo_gradient_east_m=-0.04,
+        residual_ionosphere_m={"G01": 0.5},
+    )
+    assert state.tropo_gradient_north_m == 0.03
+    assert state.tropo_gradient_east_m == -0.04
+    assert state.residual_ionosphere_m == {"G01": 0.5}
+
+    tropo = sidereon.PppTroposphereOptions(
+        enabled=True,
+        estimate_ztd=True,
+        estimate_tropo_gradients=True,
+    )
+    assert tropo.estimate_tropo_gradients is True
+
+    float_config = sidereon.PppFloatConfig(
+        tropo=tropo,
+        elevation_cutoff_deg=12.5,
+        estimate_residual_ionosphere=True,
+    )
+    assert float_config.elevation_cutoff_deg == 12.5
+    assert float_config.estimate_residual_ionosphere is True
+
+    fixed_config = sidereon.PppFixedConfig(
+        sidereon.PppFixedAmbiguityOptions({"G01": 0.19}, {"G01": 0.0}),
+        elevation_cutoff_deg=10.0,
+        estimate_residual_ionosphere=True,
+    )
+    assert fixed_config.elevation_cutoff_deg == 10.0
+    assert fixed_config.estimate_residual_ionosphere is True
+
+
+def test_ppp_elevation_cutoff_matches_reference():
+    fx = _load_fixture()
+    sp3 = _load_sp3(fx)
+    config = _float_config(fx)
+    config = sidereon.PppFloatConfig(
+        weights=_weights(fx["config"]["weights"]),
+        tropo=_tropo(fx["config"]["tropo"]),
+        options=_options(fx["config"]["opts"]),
+        residual_screen=config.residual_screen,
+        elevation_cutoff_deg=10.0,
+    )
+
+    sol = sidereon.solve_ppp_float(
+        sp3,
+        epochs=_epochs(fx),
+        initial_state=_state(fx),
+        config=config,
+    )
+
+    expected = fx["expected"]["float_elevation_cutoff_10_deg"]
+    assert np.allclose(sol.position, np.array(expected["position_m"]), atol=1.0e-6)
+    assert len(sol.used_sats) == expected["used_sat_count"]
+
+
+def test_ppp_tropo_gradients_match_reference():
+    fx = _load_fixture()
+    sp3 = _load_sp3(fx)
+    config = sidereon.PppFloatConfig(
+        weights=_weights(fx["config"]["weights"]),
+        tropo=sidereon.PppTroposphereOptions(
+            enabled=fx["config"]["tropo"]["enabled"],
+            estimate_ztd=fx["config"]["tropo"]["estimate_ztd"],
+            estimate_tropo_gradients=True,
+            pressure_hpa=fx["config"]["tropo"]["pressure_hpa"],
+            temperature_k=fx["config"]["tropo"]["temperature_k"],
+            relative_humidity=fx["config"]["tropo"]["relative_humidity"],
+        ),
+        options=_options(fx["config"]["opts"]),
+        residual_screen=fx["config"]["residual_screen"],
+    )
+
+    sol = sidereon.solve_ppp_float(
+        sp3,
+        epochs=_epochs(fx),
+        initial_state=_state(fx),
+        config=config,
+    )
+
+    expected = fx["expected"]["float_tropo_gradients"]
+    assert np.allclose(sol.position, np.array(expected["position_m"]), atol=1.0e-6)
+    _assert_ppp_metadata(sol, expected)
 
 
 # --- SPP-seeded auto-initialization drivers --------------------------------
