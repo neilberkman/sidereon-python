@@ -51,14 +51,17 @@ def _spp_fixture():
         return json.load(handle)["fixture"]
 
 
-def _spp_sp3_config(perturb_m=0.0):
+def _spp_sp3_config(perturb_m=0.0, satellite_perturb_m=None):
     fixture = _spp_fixture()
     inputs = fixture["inputs"]
     sp3 = _load_sp3(os.path.join(CORE_FIXTURES, "sp3", inputs["sp3_file"]))
+    satellite_perturb_m = satellite_perturb_m or {}
     observations = [
         sidereon.SppObservation(
             row["sat_id"],
-            hex_to_f64(row["p_meas_m"]) + perturb_m,
+            hex_to_f64(row["p_meas_m"])
+            + perturb_m
+            + satellite_perturb_m.get(row["sat_id"], 0.0),
         )
         for row in inputs["observations"]
     ]
@@ -211,6 +214,49 @@ def test_static_positioning_solution_bits():
     assert len(solution.per_epoch_influence) == 3
     assert len(solution.per_satellite_influence) == 24
     assert len(solution.per_satellite_batch_influence) == 8
+    assert solution.per_epoch_influence[0][2] == "solved"
+    assert solution.per_satellite_influence[0][2] == "solved"
+    assert solution.per_satellite_batch_influence[0][2] == "solved"
+    assert solution.covariance.state_m2.shape == (6, 6)
+    assert solution.covariance.position_enu_m2.shape == (3, 3)
+    assert solution.geometry_quality.redundancy == solution.metadata.redundancy
+
+
+def test_static_positioning_covariance_redundancy_and_robust_contract():
+    sp3, config0 = _spp_sp3_config()
+    _, config1 = _spp_sp3_config(0.2, {"G08": 400.0})
+    _, config2 = _spp_sp3_config(-0.1)
+    epochs = [
+        sidereon.StaticEpoch(config0),
+        sidereon.StaticEpoch(config1),
+        sidereon.StaticEpoch(config2),
+    ]
+    robust = sidereon.SppRobustConfig(max_outer=4, scale_floor_m=0.01)
+    options = sidereon.StaticSolveOptions(
+        initial_position_m=config0.initial_guess[:3],
+        with_geodetic=True,
+        robust=robust,
+    )
+
+    solution = sidereon.solve_static(sp3, epochs, options)
+
+    assert solution.geodetic is not None
+    assert solution.covariance.position_ecef_m2.shape == (3, 3)
+    assert solution.covariance.position_enu_m2.shape == (3, 3)
+    assert solution.covariance.state_m2.shape == (
+        solution.metadata.n_parameters,
+        solution.metadata.n_parameters,
+    )
+    assert solution.metadata.redundancy == (
+        solution.metadata.used_measurements - solution.metadata.n_parameters
+    )
+    assert solution.metadata.outer_iterations > 0
+    assert solution.metadata.final_robust_scale_m is not None
+    assert any(row[4] < row[3] for row in solution.residuals_m)
+    assert any(row[5] < 1.0 for row in solution.residuals_m)
+    assert any(row[6] < 1.0 for row in solution.per_epoch_influence)
+    assert any(row[9] < 1.0 for row in solution.per_satellite_influence)
+    assert any(row[6] < 1.0 for row in solution.per_satellite_batch_influence)
 
 
 def test_velocity_covariance_and_spp_doppler_bits():

@@ -273,6 +273,179 @@ def test_construct_glonass_ephemeris_1020_round_trips():
     assert out.frequency_channel == 0
 
 
+def _galileo_fnav_ephemeris():
+    return sidereon.RtcmGalileoFnavEphemeris(
+        satellite_id=3,
+        week_number=1402,
+        iod_nav=7,
+        sisa=0,
+        idot=0,
+        t_oc=0,
+        a_f2=0,
+        a_f1=0,
+        a_f0=0,
+        c_rs=0,
+        delta_n=0,
+        m0=0,
+        c_uc=0,
+        eccentricity=0,
+        c_us=0,
+        sqrt_a=0,
+        t_oe=0,
+        c_ic=0,
+        omega0=0,
+        c_is=0,
+        i0=0,
+        c_rc=0,
+        omega=0,
+        omega_dot=0,
+        bgd_e5a_e1=0,
+        e5a_signal_health=0,
+        e5a_data_validity=False,
+        reserved=0,
+    )
+
+
+def _galileo_inav_ephemeris():
+    return sidereon.RtcmGalileoInavEphemeris(
+        satellite_id=3,
+        week_number=1402,
+        iod_nav=7,
+        sisa_index=0,
+        idot=0,
+        t_oc=0,
+        a_f2=0,
+        a_f1=0,
+        a_f0=0,
+        c_rs=0,
+        delta_n=0,
+        m0=0,
+        c_uc=0,
+        eccentricity=0,
+        c_us=0,
+        sqrt_a=0,
+        t_oe=0,
+        c_ic=0,
+        omega0=0,
+        c_is=0,
+        i0=0,
+        c_rc=0,
+        omega=0,
+        omega_dot=0,
+        bgd_e5a_e1=0,
+        bgd_e5b_e1=0,
+        e5b_signal_health=0,
+        e5b_data_validity=False,
+        e1b_signal_health=0,
+        e1b_data_validity=False,
+        reserved=0,
+    )
+
+
+def _beidou_ephemeris():
+    return sidereon.RtcmBeidouEphemeris(
+        satellite_id=19,
+        week_number=1100,
+        sv_urai=0,
+        idot=0,
+        aode=0,
+        t_oc=0,
+        a_f2=0,
+        a_f1=0,
+        a_f0=0,
+        aodc=0,
+        c_rs=0,
+        delta_n=0,
+        m0=0,
+        c_uc=0,
+        eccentricity=0,
+        c_us=0,
+        sqrt_a=0,
+        t_oe=0,
+        c_ic=0,
+        omega0=0,
+        c_is=0,
+        i0=0,
+        c_rc=0,
+        omega=0,
+        omega_dot=0,
+        t_gd1=0,
+        t_gd2=0,
+        sv_health=False,
+    )
+
+
+def _qzss_ephemeris():
+    return sidereon.RtcmQzssEphemeris(
+        satellite_id=2,
+        t_oc=0,
+        a_f2=0,
+        a_f1=0,
+        a_f0=0,
+        iode=0,
+        c_rs=0,
+        delta_n=0,
+        m0=0,
+        c_uc=0,
+        eccentricity=0,
+        c_us=0,
+        sqrt_a=0,
+        t_oe=0,
+        c_ic=0,
+        omega0=0,
+        c_is=0,
+        i0=0,
+        c_rc=0,
+        omega=0,
+        omega_dot=0,
+        idot=0,
+        codes_on_l2=0,
+        week_number=1023,
+        ura=0,
+        sv_health=0,
+        t_gd=0,
+        iodc=0,
+        fit_interval=False,
+    )
+
+
+def test_construct_new_broadcast_ephemerides_round_trip():
+    cases = [
+        (
+            sidereon.RtcmMessage.from_galileo_fnav_ephemeris(_galileo_fnav_ephemeris()),
+            1045,
+        ),
+        (
+            sidereon.RtcmMessage.from_galileo_inav_ephemeris(_galileo_inav_ephemeris()),
+            1046,
+        ),
+        (sidereon.RtcmMessage.from_beidou_ephemeris(_beidou_ephemeris()), 1042),
+        (sidereon.RtcmMessage.from_qzss_ephemeris(_qzss_ephemeris()), 1044),
+    ]
+    for message, number in cases:
+        decoded = _assert_body_round_trips(message, number)
+        assert decoded.message_number == number
+    assert cases[0][0].kind == "galileo_fnav_ephemeris"
+    assert cases[1][0].kind == "galileo_inav_ephemeris"
+    assert cases[2][0].kind == "beidou_ephemeris"
+    assert cases[3][0].kind == "qzss_ephemeris"
+
+
+def test_decode_real_galileo_1046_frame_exposes_payload():
+    frame = bytes.fromhex(
+        "d3003f4160d5e8076b06c941e03ffed3ffe33917f3a490e984d2089bf4f4011030b0343aa813ab5d41efffb7e44fe8cfff5277d0b011a2416397fffffc2280140700800a8e"
+    )
+    message = sidereon.decode_rtcm(frame)[0]
+    assert message.kind == "galileo_inav_ephemeris"
+    eph = message.galileo_inav_ephemeris
+    assert eph.satellite_id == 3
+    assert eph.week_number == 1402
+    assert eph.iod_nav == 7
+    assert eph.sqrt_a > 2_800_000_000
+    assert eph.satellite() == "E03"
+    assert message.to_frame() == frame
+
+
 def _msm4_message():
     header = sidereon.RtcmMsmHeader(
         reference_station_id=2003,

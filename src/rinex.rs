@@ -207,6 +207,8 @@ pub enum PyNavMessage {
     GPS_CNAV,
     /// GPS CNAV-2.
     GPS_CNAV2,
+    /// QZSS legacy LNAV.
+    QZSS_LNAV,
     /// QZSS CNAV.
     QZSS_CNAV,
     /// QZSS CNAV-2.
@@ -227,6 +229,7 @@ impl From<NavMessage> for PyNavMessage {
             NavMessage::GpsLnav => Self::GPS_LNAV,
             NavMessage::GpsCnav => Self::GPS_CNAV,
             NavMessage::GpsCnav2 => Self::GPS_CNAV2,
+            NavMessage::QzssLnav => Self::QZSS_LNAV,
             NavMessage::QzssCnav => Self::QZSS_CNAV,
             NavMessage::QzssCnav2 => Self::QZSS_CNAV2,
             NavMessage::GalileoInav => Self::GALILEO_INAV,
@@ -243,6 +246,7 @@ impl From<PyNavMessage> for NavMessage {
             PyNavMessage::GPS_LNAV => Self::GpsLnav,
             PyNavMessage::GPS_CNAV => Self::GpsCnav,
             PyNavMessage::GPS_CNAV2 => Self::GpsCnav2,
+            PyNavMessage::QZSS_LNAV => Self::QzssLnav,
             PyNavMessage::QZSS_CNAV => Self::QzssCnav,
             PyNavMessage::QZSS_CNAV2 => Self::QzssCnav2,
             PyNavMessage::GALILEO_INAV => Self::GalileoInav,
@@ -262,6 +266,7 @@ impl PyNavMessage {
             Self::GPS_LNAV => "gps_lnav",
             Self::GPS_CNAV => "gps_cnav",
             Self::GPS_CNAV2 => "gps_cnav2",
+            Self::QZSS_LNAV => "qzss_lnav",
             Self::QZSS_CNAV => "qzss_cnav",
             Self::QZSS_CNAV2 => "qzss_cnav2",
             Self::GALILEO_INAV => "galileo_inav",
@@ -276,6 +281,7 @@ impl PyNavMessage {
             Self::GPS_LNAV => "NavMessage.GPS_LNAV",
             Self::GPS_CNAV => "NavMessage.GPS_CNAV",
             Self::GPS_CNAV2 => "NavMessage.GPS_CNAV2",
+            Self::QZSS_LNAV => "NavMessage.QZSS_LNAV",
             Self::QZSS_CNAV => "NavMessage.QZSS_CNAV",
             Self::QZSS_CNAV2 => "NavMessage.QZSS_CNAV2",
             Self::GALILEO_INAV => "NavMessage.GALILEO_INAV",

@@ -8,7 +8,8 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
-use numpy::PyArray1;
+use numpy::ndarray::Array2;
+use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -25,12 +26,12 @@ use sidereon_core::precise_positioning::{
     solve_ppp_auto_init_float as core_solve_ppp_auto_init_float, FixedAmbiguityOptions,
     FixedSolution, FixedSolveConfig, FloatEpoch, FloatObservation, FloatSolution, FloatSolveConfig,
     FloatSolveOptions, FloatState, IntegerStatus as PppIntegerStatus, MeasurementWeights,
-    PppAutoInitOptions, PppInitialGuess, RangeCorrections, TropoMapping, TroposphereOptions,
-    VmfSiteSample, VmfSiteSeries,
+    PppAutoInitOptions, PppInitialGuess, RangeCorrections, TemporalCorrelationSummary,
+    TropoMapping, TroposphereOptions, VmfSiteSample, VmfSiteSeries,
 };
 use sidereon_core::GnssSatelliteId;
 
-use crate::marshal::option_py_or_default;
+use crate::marshal::{mat3_to_array, option_py_or_default};
 use crate::rtk::PyIntegerStatus;
 use crate::{np_array, to_solve_err, PySp3};
 
@@ -41,6 +42,16 @@ impl From<PppIntegerStatus> for PyIntegerStatus {
             PppIntegerStatus::NotFixed => PyIntegerStatus::NOT_FIXED,
         }
     }
+}
+
+fn mat2_to_array<'py>(py: Python<'py>, matrix: &[[f64; 2]; 2]) -> Bound<'py, PyArray2<f64>> {
+    let mut array = Array2::<f64>::zeros((2, 2));
+    for row in 0..2 {
+        for col in 0..2 {
+            array[[row, col]] = matrix[row][col];
+        }
+    }
+    PyArray2::from_owned_array(py, array)
 }
 
 // --- input value/config objects -------------------------------------------
@@ -288,12 +299,23 @@ pub struct PyPppFloatState {
 impl PyPppFloatState {
     /// Create an initial PPP state.
     #[new]
-    #[pyo3(signature = (position_m, clocks_m, ambiguities_m, ztd_m=0.0))]
+    #[pyo3(signature = (
+        position_m,
+        clocks_m,
+        ambiguities_m,
+        ztd_m=0.0,
+        tropo_gradient_north_m=0.0,
+        tropo_gradient_east_m=0.0,
+        residual_ionosphere_m=None,
+    ))]
     fn new(
         position_m: [f64; 3],
         clocks_m: Vec<f64>,
         ambiguities_m: BTreeMap<String, f64>,
         ztd_m: f64,
+        tropo_gradient_north_m: f64,
+        tropo_gradient_east_m: f64,
+        residual_ionosphere_m: Option<BTreeMap<String, f64>>,
     ) -> Self {
         Self {
             inner: FloatState {
@@ -301,6 +323,9 @@ impl PyPppFloatState {
                 clocks_m,
                 ambiguities_m,
                 ztd_m,
+                tropo_gradient_north_m,
+                tropo_gradient_east_m,
+                residual_ionosphere_m: residual_ionosphere_m.unwrap_or_default(),
             },
         }
     }
@@ -323,6 +348,21 @@ impl PyPppFloatState {
     #[getter]
     fn ztd_m(&self) -> f64 {
         self.inner.ztd_m
+    }
+
+    #[getter]
+    fn tropo_gradient_north_m(&self) -> f64 {
+        self.inner.tropo_gradient_north_m
+    }
+
+    #[getter]
+    fn tropo_gradient_east_m(&self) -> f64 {
+        self.inner.tropo_gradient_east_m
+    }
+
+    #[getter]
+    fn residual_ionosphere_m(&self) -> BTreeMap<String, f64> {
+        self.inner.residual_ionosphere_m.clone()
     }
 
     fn __repr__(&self) -> String {
@@ -401,6 +441,7 @@ impl PyPppTroposphereOptions {
     #[pyo3(signature = (
         enabled=false,
         estimate_ztd=false,
+        estimate_tropo_gradients=false,
         pressure_hpa=SurfaceMet::default().pressure_hpa,
         temperature_k=SurfaceMet::default().temperature_k,
         relative_humidity=SurfaceMet::default().relative_humidity,
@@ -409,6 +450,7 @@ impl PyPppTroposphereOptions {
     fn new(
         enabled: bool,
         estimate_ztd: bool,
+        estimate_tropo_gradients: bool,
         pressure_hpa: f64,
         temperature_k: f64,
         relative_humidity: f64,
@@ -434,6 +476,7 @@ impl PyPppTroposphereOptions {
                 TroposphereOptions {
                     enabled: true,
                     estimate_ztd,
+                    estimate_tropo_gradients,
                     met: Met::new(pressure_hpa, temperature_k, relative_humidity)
                         .map_err(|err| PyValueError::new_err(err.to_string()))?,
                     mapping,
@@ -452,6 +495,11 @@ impl PyPppTroposphereOptions {
     #[getter]
     fn estimate_ztd(&self) -> bool {
         self.inner.estimate_ztd
+    }
+
+    #[getter]
+    fn estimate_tropo_gradients(&self) -> bool {
+        self.inner.estimate_tropo_gradients
     }
 
     #[getter]
@@ -587,13 +635,22 @@ pub struct PyPppFloatConfig {
 impl PyPppFloatConfig {
     /// Create a PPP float solve configuration.
     #[new]
-    #[pyo3(signature = (weights=None, tropo=None, options=None, residual_screen=false))]
+    #[pyo3(signature = (
+        weights=None,
+        tropo=None,
+        options=None,
+        residual_screen=false,
+        elevation_cutoff_deg=None,
+        estimate_residual_ionosphere=false,
+    ))]
     fn new(
         py: Python<'_>,
         weights: Option<Py<PyPppMeasurementWeights>>,
         tropo: Option<Py<PyPppTroposphereOptions>>,
         options: Option<Py<PyPppFloatOptions>>,
         residual_screen: bool,
+        elevation_cutoff_deg: Option<f64>,
+        estimate_residual_ionosphere: bool,
     ) -> Self {
         let weights = option_py_or_default(
             py,
@@ -619,7 +676,9 @@ impl PyPppFloatConfig {
                 tropo,
                 corrections: RangeCorrections::disabled(),
                 opts,
+                elevation_cutoff_deg,
                 residual_screen,
+                estimate_residual_ionosphere,
             },
         }
     }
@@ -627,6 +686,16 @@ impl PyPppFloatConfig {
     #[getter]
     fn residual_screen(&self) -> bool {
         self.inner.residual_screen
+    }
+
+    #[getter]
+    fn elevation_cutoff_deg(&self) -> Option<f64> {
+        self.inner.elevation_cutoff_deg
+    }
+
+    #[getter]
+    fn estimate_residual_ionosphere(&self) -> bool {
+        self.inner.estimate_residual_ionosphere
     }
 
     fn __repr__(&self) -> String {
@@ -696,13 +765,22 @@ pub struct PyPppFixedConfig {
 impl PyPppFixedConfig {
     /// Create a PPP fixed solve configuration.
     #[new]
-    #[pyo3(signature = (ambiguity, weights=None, tropo=None, options=None))]
+    #[pyo3(signature = (
+        ambiguity,
+        weights=None,
+        tropo=None,
+        options=None,
+        elevation_cutoff_deg=None,
+        estimate_residual_ionosphere=false,
+    ))]
     fn new(
         py: Python<'_>,
         ambiguity: &PyPppFixedAmbiguityOptions,
         weights: Option<Py<PyPppMeasurementWeights>>,
         tropo: Option<Py<PyPppTroposphereOptions>>,
         options: Option<Py<PyPppFloatOptions>>,
+        elevation_cutoff_deg: Option<f64>,
+        estimate_residual_ionosphere: bool,
     ) -> Self {
         let weights = option_py_or_default(
             py,
@@ -728,9 +806,21 @@ impl PyPppFixedConfig {
                 tropo,
                 corrections: RangeCorrections::disabled(),
                 opts,
+                elevation_cutoff_deg,
                 ambiguity: ambiguity.inner.clone(),
+                estimate_residual_ionosphere,
             },
         }
+    }
+
+    #[getter]
+    fn elevation_cutoff_deg(&self) -> Option<f64> {
+        self.inner.elevation_cutoff_deg
+    }
+
+    #[getter]
+    fn estimate_residual_ionosphere(&self) -> bool {
+        self.inner.estimate_residual_ionosphere
     }
 
     fn __repr__(&self) -> String {
@@ -743,6 +833,64 @@ impl PyPppFixedConfig {
 }
 
 // --- result object ---------------------------------------------------------
+
+/// Temporal-correlation summary for a static PPP residual sequence.
+#[pyclass(module = "sidereon._sidereon", name = "PppTemporalCorrelationSummary")]
+#[derive(Clone, Copy)]
+pub struct PyPppTemporalCorrelationSummary {
+    inner: TemporalCorrelationSummary,
+}
+
+impl From<TemporalCorrelationSummary> for PyPppTemporalCorrelationSummary {
+    fn from(inner: TemporalCorrelationSummary) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyPppTemporalCorrelationSummary {
+    #[getter]
+    fn lag1_autocorrelation(&self) -> f64 {
+        self.inner.lag1_autocorrelation
+    }
+
+    #[getter]
+    fn decorrelation_time_epochs(&self) -> f64 {
+        self.inner.decorrelation_time_epochs
+    }
+
+    #[getter]
+    fn decorrelation_time_s(&self) -> Option<f64> {
+        self.inner.decorrelation_time_s
+    }
+
+    #[getter]
+    fn nominal_sample_count(&self) -> usize {
+        self.inner.nominal_sample_count
+    }
+
+    #[getter]
+    fn effective_sample_count(&self) -> f64 {
+        self.inner.effective_sample_count
+    }
+
+    #[getter]
+    fn variance_inflation_factor(&self) -> f64 {
+        self.inner.variance_inflation_factor
+    }
+
+    #[getter]
+    fn arcs_used(&self) -> usize {
+        self.inner.arcs_used
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PppTemporalCorrelationSummary(lag1_autocorrelation={:.3}, variance_inflation_factor={:.3})",
+            self.inner.lag1_autocorrelation, self.inner.variance_inflation_factor
+        )
+    }
+}
 
 /// Static float PPP solution.
 ///
@@ -775,6 +923,102 @@ impl PyPppFloatSolution {
     #[getter]
     fn ztd_residual_m(&self) -> Option<f64> {
         self.inner.ztd_residual_m
+    }
+
+    #[getter]
+    fn residual_ionosphere_m(&self) -> BTreeMap<String, f64> {
+        self.inner.residual_ionosphere_m.clone()
+    }
+
+    #[getter]
+    fn tropo_gradient_north_m(&self) -> Option<f64> {
+        self.inner.tropo_gradient_north_m
+    }
+
+    #[getter]
+    fn tropo_gradient_east_m(&self) -> Option<f64> {
+        self.inner.tropo_gradient_east_m
+    }
+
+    #[getter]
+    fn tropo_gradient_covariance_m2<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.inner
+            .tropo_gradient_covariance_m2
+            .as_ref()
+            .map(|matrix| mat2_to_array(py, matrix))
+    }
+
+    #[getter]
+    fn formal_tropo_gradient_covariance_m2<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.inner
+            .formal_tropo_gradient_covariance_m2
+            .as_ref()
+            .map(|matrix| mat2_to_array(py, matrix))
+    }
+
+    #[getter]
+    fn position_covariance_ecef_m2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.position_covariance.ecef_m2)
+    }
+
+    #[getter]
+    fn position_covariance_enu_m2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.position_covariance.enu_m2)
+    }
+
+    #[getter]
+    fn formal_position_covariance_ecef_m2<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.formal_position_covariance.ecef_m2)
+    }
+
+    #[getter]
+    fn formal_position_covariance_enu_m2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.formal_position_covariance.enu_m2)
+    }
+
+    #[getter]
+    fn posterior_variance_factor(&self) -> f64 {
+        self.inner.posterior_variance_factor
+    }
+
+    #[getter]
+    fn position_covariance_scale_factor(&self) -> f64 {
+        self.inner.position_covariance_scale_factor
+    }
+
+    #[getter]
+    fn temporal_position_covariance_ecef_m2<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.temporal_position_covariance.ecef_m2)
+    }
+
+    #[getter]
+    fn temporal_position_covariance_enu_m2<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.temporal_position_covariance.enu_m2)
+    }
+
+    #[getter]
+    fn temporal_position_covariance_scale_factor(&self) -> f64 {
+        self.inner.temporal_position_covariance_scale_factor
+    }
+
+    #[getter]
+    fn temporal_correlation(&self) -> PyPppTemporalCorrelationSummary {
+        self.inner.temporal_correlation.into()
     }
 
     #[getter]
@@ -856,6 +1100,102 @@ impl PyPppFixedSolution {
     #[getter]
     fn ztd_residual_m(&self) -> Option<f64> {
         self.inner.ztd_residual_m
+    }
+
+    #[getter]
+    fn residual_ionosphere_m(&self) -> BTreeMap<String, f64> {
+        self.inner.residual_ionosphere_m.clone()
+    }
+
+    #[getter]
+    fn tropo_gradient_north_m(&self) -> Option<f64> {
+        self.inner.tropo_gradient_north_m
+    }
+
+    #[getter]
+    fn tropo_gradient_east_m(&self) -> Option<f64> {
+        self.inner.tropo_gradient_east_m
+    }
+
+    #[getter]
+    fn tropo_gradient_covariance_m2<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.inner
+            .tropo_gradient_covariance_m2
+            .as_ref()
+            .map(|matrix| mat2_to_array(py, matrix))
+    }
+
+    #[getter]
+    fn formal_tropo_gradient_covariance_m2<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.inner
+            .formal_tropo_gradient_covariance_m2
+            .as_ref()
+            .map(|matrix| mat2_to_array(py, matrix))
+    }
+
+    #[getter]
+    fn position_covariance_ecef_m2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.position_covariance.ecef_m2)
+    }
+
+    #[getter]
+    fn position_covariance_enu_m2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.position_covariance.enu_m2)
+    }
+
+    #[getter]
+    fn formal_position_covariance_ecef_m2<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.formal_position_covariance.ecef_m2)
+    }
+
+    #[getter]
+    fn formal_position_covariance_enu_m2<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.formal_position_covariance.enu_m2)
+    }
+
+    #[getter]
+    fn posterior_variance_factor(&self) -> f64 {
+        self.inner.posterior_variance_factor
+    }
+
+    #[getter]
+    fn position_covariance_scale_factor(&self) -> f64 {
+        self.inner.position_covariance_scale_factor
+    }
+
+    #[getter]
+    fn temporal_position_covariance_ecef_m2<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.temporal_position_covariance.ecef_m2)
+    }
+
+    #[getter]
+    fn temporal_position_covariance_enu_m2<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.temporal_position_covariance.enu_m2)
+    }
+
+    #[getter]
+    fn temporal_position_covariance_scale_factor(&self) -> f64 {
+        self.inner.temporal_position_covariance_scale_factor
+    }
+
+    #[getter]
+    fn temporal_correlation(&self) -> PyPppTemporalCorrelationSummary {
+        self.inner.temporal_correlation.into()
     }
 
     /// The float solution that seeded integer search.
@@ -1125,6 +1465,7 @@ fn solve_ppp_auto_init_fixed(
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPppFloatSolution>()?;
+    m.add_class::<PyPppTemporalCorrelationSummary>()?;
     m.add_function(wrap_pyfunction!(solve_ppp_float, m)?)?;
     m.add_class::<PyPppCivilDateTime>()?;
     m.add_class::<PyPppObservation>()?;

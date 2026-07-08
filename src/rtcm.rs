@@ -23,10 +23,10 @@ use sidereon_core::rtcm::{
     derive_lli as core_derive_lli, encode_frame as core_encode_frame,
     message_number as core_message_number, minimum_lock_time_ms as core_minimum_lock_time_ms,
     msm_epoch_dt_ms as core_msm_epoch_dt_ms, msm_signal_rinex_code as core_msm_signal_rinex_code,
-    AntennaDescriptor, CellLli, FrameSkip, FrameSkipReason, GlonassEphemeris, GpsEphemeris,
-    LockTimeTracker, Message, MsmHeader, MsmKind, MsmMessage, MsmSatellite, MsmSignal,
-    PreviousLock, StationCoordinates, StreamDiagnostics, UnsupportedMessage, LLI_HALF_CYCLE,
-    LLI_LOSS_OF_LOCK,
+    AntennaDescriptor, BeidouEphemeris, CellLli, FrameSkip, FrameSkipReason, GalileoFnavEphemeris,
+    GalileoInavEphemeris, GlonassEphemeris, GpsEphemeris, LockTimeTracker, Message, MsmHeader,
+    MsmKind, MsmMessage, MsmSatellite, MsmSignal, PreviousLock, QzssEphemeris, StationCoordinates,
+    StreamDiagnostics, UnsupportedMessage, LLI_HALF_CYCLE, LLI_LOSS_OF_LOCK,
 };
 
 use pyo3::exceptions::PyValueError;
@@ -528,6 +528,197 @@ impl PyRtcmGpsEphemeris {
         )
     }
 }
+
+macro_rules! rtcm_keplerian_ephemeris_pyclass {
+    (
+        $(#[$meta:meta])*
+        $py:ident, $core:ident, $py_name:literal, $repr_name:literal {
+            $($field:ident : $ty:ty),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[pyclass(module = "sidereon._sidereon", name = $py_name)]
+        #[derive(Clone)]
+        pub struct $py {
+            inner: $core,
+        }
+
+        #[pymethods]
+        impl $py {
+            /// Construct the ephemeris from raw transmitted integers.
+            #[new]
+            #[pyo3(signature = ($($field),+))]
+            #[allow(clippy::too_many_arguments)]
+            fn new($($field: $ty),+) -> Self {
+                Self {
+                    inner: $core {
+                        $($field),+
+                    },
+                }
+            }
+
+            $(
+                #[getter]
+                fn $field(&self) -> $ty {
+                    self.inner.$field
+                }
+            )+
+
+            /// Canonical satellite identifier, or `None` if the transmitted id
+            /// is out of range.
+            fn satellite(&self) -> Option<String> {
+                self.inner.satellite().ok().map(|id| id.to_string())
+            }
+
+            fn __repr__(&self) -> String {
+                format!(
+                    "{}(satellite_id={}, week_number={})",
+                    $repr_name, self.inner.satellite_id, self.inner.week_number
+                )
+            }
+        }
+    };
+}
+
+rtcm_keplerian_ephemeris_pyclass!(
+    /// A 1045 Galileo F/NAV broadcast ephemeris. Every field is the raw transmitted integer.
+    PyRtcmGalileoFnavEphemeris, GalileoFnavEphemeris, "RtcmGalileoFnavEphemeris", "RtcmGalileoFnavEphemeris" {
+        satellite_id: u8,
+        week_number: u16,
+        iod_nav: u16,
+        sisa: u8,
+        idot: i32,
+        t_oc: u16,
+        a_f2: i16,
+        a_f1: i32,
+        a_f0: i64,
+        c_rs: i32,
+        delta_n: i32,
+        m0: i64,
+        c_uc: i32,
+        eccentricity: u64,
+        c_us: i32,
+        sqrt_a: u64,
+        t_oe: u16,
+        c_ic: i32,
+        omega0: i64,
+        c_is: i32,
+        i0: i64,
+        c_rc: i32,
+        omega: i64,
+        omega_dot: i32,
+        bgd_e5a_e1: i16,
+        e5a_signal_health: u8,
+        e5a_data_validity: bool,
+        reserved: u8,
+    }
+);
+
+rtcm_keplerian_ephemeris_pyclass!(
+    /// A 1046 Galileo I/NAV broadcast ephemeris. Every field is the raw transmitted integer.
+    PyRtcmGalileoInavEphemeris, GalileoInavEphemeris, "RtcmGalileoInavEphemeris", "RtcmGalileoInavEphemeris" {
+        satellite_id: u8,
+        week_number: u16,
+        iod_nav: u16,
+        sisa_index: u8,
+        idot: i32,
+        t_oc: u16,
+        a_f2: i16,
+        a_f1: i32,
+        a_f0: i64,
+        c_rs: i32,
+        delta_n: i32,
+        m0: i64,
+        c_uc: i32,
+        eccentricity: u64,
+        c_us: i32,
+        sqrt_a: u64,
+        t_oe: u16,
+        c_ic: i32,
+        omega0: i64,
+        c_is: i32,
+        i0: i64,
+        c_rc: i32,
+        omega: i64,
+        omega_dot: i32,
+        bgd_e5a_e1: i16,
+        bgd_e5b_e1: i16,
+        e5b_signal_health: u8,
+        e5b_data_validity: bool,
+        e1b_signal_health: u8,
+        e1b_data_validity: bool,
+        reserved: u8,
+    }
+);
+
+rtcm_keplerian_ephemeris_pyclass!(
+    /// A 1042 BeiDou broadcast ephemeris. Every field is the raw transmitted integer.
+    PyRtcmBeidouEphemeris, BeidouEphemeris, "RtcmBeidouEphemeris", "RtcmBeidouEphemeris" {
+        satellite_id: u8,
+        week_number: u16,
+        sv_urai: u8,
+        idot: i32,
+        aode: u8,
+        t_oc: u32,
+        a_f2: i16,
+        a_f1: i32,
+        a_f0: i32,
+        aodc: u8,
+        c_rs: i32,
+        delta_n: i32,
+        m0: i64,
+        c_uc: i32,
+        eccentricity: u64,
+        c_us: i32,
+        sqrt_a: u64,
+        t_oe: u32,
+        c_ic: i32,
+        omega0: i64,
+        c_is: i32,
+        i0: i64,
+        c_rc: i32,
+        omega: i64,
+        omega_dot: i32,
+        t_gd1: i16,
+        t_gd2: i16,
+        sv_health: bool,
+    }
+);
+
+rtcm_keplerian_ephemeris_pyclass!(
+    /// A 1044 QZSS broadcast ephemeris. Every field is the raw transmitted integer.
+    PyRtcmQzssEphemeris, QzssEphemeris, "RtcmQzssEphemeris", "RtcmQzssEphemeris" {
+        satellite_id: u8,
+        t_oc: u16,
+        a_f2: i16,
+        a_f1: i32,
+        a_f0: i32,
+        iode: u8,
+        c_rs: i32,
+        delta_n: i32,
+        m0: i64,
+        c_uc: i32,
+        eccentricity: u64,
+        c_us: i32,
+        sqrt_a: u64,
+        t_oe: u16,
+        c_ic: i32,
+        omega0: i64,
+        c_is: i32,
+        i0: i64,
+        c_rc: i32,
+        omega: i64,
+        omega_dot: i32,
+        idot: i32,
+        codes_on_l2: u8,
+        week_number: u16,
+        ura: u8,
+        sv_health: u8,
+        t_gd: i16,
+        iodc: u16,
+        fit_interval: bool,
+    }
+);
 
 /// A 1020 GLONASS broadcast ephemeris. Every field is the raw transmitted
 /// integer.
@@ -1383,8 +1574,9 @@ impl PyRtcmMessage {
     }
 
     /// Stable variant tag: `"station_coordinates"`, `"antenna_descriptor"`,
-    /// `"gps_ephemeris"`, `"glonass_ephemeris"`, `"msm"`, `"ssr"`, or
-    /// `"unsupported"`.
+    /// `"gps_ephemeris"`, `"glonass_ephemeris"`, `"beidou_ephemeris"`,
+    /// `"qzss_ephemeris"`, `"galileo_fnav_ephemeris"`,
+    /// `"galileo_inav_ephemeris"`, `"msm"`, `"ssr"`, or `"unsupported"`.
     #[getter]
     fn kind(&self) -> &'static str {
         match &self.inner {
@@ -1392,6 +1584,10 @@ impl PyRtcmMessage {
             Message::AntennaDescriptor(_) => "antenna_descriptor",
             Message::GpsEphemeris(_) => "gps_ephemeris",
             Message::GlonassEphemeris(_) => "glonass_ephemeris",
+            Message::BeidouEphemeris(_) => "beidou_ephemeris",
+            Message::QzssEphemeris(_) => "qzss_ephemeris",
+            Message::GalileoFnavEphemeris(_) => "galileo_fnav_ephemeris",
+            Message::GalileoInavEphemeris(_) => "galileo_inav_ephemeris",
             Message::Msm(_) => "msm",
             Message::Ssr(_) => "ssr",
             Message::Unsupported(_) => "unsupported",
@@ -1432,6 +1628,46 @@ impl PyRtcmMessage {
     fn glonass_ephemeris(&self) -> Option<PyRtcmGlonassEphemeris> {
         match &self.inner {
             Message::GlonassEphemeris(value) => Some(PyRtcmGlonassEphemeris { inner: *value }),
+            _ => None,
+        }
+    }
+
+    /// The BeiDou ephemeris payload, or `None` for another variant.
+    #[getter]
+    fn beidou_ephemeris(&self) -> Option<PyRtcmBeidouEphemeris> {
+        match &self.inner {
+            Message::BeidouEphemeris(value) => Some(PyRtcmBeidouEphemeris { inner: *value }),
+            _ => None,
+        }
+    }
+
+    /// The QZSS ephemeris payload, or `None` for another variant.
+    #[getter]
+    fn qzss_ephemeris(&self) -> Option<PyRtcmQzssEphemeris> {
+        match &self.inner {
+            Message::QzssEphemeris(value) => Some(PyRtcmQzssEphemeris { inner: *value }),
+            _ => None,
+        }
+    }
+
+    /// The Galileo F/NAV ephemeris payload, or `None` for another variant.
+    #[getter]
+    fn galileo_fnav_ephemeris(&self) -> Option<PyRtcmGalileoFnavEphemeris> {
+        match &self.inner {
+            Message::GalileoFnavEphemeris(value) => {
+                Some(PyRtcmGalileoFnavEphemeris { inner: *value })
+            }
+            _ => None,
+        }
+    }
+
+    /// The Galileo I/NAV ephemeris payload, or `None` for another variant.
+    #[getter]
+    fn galileo_inav_ephemeris(&self) -> Option<PyRtcmGalileoInavEphemeris> {
+        match &self.inner {
+            Message::GalileoInavEphemeris(value) => {
+                Some(PyRtcmGalileoInavEphemeris { inner: *value })
+            }
             _ => None,
         }
     }
@@ -1487,6 +1723,38 @@ impl PyRtcmMessage {
     fn from_glonass_ephemeris(payload: &PyRtcmGlonassEphemeris) -> Self {
         Self {
             inner: Message::GlonassEphemeris(payload.inner),
+        }
+    }
+
+    /// Wrap a 1042 BeiDou ephemeris payload as a message.
+    #[staticmethod]
+    fn from_beidou_ephemeris(payload: &PyRtcmBeidouEphemeris) -> Self {
+        Self {
+            inner: Message::BeidouEphemeris(payload.inner),
+        }
+    }
+
+    /// Wrap a 1044 QZSS ephemeris payload as a message.
+    #[staticmethod]
+    fn from_qzss_ephemeris(payload: &PyRtcmQzssEphemeris) -> Self {
+        Self {
+            inner: Message::QzssEphemeris(payload.inner),
+        }
+    }
+
+    /// Wrap a 1045 Galileo F/NAV ephemeris payload as a message.
+    #[staticmethod]
+    fn from_galileo_fnav_ephemeris(payload: &PyRtcmGalileoFnavEphemeris) -> Self {
+        Self {
+            inner: Message::GalileoFnavEphemeris(payload.inner),
+        }
+    }
+
+    /// Wrap a 1046 Galileo I/NAV ephemeris payload as a message.
+    #[staticmethod]
+    fn from_galileo_inav_ephemeris(payload: &PyRtcmGalileoInavEphemeris) -> Self {
+        Self {
+            inner: Message::GalileoInavEphemeris(payload.inner),
         }
     }
 
@@ -1618,6 +1886,10 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRtcmAntennaDescriptor>()?;
     m.add_class::<PyRtcmGpsEphemeris>()?;
     m.add_class::<PyRtcmGlonassEphemeris>()?;
+    m.add_class::<PyRtcmBeidouEphemeris>()?;
+    m.add_class::<PyRtcmQzssEphemeris>()?;
+    m.add_class::<PyRtcmGalileoFnavEphemeris>()?;
+    m.add_class::<PyRtcmGalileoInavEphemeris>()?;
     m.add_class::<PyRtcmMsmHeader>()?;
     m.add_class::<PyRtcmMsmSatellite>()?;
     m.add_class::<PyRtcmMsmSignal>()?;
