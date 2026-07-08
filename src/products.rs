@@ -16,7 +16,10 @@ use sidereon_core::antex::{Antenna, AntennaKind, Antex, AntexDateTime};
 use sidereon_core::astro::time::civil::seconds_between_splits;
 use sidereon_core::astro::time::{Instant, InstantRepr};
 use sidereon_core::constants::J2000_JD;
-use sidereon_core::ephemeris::{merge, MergeCombine, MergeFlag, MergeOptions, MergeReport};
+use sidereon_core::ephemeris::{
+    merge, MergeCombine, MergeFlag, MergeOptions, MergeReport, Sp3FrameLabelSet,
+    Sp3FrameReconciliation, Sp3FrameReconciliationOptions,
+};
 use sidereon_core::GnssSystem;
 
 use crate::marshal::option_py_or_default;
@@ -426,6 +429,8 @@ pub struct PySp3MergeOptions {
     combine: PySp3MergeCombine,
     target_epoch_interval_s: Option<f64>,
     systems: Option<BTreeSet<GnssSystem>>,
+    asserted_frame_label_sets: Vec<Vec<String>>,
+    helmert: bool,
 }
 
 #[pymethods]
@@ -444,6 +449,8 @@ impl PySp3MergeOptions {
         combine=PySp3MergeCombine::MEAN,
         target_epoch_interval_s=None,
         systems=None,
+        asserted_frame_label_sets=None,
+        helmert=false,
     ))]
     fn new(
         position_tolerance_m: f64,
@@ -453,6 +460,8 @@ impl PySp3MergeOptions {
         #[pyo3(from_py_with = extract_merge_combine)] combine: PySp3MergeCombine,
         target_epoch_interval_s: Option<f64>,
         systems: Option<Vec<String>>,
+        asserted_frame_label_sets: Option<Vec<Vec<String>>>,
+        helmert: bool,
     ) -> PyResult<Self> {
         require_positive_finite("position_tolerance_m", position_tolerance_m)?;
         require_positive_finite("clock_tolerance_s", clock_tolerance_s)?;
@@ -467,6 +476,7 @@ impl PySp3MergeOptions {
         }
 
         let systems = systems.map(parse_systems).transpose()?;
+        let asserted_frame_label_sets = parse_asserted_frame_label_sets(asserted_frame_label_sets)?;
 
         Ok(Self {
             position_tolerance_m,
@@ -476,6 +486,8 @@ impl PySp3MergeOptions {
             combine,
             target_epoch_interval_s,
             systems,
+            asserted_frame_label_sets,
+            helmert,
         })
     }
 
@@ -526,13 +538,26 @@ impl PySp3MergeOptions {
         })
     }
 
+    /// Caller-asserted coordinate-label sets that may merge without frame math.
+    #[getter]
+    fn asserted_frame_label_sets(&self) -> Vec<Vec<String>> {
+        self.asserted_frame_label_sets.clone()
+    }
+
+    /// Whether catalog Helmert reconciliation is enabled for known labels.
+    #[getter]
+    fn helmert(&self) -> bool {
+        self.helmert
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "Sp3MergeOptions(position_tolerance_m={}, clock_tolerance_s={}, min_agree={}, combine={:?})",
+            "Sp3MergeOptions(position_tolerance_m={}, clock_tolerance_s={}, min_agree={}, combine={:?}, helmert={})",
             self.position_tolerance_m,
             self.clock_tolerance_s,
             self.min_agree,
-            self.combine.label()
+            self.combine.label(),
+            self.helmert
         )
     }
 }
@@ -547,6 +572,14 @@ impl PySp3MergeOptions {
             combine: self.combine.into(),
             target_epoch_interval_s: self.target_epoch_interval_s,
             systems: self.systems.clone(),
+            frame_reconciliation: Sp3FrameReconciliationOptions {
+                asserted_equivalent_label_sets: self
+                    .asserted_frame_label_sets
+                    .iter()
+                    .map(|labels| Sp3FrameLabelSet::new(labels.iter().cloned()))
+                    .collect(),
+                helmert: self.helmert,
+            },
         }
     }
 }
@@ -593,10 +626,160 @@ impl PySp3MergeFlag {
 /// position_max_m, clock_rms_s, clock_max_s)`.
 type EpochAgreementTuple = (f64, usize, f64, f64, Option<f64>, Option<f64>);
 
+/// Published Helmert parameters as `(translation_mm, scale_ppb, rotation_mas)`.
+type HelmertParametersTuple = (Vec<f64>, f64, Vec<f64>);
+
+/// Published Helmert rates as `(translation_mm_per_year, scale_ppb_per_year,
+/// rotation_mas_per_year)`.
+type HelmertRatesTuple = (Vec<f64>, f64, Vec<f64>);
+
+/// One coordinate-label reconciliation applied before SP3 merge consensus.
+#[pyclass(module = "sidereon._sidereon", name = "Sp3FrameReconciliation")]
+#[derive(Clone)]
+pub struct PySp3FrameReconciliation {
+    source_index: usize,
+    source_label: String,
+    target_label: String,
+    method: String,
+    asserted_label_set: Option<Vec<String>>,
+    source_frame: Option<String>,
+    target_frame: Option<String>,
+    catalog_source_frame: Option<String>,
+    catalog_target_frame: Option<String>,
+    catalog_inverse: bool,
+    reference_epoch_year: Option<f64>,
+    parameters: Option<HelmertParametersTuple>,
+    rates: Option<HelmertRatesTuple>,
+    provenance: Option<String>,
+    epoch_year_span: Option<(f64, f64)>,
+    records_affected: usize,
+    identity: bool,
+}
+
+#[pymethods]
+impl PySp3FrameReconciliation {
+    /// Source index in the `merge_sp3` input sequence.
+    #[getter]
+    fn source_index(&self) -> usize {
+        self.source_index
+    }
+
+    /// Original coordinate-system label on the reconciled source.
+    #[getter]
+    fn source_label(&self) -> String {
+        self.source_label.clone()
+    }
+
+    /// Target coordinate-system label, taken from source 0.
+    #[getter]
+    fn target_label(&self) -> String {
+        self.target_label.clone()
+    }
+
+    /// Reconciliation mechanism: `"asserted_equivalence"` or `"helmert"`.
+    #[getter]
+    fn method(&self) -> String {
+        self.method.clone()
+    }
+
+    /// Caller-provided assertion set, when assertion reconciliation was used.
+    #[getter]
+    fn asserted_label_set(&self) -> Option<Vec<String>> {
+        self.asserted_label_set.clone()
+    }
+
+    /// Resolved source terrestrial frame for Helmert reconciliation.
+    #[getter]
+    fn source_frame(&self) -> Option<String> {
+        self.source_frame.clone()
+    }
+
+    /// Resolved target terrestrial frame for Helmert reconciliation.
+    #[getter]
+    fn target_frame(&self) -> Option<String> {
+        self.target_frame.clone()
+    }
+
+    /// Source frame of the published catalog row used for Helmert reconciliation.
+    #[getter]
+    fn catalog_source_frame(&self) -> Option<String> {
+        self.catalog_source_frame.clone()
+    }
+
+    /// Target frame of the published catalog row used for Helmert reconciliation.
+    #[getter]
+    fn catalog_target_frame(&self) -> Option<String> {
+        self.catalog_target_frame.clone()
+    }
+
+    /// Whether the published catalog row was applied in reverse.
+    #[getter]
+    fn catalog_inverse(&self) -> bool {
+        self.catalog_inverse
+    }
+
+    /// Published transform reference epoch, when a catalog entry was used.
+    #[getter]
+    fn reference_epoch_year(&self) -> Option<f64> {
+        self.reference_epoch_year
+    }
+
+    /// Published parameters `(translation_mm, scale_ppb, rotation_mas)`.
+    #[getter]
+    fn parameters(&self) -> Option<HelmertParametersTuple> {
+        self.parameters.clone()
+    }
+
+    /// Published rates `(translation_mm_per_year, scale_ppb_per_year,
+    /// rotation_mas_per_year)`.
+    #[getter]
+    fn rates(&self) -> Option<HelmertRatesTuple> {
+        self.rates.clone()
+    }
+
+    /// Published-table provenance for the catalog entry.
+    #[getter]
+    fn provenance(&self) -> Option<String> {
+        self.provenance.clone()
+    }
+
+    /// Inclusive decimal-year span of affected records.
+    #[getter]
+    fn epoch_year_span(&self) -> Option<(f64, f64)> {
+        self.epoch_year_span
+    }
+
+    /// Number of satellite position records covered by the reconciliation.
+    #[getter]
+    fn records_affected(&self) -> usize {
+        self.records_affected
+    }
+
+    /// Whether coordinates were left bit-equal because both labels resolved to
+    /// the same terrestrial realization.
+    #[getter]
+    fn identity(&self) -> bool {
+        self.identity
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Sp3FrameReconciliation(source_index={}, source_label={:?}, target_label={:?}, method={:?}, records_affected={}, identity={})",
+            self.source_index,
+            self.source_label,
+            self.target_label,
+            self.method,
+            self.records_affected,
+            self.identity
+        )
+    }
+}
+
 /// Audit report returned with a merged SP3 product.
 #[pyclass(module = "sidereon._sidereon", name = "Sp3MergeReport")]
 #[derive(Clone)]
 pub struct PySp3MergeReport {
+    frame_reconciliations: Vec<PySp3FrameReconciliation>,
     quarantined: Vec<PySp3MergeFlag>,
     single_source: Vec<PySp3MergeFlag>,
     position_outliers: Vec<PySp3MergeFlag>,
@@ -610,6 +793,18 @@ pub struct PySp3MergeReport {
 
 #[pymethods]
 impl PySp3MergeReport {
+    /// Coordinate-label reconciliations applied before consensus.
+    #[getter]
+    fn frame_reconciliations(&self) -> Vec<PySp3FrameReconciliation> {
+        self.frame_reconciliations.clone()
+    }
+
+    /// Number of coordinate-label reconciliations applied before consensus.
+    #[getter]
+    fn frame_reconciliation_count(&self) -> usize {
+        self.frame_reconciliations.len()
+    }
+
     /// Cells omitted because sources disagreed beyond tolerance.
     #[getter]
     fn quarantined(&self) -> Vec<PySp3MergeFlag> {
@@ -687,8 +882,9 @@ impl PySp3MergeReport {
 
     fn __repr__(&self) -> String {
         format!(
-            "Sp3MergeReport(quarantined={}, single_source={}, position_outliers={}, \
+            "Sp3MergeReport(frame_reconciliations={}, quarantined={}, single_source={}, position_outliers={}, \
              agreement_count={})",
+            self.frame_reconciliations.len(),
             self.quarantined.len(),
             self.single_source.len(),
             self.position_outliers.len(),
@@ -718,6 +914,11 @@ impl From<MergeReport> for PySp3MergeReport {
             })
             .collect();
         Self {
+            frame_reconciliations: value
+                .frame_reconciliations
+                .into_iter()
+                .map(PySp3FrameReconciliation::from)
+                .collect(),
             quarantined: value
                 .quarantined
                 .into_iter()
@@ -739,6 +940,49 @@ impl From<MergeReport> for PySp3MergeReport {
             clock_agreement_rms_s,
             clock_agreement_max_s,
             per_epoch_agreement,
+        }
+    }
+}
+
+impl From<Sp3FrameReconciliation> for PySp3FrameReconciliation {
+    fn from(value: Sp3FrameReconciliation) -> Self {
+        Self {
+            source_index: value.source_index,
+            source_label: value.source_label,
+            target_label: value.target_label,
+            method: match value.method {
+                sidereon_core::ephemeris::Sp3FrameReconciliationMethod::AssertedEquivalence => {
+                    "asserted_equivalence".to_string()
+                }
+                sidereon_core::ephemeris::Sp3FrameReconciliationMethod::Helmert => {
+                    "helmert".to_string()
+                }
+            },
+            asserted_label_set: value.asserted_label_set,
+            source_frame: value.source_frame.map(|frame| frame.to_string()),
+            target_frame: value.target_frame.map(|frame| frame.to_string()),
+            catalog_source_frame: value.catalog_source_frame.map(|frame| frame.to_string()),
+            catalog_target_frame: value.catalog_target_frame.map(|frame| frame.to_string()),
+            catalog_inverse: value.catalog_inverse,
+            reference_epoch_year: value.reference_epoch_year,
+            parameters: value.parameters.map(|parameters| {
+                (
+                    parameters.translation_mm.to_vec(),
+                    parameters.scale_ppb,
+                    parameters.rotation_mas.to_vec(),
+                )
+            }),
+            rates: value.rates.map(|rates| {
+                (
+                    rates.translation_mm_per_year.to_vec(),
+                    rates.scale_ppb_per_year,
+                    rates.rotation_mas_per_year.to_vec(),
+                )
+            }),
+            provenance: value.provenance,
+            epoch_year_span: value.epoch_year_span.map(|span| (span[0], span[1])),
+            records_affected: value.records_affected,
+            identity: value.identity,
         }
     }
 }
@@ -815,6 +1059,36 @@ fn parse_systems(values: Vec<String>) -> PyResult<BTreeSet<GnssSystem>> {
         .collect::<PyResult<BTreeSet<_>>>()
 }
 
+fn parse_asserted_frame_label_sets(values: Option<Vec<Vec<String>>>) -> PyResult<Vec<Vec<String>>> {
+    let Some(values) = values else {
+        return Ok(Vec::new());
+    };
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(idx, labels)| {
+            if labels.len() < 2 {
+                return Err(PyValueError::new_err(format!(
+                    "asserted_frame_label_sets[{idx}] must contain at least two labels"
+                )));
+            }
+            labels
+                .into_iter()
+                .map(|label| {
+                    let trimmed = label.trim().to_string();
+                    if trimmed.is_empty() {
+                        Err(PyValueError::new_err(format!(
+                            "asserted_frame_label_sets[{idx}] contains an empty label"
+                        )))
+                    } else {
+                        Ok(trimmed)
+                    }
+                })
+                .collect::<PyResult<Vec<_>>>()
+        })
+        .collect()
+}
+
 fn parse_system(value: &str) -> PyResult<GnssSystem> {
     match value.trim().to_ascii_uppercase().as_str() {
         "G" | "GPS" => Ok(GnssSystem::Gps),
@@ -850,6 +1124,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySp3MergeCombine>()?;
     m.add_class::<PySp3MergeOptions>()?;
     m.add_class::<PySp3MergeFlag>()?;
+    m.add_class::<PySp3FrameReconciliation>()?;
     m.add_class::<PySp3MergeReport>()?;
     m.add_function(wrap_pyfunction!(load_antex, m)?)?;
     m.add_function(wrap_pyfunction!(merge_sp3, m)?)?;

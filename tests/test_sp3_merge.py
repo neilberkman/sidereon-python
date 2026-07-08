@@ -14,6 +14,30 @@ def _load_sp3(name):
     return sidereon.load_sp3(_sp3_path(name))
 
 
+def _mini_sp3(label, records):
+    sats = "".join(sat for sat, _, _ in records)
+    sats += "  0" * (17 - len(records))
+    lines = [
+        f"#cP2020  6 25  0  0  0.00000000       1 ORBIT {label} FIT  TST",
+        "## 2111 432000.00000000   900.00000000 59025 0.0000000000000",
+        f"+   {len(records):2}   {sats}",
+        "++         0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0",
+        "%c G  cc GPS ccc cccc cccc cccc cccc ccccc ccccc ccccc ccccc",
+        "%c cc cc ccc ccc cccc cccc cccc cccc ccccc ccccc ccccc ccccc",
+        "%f  1.2500000  1.025000000  0.00000000000  0.000000000000000",
+        "%f  0.0000000  0.000000000  0.00000000000  0.000000000000000",
+        "%i    0    0    0    0      0      0      0      0         0",
+        "%i    0    0    0    0      0      0      0      0         0",
+        "/* TEST SP3-c FIXTURE",
+        "*  2020  6 25  0  0  0.00000000",
+    ]
+    for sat, position_km, clock_us in records:
+        x, y, z = position_km
+        lines.append(f"P{sat}{x:14.6f}{y:14.6f}{z:14.6f}{clock_us:14.6f}")
+    lines.append("EOF")
+    return sidereon.load_sp3(("\n".join(lines) + "\n").encode("ascii"))
+
+
 def test_merge_sp3_real_gbm_products_spans_common_coverage_and_interpolates():
     full = _load_sp3("GBM0MGXRAP_20201770000_01D_05M_ORB_120epoch.sp3")
     trim = _load_sp3("GBM_BDS_C21_C08_trim.sp3")
@@ -80,10 +104,94 @@ def test_merge_sp3_rejects_empty_sources_and_mismatched_frames():
         sidereon.merge_sp3([cod, gbm])
 
 
+def test_merge_sp3_asserted_frame_equivalence_reports_no_math():
+    a = _mini_sp3("IGS14", [("G01", [15000.0, -20000.0, 5000.0], 100.0)])
+    b = _mini_sp3("ITRF2", [("G02", [16000.0, -21000.0, 6000.0], 200.0)])
+    options = sidereon.Sp3MergeOptions(
+        asserted_frame_label_sets=[["IGS14", "ITRF2"]],
+    )
+
+    merged, report = sidereon.merge_sp3([a, b], options)
+
+    assert {"G01", "G02"} == set(merged.satellites)
+    assert report.frame_reconciliation_count == 1
+    reconciliation = report.frame_reconciliations[0]
+    assert reconciliation.method == "asserted_equivalence"
+    assert reconciliation.source_index == 1
+    assert reconciliation.source_label == "ITRF2"
+    assert reconciliation.target_label == "IGS14"
+    assert reconciliation.asserted_label_set == ["IGS14", "ITRF2"]
+    assert reconciliation.parameters is None
+    assert reconciliation.rates is None
+    assert reconciliation.records_affected == 1
+
+
+def test_merge_sp3_helmert_frame_reconciliation_reports_table_values():
+    a = _mini_sp3("IGS14", [("G01", [14000.0, -19000.0, 4000.0], 100.0)])
+    b = _mini_sp3("IGS20", [("G02", [15000.0, -20000.0, 5000.0], 200.0)])
+    options = sidereon.Sp3MergeOptions(min_agree=1, helmert=True)
+
+    merged, report = sidereon.merge_sp3([a, b], options)
+
+    got = merged.state("G02", 0).position_m
+    expected = np.array(
+        [14_999_999.992_3, -19_999_999.993_048_087, 5_000_000.000_396_175],
+        dtype=np.float64,
+    )
+    np.testing.assert_allclose(got, expected, rtol=0.0, atol=2.0e-9)
+    reconciliation = report.frame_reconciliations[0]
+    assert reconciliation.method == "helmert"
+    assert reconciliation.source_frame == "ITRF2020"
+    assert reconciliation.target_frame == "ITRF2014"
+    assert reconciliation.catalog_source_frame == "ITRF2020"
+    assert reconciliation.catalog_target_frame == "ITRF2014"
+    assert reconciliation.catalog_inverse is False
+    assert reconciliation.parameters == ([-1.4, -0.9, 1.4], -0.42, [0.0, 0.0, 0.0])
+    assert reconciliation.rates == ([0.0, -0.1, 0.2], 0.0, [0.0, 0.0, 0.0])
+    assert "ITRF2020 to past ITRFs" in reconciliation.provenance
+    assert reconciliation.records_affected == 1
+
+
+def test_merge_sp3_helmert_inverse_reports_catalog_direction():
+    a = _mini_sp3("IGS20", [("G01", [14000.0, -19000.0, 4000.0], 100.0)])
+    b = _mini_sp3("IGS14", [("G02", [15000.0, -20000.0, 5000.0], 200.0)])
+    options = sidereon.Sp3MergeOptions(min_agree=1, helmert=True)
+
+    _merged, report = sidereon.merge_sp3([a, b], options)
+
+    reconciliation = report.frame_reconciliations[0]
+    assert reconciliation.method == "helmert"
+    assert reconciliation.source_frame == "ITRF2014"
+    assert reconciliation.target_frame == "ITRF2020"
+    assert reconciliation.catalog_source_frame == "ITRF2020"
+    assert reconciliation.catalog_target_frame == "ITRF2014"
+    assert reconciliation.catalog_inverse is True
+    assert reconciliation.parameters == ([-1.4, -0.9, 1.4], -0.42, [0.0, 0.0, 0.0])
+
+
+def test_merge_sp3_helmert_identity_reconciliation_is_bit_equal():
+    a = _mini_sp3("IGS20", [("G01", [14000.0, -19000.0, 4000.0], 100.0)])
+    b = _mini_sp3("IGc20", [("G02", [15000.125, -20000.5, 5000.25], 200.0)])
+    original = b.state("G02", 0).position_m.copy()
+    options = sidereon.Sp3MergeOptions(min_agree=1, helmert=True)
+
+    merged, report = sidereon.merge_sp3([a, b], options)
+
+    np.testing.assert_array_equal(merged.state("G02", 0).position_m, original)
+    reconciliation = report.frame_reconciliations[0]
+    assert reconciliation.identity is True
+    assert reconciliation.parameters is None
+
+
 def test_sp3_merge_options_accept_string_selectors_and_validate_systems():
     options = sidereon.Sp3MergeOptions(combine="precedence", systems=["GPS", "C"])
     assert options.combine == sidereon.Sp3MergeCombine.PRECEDENCE
     assert options.systems == ["G", "C"]
+    assert options.asserted_frame_label_sets == []
+    assert options.helmert is False
 
     with pytest.raises(ValueError, match="unknown GNSS system"):
         sidereon.Sp3MergeOptions(systems=["X"])
+
+    with pytest.raises(ValueError, match="at least two labels"):
+        sidereon.Sp3MergeOptions(asserted_frame_label_sets=[["IGS14"]])
