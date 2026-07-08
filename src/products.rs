@@ -452,6 +452,7 @@ impl PySp3MergeOptions {
         asserted_frame_label_sets=None,
         helmert=false,
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         position_tolerance_m: f64,
         clock_tolerance_s: f64,
