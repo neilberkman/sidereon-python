@@ -11,6 +11,7 @@ import json
 import os
 
 import numpy as np
+import pytest
 import sidereon
 from _helpers import CORE_FIXTURES, FIXTURES
 
@@ -143,7 +144,10 @@ def test_ppp_float_matches_reference():
     expected = np.array(fx["expected"]["position_m"])
     assert isinstance(sol.position, np.ndarray)
     assert sol.position.dtype == np.float64
-    assert np.array_equal(sol.position, expected)
+    # Static PPP eliminates per-epoch clocks via Schur reduction (0.22), which is
+    # equivalent to the old dense solve to ~1e-9 m but not bit-identical. A
+    # micrometre tolerance is far below any requirement and above formulation noise.
+    assert np.allclose(sol.position, expected, rtol=0.0, atol=1.0e-6)
     assert sol.converged
     assert len(sol.used_sats) > 0
     assert "PppFloatSolution(" in repr(sol)
@@ -170,13 +174,17 @@ def test_ppp_fixed_matches_reference():
     exp = fx["expected"]
     assert isinstance(sol.position, np.ndarray)
     assert sol.position.dtype == np.float64
-    assert np.array_equal(sol.position, np.array(exp["fixed_position_m"]))
-    assert np.array_equal(
+    assert np.allclose(
+        sol.position, np.array(exp["fixed_position_m"]), rtol=0.0, atol=1.0e-6
+    )
+    assert np.allclose(
         sol.float_solution.position,
         np.array(exp["fixed_float_position_m"]),
+        rtol=0.0,
+        atol=1.0e-6,
     )
     assert sol.integer_status == _integer_status(exp["fixed_integer_status"])
-    assert sol.integer_ratio == exp["fixed_integer_ratio"]
+    assert sol.integer_ratio == pytest.approx(exp["fixed_integer_ratio"], rel=1.0e-6)
     assert sol.integer_candidates == exp["fixed_integer_candidates"]
     assert sol.fixed_ambiguities_cycles == exp["fixed_ambiguities_cycles"]
     assert sol.fixed_ambiguities_m == exp["fixed_ambiguities_m"]
