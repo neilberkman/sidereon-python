@@ -131,8 +131,9 @@ The Python package mirrors the full breadth of the engine.
   motion), sub-solar and sub-observer points, the terminator, parallactic
   angle, satellite visual magnitude, moonrise/moonset, seasons, moon phases,
   planetary events, meridian transits, and lunar and solar eclipses.
-- **Observation quality:** RINEX observation QC (completeness, multipath,
-  cycle slips), carrier-phase combinations, and Hatch smoothing.
+- **Observation quality and integrity:** RINEX observation QC (completeness,
+  multipath, cycle slips), post-solve RAIM fault detection, ARAIM protection
+  levels, carrier-phase combinations, and Hatch smoothing.
 - **Terrain:** DTED elevation lookup with batch probes, a memory-mappable
   terrain store, and geoid height conversion from EGM96 and EGM2008 grids.
 - **RF:** link budget (FSPL, EIRP, C/N0, antenna gain).

@@ -10,6 +10,7 @@ the clean set passes with no exclusions.
 """
 
 import json
+import math
 import os
 
 import numpy as np
@@ -65,6 +66,23 @@ def test_raim_passes_clean_and_flags_a_blunder():
     assert bad.fault_detected
     assert bad.worst_sat == "G03"
     assert bad.dof == len(used) - (3 + 1)
+
+
+def test_raim_direct_round_trip_from_lists_matches_core_values():
+    used = ["G01", "G02", "G03", "G04", "G05", "G06"]
+    residuals = [0.4, -0.6, 0.3, 0.1, -0.2, 0.5]
+    result = sidereon.raim(used, residuals)
+
+    assert isinstance(result, sidereon.RaimResult)
+    assert not result.fault_detected
+    assert result.testable
+    assert result.test_statistic == pytest.approx(0.91)
+    assert result.threshold == pytest.approx(13.815510557964274)
+    assert result.dof == 2
+    assert result.rms_m == pytest.approx(math.sqrt(0.91 / len(residuals)))
+    assert result.reduced_chi_square == pytest.approx(0.455)
+    assert result.normalized_residuals["G02"] == pytest.approx(-0.6)
+    assert result.worst_sat == "G02"
 
 
 def test_raim_not_testable_with_too_few_satellites():

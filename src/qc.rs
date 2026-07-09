@@ -27,7 +27,8 @@ use sidereon_core::qc_obs::{
     SystemMultipathQc, SystemSignalQc,
 };
 use sidereon_core::quality::{
-    self, fde_spp, raim_fde_design as core_raim_fde_design, FdeError, FdeOptions, FdeSppError,
+    self, fde_spp, raim_fde_design as core_raim_fde_design,
+    residual_diagnostics as core_residual_diagnostics, FdeError, FdeOptions, FdeSppError,
     FdeSppOptions, RaimInput, RaimOptions, RaimWeights, RangeChiSquareTest, RangeFdeOptions,
     RangeFdeResult, RangeFdeRow, RangeMeasurementDiagnostic, SolutionValidationOptions,
     DEFAULT_P_FA,
@@ -61,6 +62,8 @@ fn raim_options(
 #[pyclass(module = "sidereon._sidereon", name = "RaimResult")]
 pub struct PyRaimResult {
     inner: quality::RaimResult,
+    rms_m: f64,
+    reduced_chi_square: Option<f64>,
 }
 
 #[pymethods]
@@ -107,12 +110,75 @@ impl PyRaimResult {
         self.inner.worst_sat.clone()
     }
 
+    /// Root-mean-square residual in metres, unweighted.
+    #[getter]
+    fn rms_m(&self) -> f64 {
+        self.rms_m
+    }
+
+    /// Reduced chi-square, `test_statistic / dof`, when `dof > 0`.
+    #[getter]
+    fn reduced_chi_square(&self) -> Option<f64> {
+        self.reduced_chi_square
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "RaimResult(fault_detected={}, test_statistic={:.6}, dof={})",
             self.inner.fault_detected, self.inner.test_statistic, self.inner.dof
         )
     }
+}
+
+fn py_raim_result(input: RaimInput, options: RaimOptions) -> PyResult<PyRaimResult> {
+    let inner =
+        quality::raim(&input, &options).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let n_parameters = (input.used_sats.len() as isize - inner.dof).max(0) as usize;
+    let ordered_weights = match &options.weights {
+        RaimWeights::Unit => None,
+        RaimWeights::BySatellite(weights) => Some(
+            input
+                .used_sats
+                .iter()
+                .map(|satellite_id| weights.get(satellite_id).copied().unwrap_or(1.0))
+                .collect::<Vec<_>>(),
+        ),
+    };
+    let diagnostics = core_residual_diagnostics(
+        &input.residuals_m,
+        ordered_weights.as_deref(),
+        n_parameters,
+        Some(options.p_fa),
+    )
+    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(PyRaimResult {
+        inner,
+        rms_m: diagnostics.rms_m,
+        reduced_chi_square: diagnostics.reduced_chi_square,
+    })
+}
+
+/// Direct post-solve residual chi-square RAIM.
+///
+/// `used_sats` are satellite tokens in residual order; `residuals_m` are the
+/// post-fit pseudorange residuals in metres. `weights` is an optional dict of
+/// per-satellite inverse-variance weights; omitted satellite entries default to
+/// unit weight.
+#[pyfunction]
+#[pyo3(signature = (used_sats, residuals_m, p_fa=DEFAULT_P_FA, weights=None, n_systems=None))]
+fn raim(
+    used_sats: Vec<String>,
+    residuals_m: Vec<f64>,
+    p_fa: f64,
+    weights: Option<BTreeMap<String, f64>>,
+    n_systems: Option<isize>,
+) -> PyResult<PyRaimResult> {
+    let input = RaimInput {
+        used_sats,
+        residuals_m,
+    };
+    let options = raim_options(p_fa, weights, n_systems);
+    py_raim_result(input, options)
 }
 
 /// Residual-based chi-square RAIM over a solution's used satellites and residuals.
@@ -137,9 +203,7 @@ fn qc_raim(
         residuals_m,
     };
     let options = raim_options(p_fa, weights, n_systems);
-    let inner =
-        quality::raim(&input, &options).map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(PyRaimResult { inner })
+    py_raim_result(input, options)
 }
 
 /// The result of a fault-detection-and-exclusion loop.
@@ -1309,6 +1373,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyObservationQcNote>()?;
     m.add_class::<PyObservationQcReport>()?;
     m.add_function(wrap_pyfunction!(qc_raim, m)?)?;
+    m.add_function(wrap_pyfunction!(raim, m)?)?;
     m.add_function(wrap_pyfunction!(qc_fde, m)?)?;
     m.add_function(wrap_pyfunction!(solve_spp_robust_fde, m)?)?;
     m.add_function(wrap_pyfunction!(spp_robust_fde_driver, m)?)?;
