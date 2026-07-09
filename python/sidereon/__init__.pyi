@@ -6954,6 +6954,7 @@ def raim(
     ``fault_detected`` saturate near 100%.
     """
     ...
+
 def qc_raim(
     used_sats: Sequence[str],
     residuals_m: Sequence[float],
@@ -6969,6 +6970,7 @@ def qc_raim(
     ``fault_detected`` saturate near 100%.
     """
     ...
+
 def qc_fde(
     sp3: Sp3,
     config: SppConfig,
