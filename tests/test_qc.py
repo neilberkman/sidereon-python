@@ -85,6 +85,23 @@ def test_raim_direct_round_trip_from_lists_matches_core_values():
     assert result.worst_sat == "G02"
 
 
+def test_raim_typed_input_and_solution_path_use_real_spp_residuals():
+    fx = _trace()
+    sp3 = _load_sp3(fx)
+    solution = sidereon.solve_spp(sp3, _config(fx, _consistent_observations(fx)))
+
+    typed = sidereon.RaimInput(solution.used_sats, solution.residuals_m)
+    direct = sidereon.raim(typed, p_fa=0.01)
+    from_solution = sidereon.raim_for_solution(solution, p_fa=0.01)
+
+    assert direct.testable
+    assert not direct.fault_detected
+    assert from_solution.testable
+    assert not from_solution.fault_detected
+    assert from_solution.dof == len(solution.used_sats) - 4
+    assert from_solution.rms_m < 1.0e-6
+
+
 def test_raim_not_testable_with_too_few_satellites():
     res = sidereon.qc_raim(["G01", "G02", "G03", "G04"], [0.1, 0.2, -0.1, 0.05], 0.05)
     assert not res.testable

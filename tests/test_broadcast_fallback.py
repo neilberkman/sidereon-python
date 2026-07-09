@@ -104,6 +104,21 @@ def test_solve_broadcast_converges(store, config):
     assert np.all(np.isfinite(sol.position))
 
 
+def test_broadcast_fde_runs_real_broadcast_spp_path(store, config):
+    result = sidereon.qc_fde_broadcast(
+        store, config, p_fa=0.01, max_iterations=2, max_pdop=20.0
+    )
+    alias = sidereon.fde_broadcast(
+        store, config, p_fa=0.01, max_iterations=2, max_pdop=20.0
+    )
+
+    assert result.excluded == []
+    assert result.iterations == 0
+    assert result.used_sats == alias.used_sats
+    assert np.all(np.isfinite(result.position))
+    assert result.geodetic is not None
+
+
 def test_broadcast_vs_precise_within_labeled_bound(store, config):
     broadcast = sidereon.solve_broadcast(store, config)
     with open(COD_SP3, "rb") as fh:

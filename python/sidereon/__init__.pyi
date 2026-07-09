@@ -2,7 +2,7 @@
 
 import enum
 import os
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -2503,6 +2503,59 @@ class SppConfig:
     def glonass_channels(self) -> dict[int, int]: ...
     def __repr__(self) -> str: ...
 
+class RinexSppOptions:
+    """Options for assembling RINEX OBS epochs into SPP inputs."""
+
+    def __init__(
+        self,
+        obs: RinexObs,
+        signal_policy: SignalPolicy | None = ...,
+        corrections: SppCorrections | None = ...,
+        initial_guess: Sequence[float] | None = ...,
+        satellites: Sequence[str] | None = ...,
+        met: SppSurfaceMet | None = ...,
+        robust: SppRobustConfig | None = ...,
+    ) -> None: ...
+    def __repr__(self) -> str: ...
+
+class RinexSppEpochInputs:
+    """One assembled RINEX OBS epoch and its SPP input bundle."""
+
+    @property
+    def epoch_index(self) -> int: ...
+    @property
+    def epoch(self) -> ObsEpochTime: ...
+    @property
+    def observation_count(self) -> int: ...
+    @property
+    def satellites(self) -> list[str]: ...
+    @property
+    def observations(self) -> list[SppObservation]: ...
+    @property
+    def t_rx_j2000_s(self) -> float: ...
+    @property
+    def t_rx_second_of_day_s(self) -> float: ...
+    @property
+    def day_of_year(self) -> float: ...
+    @property
+    def initial_guess(self) -> tuple[float, float, float, float]: ...
+    def __repr__(self) -> str: ...
+
+class RinexSppEpochSolution:
+    """One RINEX OBS epoch paired with its SPP solve result."""
+
+    @property
+    def epoch_index(self) -> int: ...
+    @property
+    def epoch(self) -> ObsEpochTime: ...
+    @property
+    def solved(self) -> bool: ...
+    @property
+    def solution(self) -> SppSolution | None: ...
+    @property
+    def error(self) -> str | None: ...
+    def __repr__(self) -> str: ...
+
 class StaticEpoch:
     """One receive epoch for a multi-epoch static positioning solve."""
 
@@ -4927,6 +4980,23 @@ def solve_spp_batch(
     max_pdop: float | None = ...,
     coarse_search_seeds: int | None = ...,
 ) -> list[SppSolution]: ...
+def spp_inputs_from_rinex_obs(
+    source: Sp3 | BroadcastEphemeris,
+    obs: RinexObs,
+    options: RinexSppOptions | None = ...,
+    *,
+    broadcast_context: BroadcastEphemeris | None = ...,
+) -> list[RinexSppEpochInputs]: ...
+def solve_spp_from_rinex_obs(
+    source: Sp3 | BroadcastEphemeris,
+    obs: RinexObs,
+    options: RinexSppOptions | None = ...,
+    *,
+    with_geodetic: bool = ...,
+    max_pdop: float | None = ...,
+    coarse_search_seeds: int | None = ...,
+    broadcast_context: BroadcastEphemeris | None = ...,
+) -> list[RinexSppEpochSolution]: ...
 def solve_static(
     source: Sp3 | BroadcastEphemeris,
     epochs: Sequence[StaticEpoch],
@@ -6897,6 +6967,18 @@ def emission_media_batch_at_j2000_s(
 ) -> EmissionMediaBatch: ...
 
 # --- Quality control: RAIM + FDE (sidereon_core::quality) --------------------
+class RaimInput:
+    """Typed input for standalone residual chi-square RAIM."""
+
+    def __init__(
+        self, used_sats: Sequence[str], residuals_m: Sequence[float]
+    ) -> None: ...
+    @property
+    def used_sats(self) -> list[str]: ...
+    @property
+    def residuals_m(self) -> list[float]: ...
+    def __repr__(self) -> str: ...
+
 class RaimResult:
     """Result of a residual chi-square RAIM test."""
 
@@ -6939,6 +7021,15 @@ class FdeResult:
     def iterations(self) -> int: ...
     def __repr__(self) -> str: ...
 
+@overload
+def raim(
+    used_sats: RaimInput,
+    residuals_m: None = ...,
+    p_fa: float = ...,
+    weights: Mapping[str, float] | None = ...,
+    n_systems: int | None = ...,
+) -> RaimResult: ...
+@overload
 def raim(
     used_sats: Sequence[str],
     residuals_m: Sequence[float],
@@ -6955,6 +7046,12 @@ def raim(
     """
     ...
 
+def raim_for_solution(
+    solution: SppSolution,
+    p_fa: float = ...,
+    weights: Mapping[str, float] | None = ...,
+    n_systems: int | None = ...,
+) -> RaimResult: ...
 def qc_raim(
     used_sats: Sequence[str],
     residuals_m: Sequence[float],
@@ -6973,6 +7070,24 @@ def qc_raim(
 
 def qc_fde(
     sp3: Sp3,
+    config: SppConfig,
+    p_fa: float,
+    max_iterations: int,
+    weights: Mapping[str, float] | None = ...,
+    n_systems: int | None = ...,
+    max_pdop: float | None = ...,
+) -> FdeResult: ...
+def qc_fde_broadcast(
+    broadcast: BroadcastEphemeris,
+    config: SppConfig,
+    p_fa: float,
+    max_iterations: int,
+    weights: Mapping[str, float] | None = ...,
+    n_systems: int | None = ...,
+    max_pdop: float | None = ...,
+) -> FdeResult: ...
+def fde_broadcast(
+    broadcast: BroadcastEphemeris,
     config: SppConfig,
     p_fa: float,
     max_iterations: int,
@@ -11360,6 +11475,28 @@ class EllipsoidalHeightM:
     def metres(self) -> float: ...
     def __repr__(self) -> str: ...
 
+class TerrainTileId:
+    def __init__(self, lat_index: int, lon_index: int) -> None: ...
+    @property
+    def lat_index(self) -> int: ...
+    @property
+    def lon_index(self) -> int: ...
+    def __repr__(self) -> str: ...
+
+class DtedTileListEntry:
+    def __init__(
+        self, tile_id: TerrainTileId, path: str | os.PathLike[str]
+    ) -> None: ...
+    @staticmethod
+    def from_indices(
+        lat_index: int, lon_index: int, path: str | os.PathLike[str]
+    ) -> DtedTileListEntry: ...
+    @property
+    def tile_id(self) -> TerrainTileId: ...
+    @property
+    def path(self) -> str: ...
+    def __repr__(self) -> str: ...
+
 class TerrainStoreTileIndex:
     @property
     def lat_index(self) -> int: ...
@@ -11481,14 +11618,25 @@ class MmapTerrain:
     @property
     def tile_index(self) -> list[TerrainStoreTileIndex]: ...
     @property
+    def tile_count(self) -> int: ...
+    @property
+    def tile_ids(self) -> list[TerrainTileId]: ...
+    @property
     def vertical_datum(self) -> VerticalDatum: ...
     def checksum64(self) -> int: ...
     def to_bytes(self) -> bytes: ...
+    def as_bytes(self) -> bytes: ...
     def __repr__(self) -> str: ...
 
 def dted_tree_to_mmap_store(root: str | os.PathLike[str]) -> bytes: ...
+def dted_tile_list_to_mmap_store(
+    entries: Sequence[DtedTileListEntry],
+) -> bytes: ...
 def write_dted_tree_to_mmap_store(
     root: str | os.PathLike[str], output_path: str | os.PathLike[str]
+) -> None: ...
+def write_dted_tile_list_to_mmap_store(
+    entries: Sequence[DtedTileListEntry], output_path: str | os.PathLike[str]
 ) -> None: ...
 def terrain_store_checksum64(data: bytes | bytearray) -> int: ...
 
@@ -12201,6 +12349,7 @@ class SbasCorrectedEphemeris:
     def iono_grid(self) -> SbasIonoGrid | None: ...
 
 def decode_sbas_block(bytes: bytes | bytearray, form: SbasWireForm) -> SbasBlock: ...
+def decode_sbas_message(bytes: bytes | bytearray, form: SbasWireForm) -> SbasBlock: ...
 def parse_sbas_ems_lines(text: str) -> list[SbasLogBlock]: ...
 def parse_sbas_rtklib_lines(text: str) -> list[SbasLogBlock]: ...
 def sbas_prn_to_satellite_id(prn: int) -> str | None: ...
@@ -12370,6 +12519,13 @@ class SsrCorrectedEphemeris:
     ) -> tuple[list[float], float] | None: ...
 
 def decode_ssr_message(body: bytes | bytearray) -> SsrMessage: ...
+def decode_ssr(body: bytes | bytearray) -> SsrMessage: ...
+def ssr_store_from_rtcm(
+    bytes: bytes | bytearray,
+    week: int,
+    tow_s: float,
+    time_scale: TimeScale = ...,
+) -> SsrCorrectionStore: ...
 
 # Round-2 core surface additions.
 

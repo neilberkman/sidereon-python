@@ -9,11 +9,14 @@ use pyo3::types::{PyBytes, PyModule};
 
 use sidereon_core::terrain::DtedLookupOptions;
 use sidereon_core::terrain_store::{
+    dted_tile_list_to_mmap_store as core_dted_tile_list_to_mmap_store,
     dted_tree_to_mmap_store as core_dted_tree_to_mmap_store,
     terrain_store_checksum64 as core_terrain_store_checksum64,
-    write_dted_tree_to_mmap_store as core_write_dted_tree_to_mmap_store, Egm96FifteenMinuteGeoid,
-    EllipsoidalHeightM, MmapTerrain, OrthometricHeightM, TerrainDatumError, TerrainGeoidModel,
-    TerrainStoreError, TerrainStoreTileIndex, VerticalDatum,
+    write_dted_tile_list_to_mmap_store as core_write_dted_tile_list_to_mmap_store,
+    write_dted_tree_to_mmap_store as core_write_dted_tree_to_mmap_store, DtedTileListEntry,
+    Egm96FifteenMinuteGeoid, EllipsoidalHeightM, MmapTerrain, OrthometricHeightM,
+    TerrainDatumError, TerrainGeoidModel, TerrainStoreError, TerrainStoreTileIndex, TerrainTileId,
+    VerticalDatum,
 };
 
 use crate::np_array;
@@ -256,6 +259,100 @@ pub struct PyTerrainStoreTileIndex {
 impl From<TerrainStoreTileIndex> for PyTerrainStoreTileIndex {
     fn from(inner: TerrainStoreTileIndex) -> Self {
         Self { inner }
+    }
+}
+
+/// Integer terrain tile id used by DTED and terrain-store accessors.
+#[pyclass(module = "sidereon._sidereon", name = "TerrainTileId")]
+#[derive(Clone, Copy)]
+pub struct PyTerrainTileId {
+    inner: TerrainTileId,
+}
+
+impl From<TerrainTileId> for PyTerrainTileId {
+    fn from(inner: TerrainTileId) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyTerrainTileId {
+    /// Build an integer terrain tile id.
+    #[new]
+    fn new(lat_index: i32, lon_index: i32) -> Self {
+        Self {
+            inner: TerrainTileId::new(lat_index, lon_index),
+        }
+    }
+
+    /// Integer latitude tile id.
+    #[getter]
+    fn lat_index(&self) -> i32 {
+        self.inner.lat_index
+    }
+
+    /// Integer longitude tile id.
+    #[getter]
+    fn lon_index(&self) -> i32 {
+        self.inner.lon_index
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TerrainTileId(lat_index={}, lon_index={})",
+            self.inner.lat_index, self.inner.lon_index
+        )
+    }
+}
+
+/// One explicit DTED tile source for list-based terrain-store conversion.
+#[pyclass(module = "sidereon._sidereon", name = "DtedTileListEntry")]
+#[derive(Clone)]
+pub struct PyDtedTileListEntry {
+    inner: DtedTileListEntry,
+}
+
+impl PyDtedTileListEntry {
+    fn inner(&self) -> DtedTileListEntry {
+        self.inner.clone()
+    }
+}
+
+#[pymethods]
+impl PyDtedTileListEntry {
+    /// Build a tile-list entry from a tile id and DTED path.
+    #[new]
+    fn new(tile_id: &PyTerrainTileId, path: PathBuf) -> Self {
+        Self {
+            inner: DtedTileListEntry::new(tile_id.inner, path),
+        }
+    }
+
+    /// Build a tile-list entry from integer tile indices and a DTED path.
+    #[staticmethod]
+    fn from_indices(lat_index: i32, lon_index: i32, path: PathBuf) -> Self {
+        Self {
+            inner: DtedTileListEntry::from_indices(lat_index, lon_index, path),
+        }
+    }
+
+    /// Expected integer tile id for the path.
+    #[getter]
+    fn tile_id(&self) -> PyTerrainTileId {
+        self.inner.tile_id.into()
+    }
+
+    /// Path to the DTED tile.
+    #[getter]
+    fn path(&self) -> String {
+        self.inner.path.display().to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "DtedTileListEntry(tile_id=TerrainTileId(lat_index={}, lon_index={}))",
+            self.inner.tile_id.lat_index, self.inner.tile_id.lon_index
+        )
     }
 }
 
@@ -832,6 +929,23 @@ impl PyMmapTerrain {
             .collect()
     }
 
+    /// Number of tiles in this terrain store.
+    #[getter]
+    fn tile_count(&self) -> usize {
+        self.inner.tile_count()
+    }
+
+    /// Sorted integer tile ids present in this terrain store.
+    #[getter]
+    fn tile_ids(&self) -> Vec<PyTerrainTileId> {
+        self.inner
+            .tile_ids()
+            .iter()
+            .copied()
+            .map(Into::into)
+            .collect()
+    }
+
     /// File-level vertical datum.
     #[getter]
     fn vertical_datum(&self) -> PyVerticalDatum {
@@ -848,6 +962,11 @@ impl PyMmapTerrain {
         PyBytes::new(py, &self.inner.to_bytes())
     }
 
+    /// Return the store bytes accepted by this reader.
+    fn as_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, self.inner.as_bytes())
+    }
+
     fn __repr__(&self) -> String {
         format!("MmapTerrain(tiles={})", self.inner.tile_index().len())
     }
@@ -862,12 +981,39 @@ fn dted_tree_to_mmap_store<'py>(py: Python<'py>, root: PathBuf) -> PyResult<Boun
     Ok(PyBytes::new(py, &bytes))
 }
 
+/// Convert an explicit DTED tile list into memory-mappable terrain store bytes.
+#[pyfunction]
+fn dted_tile_list_to_mmap_store<'py>(
+    py: Python<'py>,
+    entries: Vec<PyDtedTileListEntry>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let entries = entries
+        .iter()
+        .map(PyDtedTileListEntry::inner)
+        .collect::<Vec<_>>();
+    let bytes = core_dted_tile_list_to_mmap_store(&entries).map_err(to_store_err)?;
+    Ok(PyBytes::new(py, &bytes))
+}
+
 /// Convert a DTED tile tree and write terrain store bytes to `output_path`.
 ///
 /// Input DTED postings are orthometric heights `H` in metres.
 #[pyfunction]
 fn write_dted_tree_to_mmap_store(root: PathBuf, output_path: PathBuf) -> PyResult<()> {
     core_write_dted_tree_to_mmap_store(root, output_path).map_err(to_store_err)
+}
+
+/// Convert an explicit DTED tile list and write terrain store bytes.
+#[pyfunction]
+fn write_dted_tile_list_to_mmap_store(
+    entries: Vec<PyDtedTileListEntry>,
+    output_path: PathBuf,
+) -> PyResult<()> {
+    let entries = entries
+        .iter()
+        .map(PyDtedTileListEntry::inner)
+        .collect::<Vec<_>>();
+    core_write_dted_tile_list_to_mmap_store(&entries, output_path).map_err(to_store_err)
 }
 
 /// Return an FNV-1a checksum for terrain store bytes.
@@ -880,6 +1026,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyVerticalDatum>()?;
     m.add_class::<PyOrthometricHeightM>()?;
     m.add_class::<PyEllipsoidalHeightM>()?;
+    m.add_class::<PyTerrainTileId>()?;
+    m.add_class::<PyDtedTileListEntry>()?;
     m.add_class::<PyTerrainStoreTileIndex>()?;
     m.add_class::<PyEgm96FifteenMinuteGeoid>()?;
     m.add_class::<PyTerrainGeoidModel>()?;
@@ -887,7 +1035,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTerrainDatumError>()?;
     m.add_class::<PyMmapTerrain>()?;
     m.add_function(wrap_pyfunction!(dted_tree_to_mmap_store, m)?)?;
+    m.add_function(wrap_pyfunction!(dted_tile_list_to_mmap_store, m)?)?;
     m.add_function(wrap_pyfunction!(write_dted_tree_to_mmap_store, m)?)?;
+    m.add_function(wrap_pyfunction!(write_dted_tile_list_to_mmap_store, m)?)?;
     m.add_function(wrap_pyfunction!(terrain_store_checksum64, m)?)?;
     Ok(())
 }

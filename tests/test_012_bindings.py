@@ -108,18 +108,38 @@ def test_mmap_terrain_store_matches_dted_reader_and_missing_dac_is_typed(tmp_pat
     missing_tile_point = np.asarray([[-104.5, 36.5]], dtype=np.float64)
 
     store_bytes = sidereon.dted_tree_to_mmap_store(root)
+    entries = [
+        sidereon.DtedTileListEntry.from_indices(
+            36, -106, os.path.join(root, "n36_w106_1arc_v3.dt2")
+        ),
+        sidereon.DtedTileListEntry(
+            sidereon.TerrainTileId(36, -107),
+            os.path.join(root, "n36_w107_1arc_v3.dt2"),
+        ),
+    ]
+    listed_store_bytes = sidereon.dted_tile_list_to_mmap_store(entries)
+    assert listed_store_bytes == store_bytes
     store_path = tmp_path / "terrain.tmm"
+    listed_store_path = tmp_path / "terrain-listed.tmm"
     sidereon.write_dted_tree_to_mmap_store(root, store_path)
+    sidereon.write_dted_tile_list_to_mmap_store(entries, listed_store_path)
     assert store_path.read_bytes() == store_bytes
+    assert listed_store_path.read_bytes() == store_bytes
 
     mmap = sidereon.MmapTerrain.from_bytes(store_bytes)
     from_vec = sidereon.MmapTerrain.from_vec(store_bytes)
     from_path = sidereon.MmapTerrain.from_path(store_path)
+    assert mmap.as_bytes() == store_bytes
     assert mmap.to_bytes() == store_bytes
     assert from_path.to_bytes() == store_bytes
     assert mmap.checksum64() == sidereon.terrain_store_checksum64(store_bytes)
     assert from_vec.vertical_datum == sidereon.VerticalDatum.EGM96_MSL_ORTHOMETRIC
     assert len(mmap.tile_index) == 2
+    assert mmap.tile_count == 2
+    assert [(tile.lat_index, tile.lon_index) for tile in mmap.tile_ids] == [
+        (36, -107),
+        (36, -106),
+    ]
     assert all(
         tile.vertical_datum == sidereon.VerticalDatum.EGM96_MSL_ORTHOMETRIC
         for tile in mmap.tile_index

@@ -4,17 +4,18 @@
 //! and returns the reference [`ReceiverSolution`] as a Pythonic object. No
 //! modeling: the solve is `sidereon::solve_spp`, unchanged.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyAny, PyModule};
 
 use sidereon_core::positioning::{
     residual_rms as core_residual_rms, Corrections, KlobucharCoeffs, Observation, ReceiverSolution,
-    RobustConfig, SolveInputs, SolvePolicy, SurfaceMet,
+    RinexSppEpochInputs, RinexSppEpochSolution, RinexSppOptions, RinexSppSource, RobustConfig,
+    SolveInputs, SolvePolicy, SurfaceMet,
 };
 use sidereon_core::quality::SolutionValidationOptions;
 use sidereon_core::GnssSatelliteId;
@@ -22,6 +23,7 @@ use sidereon_core::GnssSatelliteId;
 use crate::events::PyDop;
 use crate::geometry_quality::PyGeometryQuality;
 use crate::marshal::{mat3_to_array, option_py_or_default, PyGnssSystem};
+use crate::rinex::{PyBroadcastEphemeris, PyObsEpochTime, PyRinexObs, PySignalPolicy};
 use crate::{np_array, to_solve_err, PySp3, SolveError};
 
 /// One pseudorange observation for an SPP solve.
@@ -508,6 +510,251 @@ fn build_policy(
     })
 }
 
+fn parse_satellite_token(token: &str) -> PyResult<GnssSatelliteId> {
+    GnssSatelliteId::from_str(token)
+        .map_err(|_| PyValueError::new_err(format!("invalid satellite token: {token}")))
+}
+
+fn rinex_spp_options(
+    obs: &PyRinexObs,
+    signal_policy: Option<&PySignalPolicy>,
+    corrections: Option<&PySppCorrections>,
+    initial_guess: Option<[f64; 4]>,
+    satellites: Option<Vec<String>>,
+    met: Option<&PySppSurfaceMet>,
+    robust: Option<&PySppRobustConfig>,
+) -> PyResult<RinexSppOptions> {
+    let mut options = match signal_policy {
+        Some(policy) => RinexSppOptions::new(policy.inner()),
+        None => RinexSppOptions::default_for(obs.inner())
+            .map_err(|err| PyValueError::new_err(err.to_string()))?,
+    };
+    if let Some(corrections) = corrections {
+        options = options.with_corrections(corrections.inner);
+    }
+    if let Some(initial_guess) = initial_guess {
+        options = options.with_initial_guess(initial_guess);
+    }
+    if let Some(satellites) = satellites {
+        let parsed = satellites
+            .iter()
+            .map(|sat| parse_satellite_token(sat))
+            .collect::<PyResult<BTreeSet<_>>>()?;
+        options = options.with_satellites(parsed);
+    }
+    if let Some(met) = met {
+        options = options.with_surface_met(met.inner);
+    }
+    if let Some(robust) = robust {
+        options = options.with_robust(Some(robust.inner()));
+    }
+    Ok(options)
+}
+
+/// Options for assembling RINEX OBS epochs into SPP inputs.
+#[pyclass(module = "sidereon._sidereon", name = "RinexSppOptions")]
+pub struct PyRinexSppOptions {
+    inner: RinexSppOptions,
+}
+
+#[pymethods]
+impl PyRinexSppOptions {
+    /// Build RINEX-to-SPP assembly options.
+    ///
+    /// If `signal_policy` is omitted, the default policy for the observation
+    /// file's RINEX version is used. If `initial_guess` is omitted, the RINEX
+    /// header `APPROX POSITION XYZ` value seeds the receiver position.
+    #[new]
+    #[pyo3(signature = (
+        obs,
+        signal_policy=None,
+        corrections=None,
+        initial_guess=None,
+        satellites=None,
+        met=None,
+        robust=None,
+    ))]
+    fn new(
+        obs: &PyRinexObs,
+        signal_policy: Option<&PySignalPolicy>,
+        corrections: Option<&PySppCorrections>,
+        initial_guess: Option<[f64; 4]>,
+        satellites: Option<Vec<String>>,
+        met: Option<&PySppSurfaceMet>,
+        robust: Option<&PySppRobustConfig>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: rinex_spp_options(
+                obs,
+                signal_policy,
+                corrections,
+                initial_guess,
+                satellites,
+                met,
+                robust,
+            )?,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RinexSppOptions(satellites={})",
+            self.inner.satellites.as_ref().map_or(0, BTreeSet::len)
+        )
+    }
+}
+
+impl PyRinexSppOptions {
+    fn inner(&self) -> RinexSppOptions {
+        self.inner.clone()
+    }
+}
+
+/// One assembled RINEX OBS epoch and its SPP input bundle.
+#[pyclass(module = "sidereon._sidereon", name = "RinexSppEpochInputs")]
+pub struct PyRinexSppEpochInputs {
+    inner: RinexSppEpochInputs,
+}
+
+impl From<RinexSppEpochInputs> for PyRinexSppEpochInputs {
+    fn from(inner: RinexSppEpochInputs) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyRinexSppEpochInputs {
+    /// Index in the source RINEX observation epoch list.
+    #[getter]
+    fn epoch_index(&self) -> usize {
+        self.inner.epoch_index
+    }
+
+    /// Civil epoch exactly as it appears in the RINEX OBS file.
+    #[getter]
+    fn epoch(&self) -> PyObsEpochTime {
+        self.inner.epoch.into()
+    }
+
+    /// Number of pseudorange observations assembled for this epoch.
+    #[getter]
+    fn observation_count(&self) -> usize {
+        self.inner.inputs.observations.len()
+    }
+
+    /// Satellite tokens assembled for this epoch.
+    #[getter]
+    fn satellites(&self) -> Vec<String> {
+        self.inner
+            .inputs
+            .observations
+            .iter()
+            .map(|obs| obs.satellite_id.to_string())
+            .collect()
+    }
+
+    /// Pseudorange observations assembled for this epoch.
+    #[getter]
+    fn observations(&self) -> Vec<PySppObservation> {
+        self.inner
+            .inputs
+            .observations
+            .iter()
+            .map(|obs| PySppObservation {
+                satellite_id: obs.satellite_id,
+                token: obs.satellite_id.to_string(),
+                pseudorange_m: obs.pseudorange_m,
+            })
+            .collect()
+    }
+
+    #[getter]
+    fn t_rx_j2000_s(&self) -> f64 {
+        self.inner.inputs.t_rx_j2000_s
+    }
+
+    #[getter]
+    fn t_rx_second_of_day_s(&self) -> f64 {
+        self.inner.inputs.t_rx_second_of_day_s
+    }
+
+    #[getter]
+    fn day_of_year(&self) -> f64 {
+        self.inner.inputs.day_of_year
+    }
+
+    #[getter]
+    fn initial_guess(&self) -> [f64; 4] {
+        self.inner.inputs.initial_guess
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RinexSppEpochInputs(epoch_index={}, observations={})",
+            self.inner.epoch_index,
+            self.inner.inputs.observations.len()
+        )
+    }
+}
+
+/// One RINEX OBS epoch paired with its SPP solve result.
+#[pyclass(module = "sidereon._sidereon", name = "RinexSppEpochSolution")]
+pub struct PyRinexSppEpochSolution {
+    inner: RinexSppEpochSolution,
+}
+
+impl From<RinexSppEpochSolution> for PyRinexSppEpochSolution {
+    fn from(inner: RinexSppEpochSolution) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyRinexSppEpochSolution {
+    /// Index in the source RINEX observation epoch list.
+    #[getter]
+    fn epoch_index(&self) -> usize {
+        self.inner.epoch_index
+    }
+
+    /// Civil epoch exactly as it appears in the RINEX OBS file.
+    #[getter]
+    fn epoch(&self) -> PyObsEpochTime {
+        self.inner.epoch.into()
+    }
+
+    /// `True` when this epoch produced a receiver solution.
+    #[getter]
+    fn solved(&self) -> bool {
+        self.inner.solution.is_ok()
+    }
+
+    /// Receiver solution for this epoch, or `None` if the epoch did not solve.
+    #[getter]
+    fn solution(&self) -> Option<PySppSolution> {
+        self.inner
+            .solution
+            .as_ref()
+            .ok()
+            .cloned()
+            .map(PySppSolution::from_solution)
+    }
+
+    /// Per-epoch solve error text, or `None` when the epoch solved.
+    #[getter]
+    fn error(&self) -> Option<String> {
+        self.inner.solution.as_ref().err().map(ToString::to_string)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RinexSppEpochSolution(epoch_index={}, solved={})",
+            self.inner.epoch_index,
+            self.inner.solution.is_ok()
+        )
+    }
+}
+
 /// The result of an SPP solve.
 ///
 /// `position` is the ECEF receiver position as a numpy `float64` array of shape
@@ -523,6 +770,10 @@ impl PySppSolution {
     /// precise-with-broadcast fallback) that return the same solution shape.
     pub(crate) fn from_solution(inner: ReceiverSolution) -> Self {
         Self { inner }
+    }
+
+    pub(crate) fn inner(&self) -> &ReceiverSolution {
+        &self.inner
     }
 }
 
@@ -747,11 +998,126 @@ fn solve_spp_batch(
         .collect()
 }
 
+fn default_or_supplied_rinex_options(
+    obs: &PyRinexObs,
+    options: Option<&PyRinexSppOptions>,
+) -> PyResult<RinexSppOptions> {
+    match options {
+        Some(options) => Ok(options.inner()),
+        None => RinexSppOptions::default_for(obs.inner())
+            .map_err(|err| PyValueError::new_err(err.to_string())),
+    }
+}
+
+fn with_source<T>(
+    source: &Bound<'_, PyAny>,
+    broadcast_context: Option<&PyBroadcastEphemeris>,
+    precise: impl FnOnce(&RinexSppSource<'_, sidereon_core::ephemeris::Sp3>) -> PyResult<T>,
+    broadcast: impl FnOnce(&sidereon_core::ephemeris::BroadcastEphemeris) -> PyResult<T>,
+) -> PyResult<T> {
+    if let Ok(sp3) = source.extract::<PyRef<'_, PySp3>>() {
+        let delegated = match broadcast_context {
+            Some(broadcast) => RinexSppSource::with_broadcast_context(&sp3.inner, &broadcast.inner),
+            None => RinexSppSource::new(&sp3.inner),
+        };
+        return precise(&delegated);
+    }
+    if let Ok(broadcast_source) = source.extract::<PyRef<'_, PyBroadcastEphemeris>>() {
+        return broadcast(&broadcast_source.inner);
+    }
+    Err(PyValueError::new_err(
+        "source must be a Sp3 or BroadcastEphemeris",
+    ))
+}
+
+/// Assemble RINEX OBS epochs into SPP solve inputs.
+#[pyfunction]
+#[pyo3(signature = (source, obs, options=None, *, broadcast_context=None))]
+fn spp_inputs_from_rinex_obs(
+    source: &Bound<'_, PyAny>,
+    obs: &PyRinexObs,
+    options: Option<&PyRinexSppOptions>,
+    broadcast_context: Option<&PyBroadcastEphemeris>,
+) -> PyResult<Vec<PyRinexSppEpochInputs>> {
+    let options = default_or_supplied_rinex_options(obs, options)?;
+    with_source(
+        source,
+        broadcast_context,
+        |source| {
+            sidereon_core::positioning::spp_inputs_from_rinex_obs(obs.inner(), source, &options)
+                .map(|epochs| epochs.into_iter().map(Into::into).collect())
+                .map_err(|err| PyValueError::new_err(err.to_string()))
+        },
+        |source| {
+            sidereon_core::positioning::spp_inputs_from_rinex_obs(obs.inner(), source, &options)
+                .map(|epochs| epochs.into_iter().map(Into::into).collect())
+                .map_err(|err| PyValueError::new_err(err.to_string()))
+        },
+    )
+}
+
+/// Assemble RINEX OBS epochs and solve each epoch serially with SPP.
+#[pyfunction]
+#[pyo3(signature = (
+    source,
+    obs,
+    options=None,
+    *,
+    with_geodetic=true,
+    max_pdop=None,
+    coarse_search_seeds=None,
+    broadcast_context=None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn solve_spp_from_rinex_obs(
+    source: &Bound<'_, PyAny>,
+    obs: &PyRinexObs,
+    options: Option<&PyRinexSppOptions>,
+    with_geodetic: bool,
+    max_pdop: Option<f64>,
+    coarse_search_seeds: Option<usize>,
+    broadcast_context: Option<&PyBroadcastEphemeris>,
+) -> PyResult<Vec<PyRinexSppEpochSolution>> {
+    let options = default_or_supplied_rinex_options(obs, options)?;
+    let policy = build_policy(max_pdop, coarse_search_seeds)?;
+    with_source(
+        source,
+        broadcast_context,
+        |source| {
+            sidereon_core::positioning::solve_spp_from_rinex_obs(
+                source,
+                obs.inner(),
+                &options,
+                with_geodetic,
+                policy,
+            )
+            .map(|epochs| epochs.into_iter().map(Into::into).collect())
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+        },
+        |source| {
+            sidereon_core::positioning::solve_spp_from_rinex_obs(
+                source,
+                obs.inner(),
+                &options,
+                with_geodetic,
+                policy,
+            )
+            .map(|epochs| epochs.into_iter().map(Into::into).collect())
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+        },
+    )
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySppSolution>()?;
+    m.add_class::<PyRinexSppOptions>()?;
+    m.add_class::<PyRinexSppEpochInputs>()?;
+    m.add_class::<PyRinexSppEpochSolution>()?;
     m.add_function(wrap_pyfunction!(spp_residual_rms_m, m)?)?;
     m.add_function(wrap_pyfunction!(solve_spp, m)?)?;
     m.add_function(wrap_pyfunction!(solve_spp_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(spp_inputs_from_rinex_obs, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_spp_from_rinex_obs, m)?)?;
     m.add_class::<PySppObservation>()?;
     m.add_class::<PySppCorrections>()?;
     m.add_class::<PySppKlobucharCoeffs>()?;

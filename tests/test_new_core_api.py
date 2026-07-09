@@ -452,8 +452,10 @@ def test_sbas_decode_parse_store_and_mapping_helpers():
     body_hex = "5306000000000000000000000000000000000000000000000000000040"
     body = bytes.fromhex(body_hex)
     block = sidereon.decode_sbas_block(body, sidereon.SbasWireForm.BODY226)
+    alias = sidereon.decode_sbas_message(body, sidereon.SbasWireForm.BODY226)
     assert block.message_type == 1
     assert block.kind == sidereon.SbasMessageKind.PRN_MASK
+    assert alias.kind == block.kind
     assert block.kind_label == "prn_mask"
     assert block.encode() == body
 
@@ -475,7 +477,9 @@ def test_ssr_decode_store_and_correction_queries():
     rtcm = sidereon.decode_rtcm(frame)[0]
     assert rtcm.kind == "ssr"
     ssr = sidereon.decode_ssr_message(rtcm.encode())
+    ssr_alias = sidereon.decode_ssr(rtcm.encode())
     assert ssr.message_number == 1060
+    assert ssr_alias.message_number == ssr.message_number
     assert ssr.kind == sidereon.SsrKind.COMBINED_ORBIT_CLOCK
     assert ssr.satellite_count == 2
     store = sidereon.SsrCorrectionStore()
@@ -488,6 +492,10 @@ def test_ssr_decode_store_and_correction_queries():
     assert clock.solution.source == sidereon.SsrSource.RTCM_SSR
     assert orbit.solution.provider_id == ssr.provider_id
     assert clock.solution.solution_id == ssr.solution_id
+
+    from_frame = sidereon.ssr_store_from_rtcm(frame, 2425, 344970.0)
+    assert from_frame.orbit("G30") is not None
+    assert from_frame.clock("G30") is not None
 
 
 def test_solve_spp_robust_fde_returns_fde_result_and_alias_warns():
