@@ -50,7 +50,7 @@ print(look.azimuth_deg, look.elevation_deg, look.range_km)
 
 `Tle` also gives you `propagate()` (TEME state arcs as numpy arrays) and
 `find_passes()` (rise/set/peak over a window). The positioning side has the same
-shape: a typed config in, a result object with numpy positions and scalar
+pattern: a typed config in, a result object with numpy positions and scalar
 attributes out.
 
 ```python
@@ -93,8 +93,13 @@ The Python package mirrors the full breadth of the engine.
   precise ephemerides (including terrestrial-frame SP3 products through the
   Earth-orientation chain) with a per-satellite residual ledger, and relative
   motion in RIC/RTN/LVLH frames with Clohessy-Wiltshire propagation.
-- **GNSS positioning:** single-point positioning (SPP), RTK (float and fixed),
-  PPP (float and fixed), DGNSS, a robust solve driver, and DOP.
+- **GNSS positioning:** single-point positioning (SPP), public
+  `solve_static` multi-epoch static positioning with covariance,
+  leave-one-out redundancy diagnostics, and robust weighting, RTK (float and
+  fixed), PPP (float and fixed), static PPP temporal-correlation covariance
+  with calibrated day-length bounds, optional elevation cutoff, optional
+  tropospheric-gradient estimation, DGNSS, a Huber-reweighted solve driver, and
+  DOP.
 - **Integrity and error bounds:** RAIM fault detection and exclusion,
   multi-constellation ARAIM protection levels, SBAS protection levels
   (DO-229), per-observation reliability (minimal detectable bias,
@@ -103,7 +108,9 @@ The Python package mirrors the full breadth of the engine.
   SEP, error ellipse) that report wide or flagged bounds for weak geometry
   rather than fabricated confidence.
 - **GNSS corrections and products:** SBAS and RTCM SSR corrections applied to
-  broadcast ephemeris, Bias-SINEX code and phase biases (DCB/OSB), Klobuchar
+  broadcast ephemeris, RTCM 3 broadcast ephemeris decode for GPS (1019),
+  GLONASS (1020), Galileo (1045/1046), BeiDou (1042), and QZSS (1044), each
+  real-data validated, Bias-SINEX code and phase biases (DCB/OSB), Klobuchar
   and NeQuick-G ionosphere, IONEX maps, troposphere models, and NTRIP client
   stream handling.
 - **Ephemeris and time:** broadcast ephemeris and precise SP3 products, JPL SPK
@@ -115,11 +122,11 @@ The Python package mirrors the full breadth of the engine.
   and power-law clock-noise identification with a five-coefficient fit
   (IEEE 1139).
 - **Estimation and detection:** scalar Kalman and alpha-beta trackers,
-  innovation gating, robust statistics, CFAR detection thresholds, and
+  innovation gating, MAD statistics, CFAR detection thresholds, and
   source localization (ToA/TDOA) from arrival times at known sensors.
 - **Geodesy and monitoring:** geodesic direct and inverse problems (Karney),
   an epoch-aware terrestrial reference frame catalog with published ITRF and
-  ETRF Helmert parameter sets, robust station velocity (MIDAS), trajectory
+  ETRF Helmert parameter sets, station velocity (MIDAS), trajectory
   fitting with seasonal terms and offsets, step detection, network motion
   fields with common-mode removal, and repeating-geometry (sidereal)
   filtering.
@@ -137,7 +144,7 @@ The Python package mirrors the full breadth of the engine.
   terrain store, and geoid height conversion from EGM96 and EGM2008 grids.
 - **RF:** link budget (FSPL, EIRP, C/N0, antenna gain).
 - **GNSS/INS fusion:** strapdown mechanization with an error-state EKF (UKF
-  option), loose and tight coupling, robust loose updates with an outlier
+  option), loose and tight coupling, IGG-III loose updates with an outlier
   guard, an RTS fixed-interval smoother, checkpointed time synchronization,
   a serializable filter state, and field mode: zero-velocity and
   zero-angular-rate updates with a stationarity detector, non-holonomic
