@@ -2214,6 +2214,12 @@ fn decode_sbas_block(bytes: &[u8], form: PySbasWireForm) -> PyResult<PySbasBlock
 }
 
 #[pyfunction]
+/// Decode raw SBAS message bytes in the selected wire form.
+fn decode_sbas_message(bytes: &[u8], form: PySbasWireForm) -> PyResult<PySbasBlock> {
+    decode_sbas_block(bytes, form)
+}
+
+#[pyfunction]
 /// Parse SBAS EMS log lines into timestamped raw message blocks.
 fn parse_sbas_ems_lines(text: &str) -> PyResult<Vec<PySbasLogBlock>> {
     core_parse_sbas_ems_lines(text)
@@ -2247,6 +2253,27 @@ fn satellite_id_to_sbas_prn(satellite_id: &str) -> PyResult<Option<u16>> {
 fn decode_ssr_message(body: &[u8]) -> PyResult<PySsrMessage> {
     SsrMessage::decode(body)
         .map(PySsrMessage::from_inner)
+        .map_err(to_rtcm_err)
+}
+
+#[pyfunction]
+/// Decode a raw RTCM SSR message body.
+fn decode_ssr(body: &[u8]) -> PyResult<PySsrMessage> {
+    decode_ssr_message(body)
+}
+
+#[pyfunction]
+#[pyo3(signature = (bytes, week, tow_s, time_scale=PyTimeScale::GPST))]
+/// Build an SSR correction store from framed RTCM bytes.
+fn ssr_store_from_rtcm(
+    bytes: &[u8],
+    week: u32,
+    tow_s: f64,
+    time_scale: PyTimeScale,
+) -> PyResult<PySsrCorrectionStore> {
+    let epoch = gnss_week_tow(time_scale, week, tow_s)?;
+    sidereon::ssr_store_from_rtcm(bytes, epoch)
+        .map(|inner| PySsrCorrectionStore { inner })
         .map_err(to_rtcm_err)
 }
 
@@ -2294,10 +2321,13 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySsrCorrectionStore>()?;
     m.add_class::<PySsrCorrectedEphemeris>()?;
     m.add_function(wrap_pyfunction!(decode_sbas_block, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_sbas_message, m)?)?;
     m.add_function(wrap_pyfunction!(parse_sbas_ems_lines, m)?)?;
     m.add_function(wrap_pyfunction!(parse_sbas_rtklib_lines, m)?)?;
     m.add_function(wrap_pyfunction!(sbas_prn_to_satellite_id, m)?)?;
     m.add_function(wrap_pyfunction!(satellite_id_to_sbas_prn, m)?)?;
     m.add_function(wrap_pyfunction!(decode_ssr_message, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_ssr, m)?)?;
+    m.add_function(wrap_pyfunction!(ssr_store_from_rtcm, m)?)?;
     Ok(())
 }

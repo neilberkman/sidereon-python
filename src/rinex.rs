@@ -1251,6 +1251,12 @@ pub struct PySignalPolicy {
     inner: CoreSignalPolicy,
 }
 
+impl PySignalPolicy {
+    pub(crate) fn inner(&self) -> CoreSignalPolicy {
+        self.inner.clone()
+    }
+}
+
 #[pymethods]
 impl PySignalPolicy {
     /// Build a pseudorange policy from `(GnssSystem, [code, ...])` entries.

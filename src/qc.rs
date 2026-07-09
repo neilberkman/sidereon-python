@@ -15,7 +15,7 @@ use numpy::PyArray1;
 use pyo3::exceptions::{PyDeprecationWarning, PyValueError};
 use pyo3::ffi::c_str;
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyAny, PyModule};
 
 use sidereon_core::positioning::ReceiverSolution;
 use sidereon_core::qc_obs::{
@@ -35,8 +35,8 @@ use sidereon_core::quality::{
 };
 
 use crate::marshal::PyGnssSystem;
-use crate::rinex::{PyObsEpochTime, PyRinexObs};
-use crate::spp::{PySppConfig, PySppRobustConfig};
+use crate::rinex::{PyBroadcastEphemeris, PyObsEpochTime, PyRinexObs};
+use crate::spp::{PySppConfig, PySppRobustConfig, PySppSolution};
 use crate::{np_array, PySp3, SolveError};
 
 fn raim_weights(weights: Option<BTreeMap<String, f64>>) -> RaimWeights {
@@ -55,6 +55,44 @@ fn raim_options(
         p_fa,
         weights: raim_weights(weights),
         n_systems,
+    }
+}
+
+/// Typed input for standalone residual chi-square RAIM.
+#[pyclass(module = "sidereon._sidereon", name = "RaimInput")]
+#[derive(Clone)]
+pub struct PyRaimInput {
+    inner: RaimInput,
+}
+
+#[pymethods]
+impl PyRaimInput {
+    /// Create a standalone RAIM input from satellite tokens and post-fit
+    /// residuals in metres.
+    #[new]
+    fn new(used_sats: Vec<String>, residuals_m: Vec<f64>) -> Self {
+        Self {
+            inner: RaimInput {
+                used_sats,
+                residuals_m,
+            },
+        }
+    }
+
+    /// Satellite tokens in residual order.
+    #[getter]
+    fn used_sats(&self) -> Vec<String> {
+        self.inner.used_sats.clone()
+    }
+
+    /// Post-fit residuals in metres.
+    #[getter]
+    fn residuals_m(&self) -> Vec<f64> {
+        self.inner.residuals_m.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("RaimInput(used_sats={})", self.inner.used_sats.len())
     }
 }
 
@@ -133,6 +171,14 @@ impl PyRaimResult {
 fn py_raim_result(input: RaimInput, options: RaimOptions) -> PyResult<PyRaimResult> {
     let inner =
         quality::raim(&input, &options).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    py_raim_result_with_inner(input, options, inner)
+}
+
+fn py_raim_result_with_inner(
+    input: RaimInput,
+    options: RaimOptions,
+    inner: quality::RaimResult,
+) -> PyResult<PyRaimResult> {
     let n_parameters = (input.used_sats.len() as isize - inner.dof).max(0) as usize;
     let ordered_weights = match &options.weights {
         RaimWeights::Unit => None,
@@ -167,20 +213,57 @@ fn py_raim_result(input: RaimInput, options: RaimOptions) -> PyResult<PyRaimResu
 /// make `fault_detected` saturate near 100%. Omitted satellite entries default
 /// to unit weight.
 #[pyfunction]
-#[pyo3(signature = (used_sats, residuals_m, p_fa=DEFAULT_P_FA, weights=None, n_systems=None))]
+#[pyo3(signature = (used_sats, residuals_m=None, p_fa=DEFAULT_P_FA, weights=None, n_systems=None))]
 fn raim(
-    used_sats: Vec<String>,
-    residuals_m: Vec<f64>,
+    used_sats: &Bound<'_, PyAny>,
+    residuals_m: Option<Vec<f64>>,
     p_fa: f64,
     weights: Option<BTreeMap<String, f64>>,
     n_systems: Option<isize>,
 ) -> PyResult<PyRaimResult> {
-    let input = RaimInput {
-        used_sats,
-        residuals_m,
+    let input = if let Ok(typed) = used_sats.extract::<PyRef<'_, PyRaimInput>>() {
+        if residuals_m.is_some() {
+            return Err(PyValueError::new_err(
+                "residuals_m must be omitted when used_sats is RaimInput",
+            ));
+        }
+        typed.inner.clone()
+    } else {
+        let used_sats = used_sats.extract::<Vec<String>>()?;
+        let residuals_m = residuals_m.ok_or_else(|| {
+            PyValueError::new_err("residuals_m is required when input is a satellite sequence")
+        })?;
+        RaimInput {
+            used_sats,
+            residuals_m,
+        }
     };
     let options = raim_options(p_fa, weights, n_systems);
     py_raim_result(input, options)
+}
+
+/// Run residual chi-square RAIM over an existing SPP solution object.
+#[pyfunction]
+#[pyo3(signature = (solution, p_fa=DEFAULT_P_FA, weights=None, n_systems=None))]
+fn raim_for_solution(
+    solution: &PySppSolution,
+    p_fa: f64,
+    weights: Option<BTreeMap<String, f64>>,
+    n_systems: Option<isize>,
+) -> PyResult<PyRaimResult> {
+    let options = raim_options(p_fa, weights, n_systems);
+    let inner = quality::raim_for_solution(solution.inner(), &options)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let input = RaimInput {
+        used_sats: solution
+            .inner()
+            .used_sats
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        residuals_m: solution.inner().residuals_m.clone(),
+    };
+    py_raim_result_with_inner(input, options, inner)
 }
 
 /// Residual-based chi-square RAIM over a solution's used satellites and residuals.
@@ -326,6 +409,73 @@ fn qc_fde(
         ))),
         Err(FdeError::Raim(err)) => Err(PyValueError::new_err(err.to_string())),
     }
+}
+
+/// Fault detection and exclusion over an SPP solve using broadcast ephemeris.
+#[pyfunction]
+#[pyo3(signature = (broadcast, config, p_fa, max_iterations, weights=None, n_systems=None, max_pdop=None))]
+#[allow(clippy::too_many_arguments)]
+fn qc_fde_broadcast(
+    broadcast: &PyBroadcastEphemeris,
+    config: &PySppConfig,
+    p_fa: f64,
+    max_iterations: usize,
+    weights: Option<BTreeMap<String, f64>>,
+    n_systems: Option<isize>,
+    max_pdop: Option<f64>,
+) -> PyResult<PyFdeResult> {
+    let inputs = config.to_inputs();
+    let with_geodetic = config.with_geodetic_flag();
+    let options = FdeSppOptions {
+        fde: FdeOptions {
+            raim: raim_options(p_fa, weights, n_systems),
+            max_iterations,
+        },
+        validation: SolutionValidationOptions {
+            max_pdop,
+            ..Default::default()
+        },
+    };
+
+    match fde_spp(&broadcast.inner, &inputs, with_geodetic, &options) {
+        Ok(result) => Ok(PyFdeResult {
+            solution: result.solution,
+            excluded: result.excluded,
+            iterations: result.iterations,
+        }),
+        Err(FdeError::Solve(FdeSppError::Spp(err))) => Err(SolveError::new_err(err.to_string())),
+        Err(FdeError::Solve(FdeSppError::Validation(err))) => {
+            Err(SolveError::new_err(err.to_string()))
+        }
+        Err(FdeError::FaultUnresolved(stat)) => Err(SolveError::new_err(format!(
+            "FDE fault unresolved: test statistic {stat} still exceeds threshold after exhausting the exclusion budget"
+        ))),
+        Err(FdeError::Raim(err)) => Err(PyValueError::new_err(err.to_string())),
+    }
+}
+
+/// Alias for `qc_fde_broadcast`.
+#[pyfunction]
+#[pyo3(signature = (broadcast, config, p_fa, max_iterations, weights=None, n_systems=None, max_pdop=None))]
+#[allow(clippy::too_many_arguments)]
+fn fde_broadcast(
+    broadcast: &PyBroadcastEphemeris,
+    config: &PySppConfig,
+    p_fa: f64,
+    max_iterations: usize,
+    weights: Option<BTreeMap<String, f64>>,
+    n_systems: Option<isize>,
+    max_pdop: Option<f64>,
+) -> PyResult<PyFdeResult> {
+    qc_fde_broadcast(
+        broadcast,
+        config,
+        p_fa,
+        max_iterations,
+        weights,
+        n_systems,
+        max_pdop,
+    )
 }
 
 #[pyfunction]
@@ -1352,6 +1502,7 @@ fn observation_qc(
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyRaimInput>()?;
     m.add_class::<PyRaimResult>()?;
     m.add_class::<PyFdeResult>()?;
     m.add_class::<PyRangeFdeRow>()?;
@@ -1376,7 +1527,10 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyObservationQcReport>()?;
     m.add_function(wrap_pyfunction!(qc_raim, m)?)?;
     m.add_function(wrap_pyfunction!(raim, m)?)?;
+    m.add_function(wrap_pyfunction!(raim_for_solution, m)?)?;
     m.add_function(wrap_pyfunction!(qc_fde, m)?)?;
+    m.add_function(wrap_pyfunction!(qc_fde_broadcast, m)?)?;
+    m.add_function(wrap_pyfunction!(fde_broadcast, m)?)?;
     m.add_function(wrap_pyfunction!(solve_spp_robust_fde, m)?)?;
     m.add_function(wrap_pyfunction!(spp_robust_fde_driver, m)?)?;
     m.add_function(wrap_pyfunction!(qc_raim_fde_design, m)?)?;

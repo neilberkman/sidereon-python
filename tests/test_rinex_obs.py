@@ -8,7 +8,9 @@ import sidereon
 from _helpers import FIXTURES
 
 OBS_FIXTURES = os.path.join(FIXTURES, "obs")
+NAV_FIXTURES = os.path.join(FIXTURES, "nav")
 ESBC_TRIM = "ESBC00DNK_R_20201770000_01D_30S_MO_trim.rnx"
+ESBC_NAV = "ESBC00DNK_R_20201770000_01D_MN.rnx"
 
 
 def _read_obs(name=ESBC_TRIM):
@@ -156,3 +158,29 @@ def test_to_rinex_string_round_trips_header_and_epochs():
     again = reparsed.pseudoranges(0)
     assert again.satellites == original.satellites
     np.testing.assert_array_equal(again.ranges_m, original.ranges_m)
+
+
+def test_rinex_obs_spp_inputs_and_solve_convenience_with_broadcast_nav():
+    obs = sidereon.load_rinex_obs(os.path.join(OBS_FIXTURES, ESBC_TRIM))
+    nav = sidereon.load_rinex_nav(os.path.join(NAV_FIXTURES, ESBC_NAV))
+    options = sidereon.RinexSppOptions(
+        obs,
+        signal_policy=sidereon.SignalPolicy([(sidereon.GnssSystem.GPS, ["C1C"])]),
+        corrections=sidereon.SppCorrections(ionosphere=False, troposphere=True),
+    )
+
+    inputs = sidereon.spp_inputs_from_rinex_obs(nav, obs, options)
+    assert len(inputs) == obs.epoch_count
+    assert inputs[0].epoch_index == 0
+    assert inputs[0].epoch == obs.epochs[0].epoch
+    assert inputs[0].observation_count >= 5
+    assert all(sat.startswith("G") for sat in inputs[0].satellites)
+    assert inputs[0].observations[0].satellite_id == inputs[0].satellites[0]
+
+    solved = sidereon.solve_spp_from_rinex_obs(nav, obs, options)
+    assert len(solved) == len(inputs)
+    assert solved[0].solved
+    assert solved[0].solution is not None
+    assert solved[0].solution.geodetic is not None
+    assert solved[0].solution.position.shape == (3,)
+    assert np.all(np.isfinite(solved[0].solution.position))
