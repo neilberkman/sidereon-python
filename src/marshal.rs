@@ -145,7 +145,7 @@ pub(crate) fn fixed_array<const N: usize>(
     let view = values.as_array();
     if view.len() != N {
         return Err(PyValueError::new_err(format!(
-            "{name} must have shape ({N},)"
+            "{name} must be a length-{N} numeric vector ({N},)"
         )));
     }
 
@@ -175,11 +175,11 @@ pub(crate) fn fixed_array_from_any<const N: usize>(
     }
 
     let vec = values.extract::<Vec<f64>>().map_err(|_| {
-        PyValueError::new_err(format!("{name} must be a length-{N} numeric vector"))
+        PyValueError::new_err(format!("{name} must be a length-{N} numeric vector ({N},)"))
     })?;
-    let array: [f64; N] = vec
-        .try_into()
-        .map_err(|_| PyValueError::new_err(format!("{name} must have length {N}")))?;
+    let array: [f64; N] = vec.try_into().map_err(|_| {
+        PyValueError::new_err(format!("{name} must be a length-{N} numeric vector ({N},)"))
+    })?;
     validate_fixed_array(name, array, finite)
 }
 

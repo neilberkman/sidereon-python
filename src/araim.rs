@@ -1,9 +1,9 @@
 //! ARAIM integrity bindings.
 
-use numpy::{PyArray1, PyReadonlyArray1};
+use numpy::PyArray1;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyAny, PyModule};
 
 use sidereon_core::araim::{
     araim as core_araim, enumerate_fault_modes as core_enumerate_fault_modes, AraimGeometry,
@@ -14,7 +14,7 @@ use sidereon_core::geometry::LineOfSight;
 use sidereon_core::{GnssSatelliteId, GnssSystem, Wgs84Geodetic};
 
 use crate::events::PyWgs84Geodetic;
-use crate::marshal::{fixed_array, PyGnssSystem};
+use crate::marshal::{fixed_array_from_any, FinitePolicy, PyGnssSystem};
 use crate::np_array;
 
 fn to_araim_err<E: std::fmt::Display>(err: E) -> PyErr {
@@ -63,15 +63,15 @@ impl PyAraimRow {
     #[pyo3(signature = (satellite_id, line_of_sight_ecef, elevation_rad, system=None))]
     fn new(
         satellite_id: &str,
-        line_of_sight_ecef: PyReadonlyArray1<'_, f64>,
+        line_of_sight_ecef: &Bound<'_, PyAny>,
         elevation_rad: f64,
         system: Option<PyGnssSystem>,
     ) -> PyResult<Self> {
         let id = parse_satellite(satellite_id)?;
-        let los = fixed_array::<3>(
+        let los = fixed_array_from_any::<3>(
             "line_of_sight_ecef",
-            &line_of_sight_ecef,
-            crate::marshal::FinitePolicy::RequireFinite,
+            line_of_sight_ecef,
+            FinitePolicy::RequireFinite,
         )?;
         Ok(Self {
             inner: AraimRow {
@@ -756,7 +756,13 @@ impl PyAraimResult {
         self.inner.p_unmonitored
     }
 
-    /// True when the solve met the allocation and all PL roots converged.
+    /// True when ARAIM met the allocation and all PL roots converged.
+    #[getter]
+    fn available(&self) -> bool {
+        self.inner.available
+    }
+
+    /// Alias for `available`, kept for compatibility.
     #[getter]
     fn availability(&self) -> bool {
         self.inner.availability
@@ -764,8 +770,8 @@ impl PyAraimResult {
 
     fn __repr__(&self) -> String {
         format!(
-            "AraimResult(hpl_m={}, vpl_m={}, availability={})",
-            self.inner.hpl_m, self.inner.vpl_m, self.inner.availability
+            "AraimResult(hpl_m={}, vpl_m={}, available={})",
+            self.inner.hpl_m, self.inner.vpl_m, self.inner.available
         )
     }
 }

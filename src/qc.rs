@@ -162,8 +162,10 @@ fn py_raim_result(input: RaimInput, options: RaimOptions) -> PyResult<PyRaimResu
 ///
 /// `used_sats` are satellite tokens in residual order; `residuals_m` are the
 /// post-fit pseudorange residuals in metres. `weights` is an optional dict of
-/// per-satellite inverse-variance weights; omitted satellite entries default to
-/// unit weight.
+/// per-satellite inverse-variance weights. Build those weights from the
+/// per-satellite residual variances; unit weights with metre-scale residuals
+/// make `fault_detected` saturate near 100%. Omitted satellite entries default
+/// to unit weight.
 #[pyfunction]
 #[pyo3(signature = (used_sats, residuals_m, p_fa=DEFAULT_P_FA, weights=None, n_systems=None))]
 fn raim(
@@ -186,9 +188,9 @@ fn raim(
 /// `used_sats` are the satellite tokens in residual order; `residuals_m` are the
 /// post-fit pseudorange residuals (metres). `p_fa` is the false-alarm
 /// probability; `weights` is an optional dict of per-satellite inverse-variance
-/// weights (unit weights when omitted); `n_systems` optionally overrides the
-/// number of distinct GNSS clock systems. Returns a `RaimResult`. Raises
-/// `ValueError` on malformed input.
+/// weights from per-satellite residual variances (unit weights when omitted);
+/// `n_systems` optionally overrides the number of distinct GNSS clock systems.
+/// Returns a `RaimResult`. Raises `ValueError` on malformed input.
 #[pyfunction]
 #[pyo3(signature = (used_sats, residuals_m, p_fa, weights=None, n_systems=None))]
 fn qc_raim(
