@@ -95,24 +95,26 @@ The Python package mirrors the full breadth of the engine.
   motion in RIC/RTN/LVLH frames with Clohessy-Wiltshire propagation.
 - **GNSS positioning:** single-point positioning (SPP), public
   `solve_static` multi-epoch static positioning with covariance,
-  leave-one-out redundancy diagnostics, and robust weighting, RTK (float and
-  fixed), PPP (float and fixed), static PPP temporal-correlation covariance
+  RINEX observation assembly and solve helpers (`spp_inputs_from_rinex_obs`
+  and `solve_spp_from_rinex_obs`), leave-one-out redundancy diagnostics, and
+  robust weighting, RTK (float and fixed), PPP (float and fixed), static PPP temporal-correlation covariance
   with calibrated day-length bounds, optional elevation cutoff, optional
   tropospheric-gradient estimation, DGNSS, a Huber-reweighted solve driver, and
   DOP.
 - **Integrity and error bounds:** RAIM fault detection and exclusion,
   multi-constellation ARAIM protection levels, SBAS protection levels
   (DO-229), per-observation reliability (minimal detectable bias,
-  internal/external), observability classification of every solution (rank,
-  redundancy, conditioning), and covariance-derived error metrics (CEP, R95,
-  SEP, error ellipse) that report wide or flagged bounds for weak geometry
+  internal/external), typed RAIM inputs and RAIM over existing SPP solutions,
+  broadcast-ephemeris FDE, observability classification of every solution
+  (rank, redundancy, conditioning), and covariance-derived error metrics
+  (CEP, R95, SEP, error ellipse) that report wide or flagged bounds for weak geometry
   rather than fabricated confidence.
 - **GNSS corrections and products:** SBAS and RTCM SSR corrections applied to
   broadcast ephemeris, RTCM 3 broadcast ephemeris decode for GPS (1019),
   GLONASS (1020), Galileo (1045/1046), BeiDou (1042), and QZSS (1044), each
   real-data validated, Bias-SINEX code and phase biases (DCB/OSB), Klobuchar
-  and NeQuick-G ionosphere, IONEX maps, troposphere models, and NTRIP client
-  stream handling.
+  and NeQuick-G ionosphere, IONEX maps, troposphere models, top-level SBAS/SSR
+  decode and SSR store helpers, and NTRIP client stream handling.
 - **Ephemeris and time:** broadcast ephemeris and precise SP3 products, JPL SPK
   (DAF/.bsp) kernels, uniform satellite-state sampling across broadcast and
   precise sources with batched multi-satellite interpolation, scale-aware time
@@ -142,7 +144,8 @@ The Python package mirrors the full breadth of the engine.
   multipath, cycle slips), post-solve RAIM fault detection, ARAIM protection
   levels, carrier-phase combinations, and Hatch smoothing.
 - **Terrain:** DTED elevation lookup with batch probes, a memory-mappable
-  terrain store, and geoid height conversion from EGM96 and EGM2008 grids.
+  terrain store with tile-list builders and store byte/tile metadata, and
+  geoid height conversion from EGM96 and EGM2008 grids.
 - **RF:** link budget (FSPL, EIRP, C/N0, antenna gain).
 - **GNSS/INS fusion:** strapdown mechanization with an error-state EKF (UKF
   option), loose and tight coupling, IGG-III loose updates with an outlier
