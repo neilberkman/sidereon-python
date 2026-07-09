@@ -138,8 +138,9 @@ The Python package mirrors the full breadth of the engine.
   motion), sub-solar and sub-observer points, the terminator, parallactic
   angle, satellite visual magnitude, moonrise/moonset, seasons, moon phases,
   planetary events, meridian transits, and lunar and solar eclipses.
-- **Observation quality:** RINEX observation QC (completeness, multipath,
-  cycle slips), carrier-phase combinations, and Hatch smoothing.
+- **Observation quality and integrity:** RINEX observation QC (completeness,
+  multipath, cycle slips), post-solve RAIM fault detection, ARAIM protection
+  levels, carrier-phase combinations, and Hatch smoothing.
 - **Terrain:** DTED elevation lookup with batch probes, a memory-mappable
   terrain store, and geoid height conversion from EGM96 and EGM2008 grids.
 - **RF:** link budget (FSPL, EIRP, C/N0, antenna gain).
@@ -165,6 +166,26 @@ The Python package mirrors the full breadth of the engine.
 - **Data acquisition:** the `sidereon.data` module downloads and caches GNSS
   products (SP3 and IONEX from IGS/MGEX analysis centers, including merged
   multi-center SP3) and DTED terrain tiles.
+
+RAIM residual tests must be weighted with per-satellite residual variances.
+The Python API takes inverse-variance weights, so build them from your range
+noise model instead of using unit weights on metre-scale residuals:
+
+```python
+import math
+import sidereon
+
+used_sats = ["G01", "G02", "G03", "G04", "G05", "G06"]
+residuals_m = [0.4, -0.6, 0.3, 0.1, -0.2, 0.5]
+elevation_deg = {"G01": 72.0, "G02": 42.0, "G03": 35.0, "G04": 64.0, "G05": 50.0, "G06": 28.0}
+base_sigma_m = 0.8
+variances_m2 = {
+    sat: (base_sigma_m / max(math.sin(math.radians(el)), 0.2)) ** 2
+    for sat, el in elevation_deg.items()
+}
+weights = {sat: 1.0 / variances_m2[sat] for sat in used_sats}
+result = sidereon.raim(used_sats, residuals_m, weights=weights)
+```
 
 The binding adds no modeling of its own: every result is exactly what the engine
 computes, returned as numpy arrays, typed objects, and real Python exceptions

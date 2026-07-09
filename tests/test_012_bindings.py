@@ -299,6 +299,7 @@ def test_araim_wgc_add_v3_public_example_protection_levels():
     allocation = sidereon.IntegrityAllocation.lpv_200()
     assert allocation.p_emt == pytest.approx(1.0e-5)
     result = sidereon.araim(geometry, ism, allocation)
+    assert result.available
     assert result.availability
     assert result.vpl_m == pytest.approx(19.2, abs=0.1)
     assert result.hpl_m == pytest.approx(14.5, abs=0.1)
@@ -306,6 +307,42 @@ def test_araim_wgc_add_v3_public_example_protection_levels():
     assert result.sigma_acc_v_m == pytest.approx(1.47, abs=0.02)
     modes = sidereon.enumerate_fault_modes(geometry, ism, allocation)
     assert modes[0].excluded == []
+
+
+def test_araim_sparse_geometry_returns_unavailable_and_row_accepts_lists():
+    inv_sqrt_3 = 1.0 / math.sqrt(3.0)
+    rows = [
+        sidereon.AraimRow("G01", [inv_sqrt_3, inv_sqrt_3, inv_sqrt_3], math.pi / 2.0),
+        sidereon.AraimRow("G02", [inv_sqrt_3, -inv_sqrt_3, -inv_sqrt_3], math.pi / 2.0),
+        sidereon.AraimRow("G03", (-inv_sqrt_3, inv_sqrt_3, -inv_sqrt_3), math.pi / 2.0),
+        sidereon.AraimRow(
+            "G04",
+            np.asarray([-inv_sqrt_3, -inv_sqrt_3, inv_sqrt_3], dtype=np.float64),
+            math.pi / 2.0,
+        ),
+    ]
+    geometry = sidereon.AraimGeometry(
+        rows,
+        sidereon.Wgs84Geodetic(0.0, 0.0, 0.0),
+        [sidereon.GnssSystem.GPS],
+    )
+    model = sidereon.SatelliteIsmModel(0.75, 0.5, 0.75, 1.0e-5)
+    ism = sidereon.Ism(
+        [sidereon.ConstellationIsm(sidereon.GnssSystem.GPS, 0.0, model)],
+        [],
+    )
+
+    result = sidereon.araim(geometry, ism, sidereon.IntegrityAllocation.lpv_200())
+
+    assert not result.available
+    assert not result.availability
+    assert math.isinf(result.hpl_m)
+    assert math.isinf(result.vpl_m)
+
+
+def test_araim_row_bad_los_list_names_expected_length():
+    with pytest.raises(ValueError, match=r"line_of_sight_ecef.*\(3,\)"):
+        sidereon.AraimRow("G01", [1.0, 0.0], math.pi / 2.0)
 
 
 def test_angles_lon_lat_degree_order_matches_public_reference_values():

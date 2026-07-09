@@ -1226,6 +1226,8 @@ class FaultMode:
 
 class AraimResult:
     @property
+    def available(self) -> bool: ...
+    @property
     def hpl_m(self) -> float: ...
     @property
     def vpl_m(self) -> float: ...
@@ -6912,6 +6914,10 @@ class RaimResult:
     def normalized_residuals(self) -> dict[str, float]: ...
     @property
     def worst_sat(self) -> str | None: ...
+    @property
+    def rms_m(self) -> float: ...
+    @property
+    def reduced_chi_square(self) -> float | None: ...
     def __repr__(self) -> str: ...
 
 class FdeResult:
@@ -6933,13 +6939,36 @@ class FdeResult:
     def iterations(self) -> int: ...
     def __repr__(self) -> str: ...
 
+def raim(
+    used_sats: Sequence[str],
+    residuals_m: Sequence[float],
+    p_fa: float = ...,
+    weights: Mapping[str, float] | None = ...,
+    n_systems: int | None = ...,
+) -> RaimResult:
+    """Residual chi-square RAIM.
+
+    Pass inverse-variance weights derived from per-satellite residual
+    variances, for example ``{sat: 1.0 / variance_m2}`` using an
+    elevation/CN0 variance model. Unit weights with metre-scale residuals make
+    ``fault_detected`` saturate near 100%.
+    """
+    ...
 def qc_raim(
     used_sats: Sequence[str],
     residuals_m: Sequence[float],
     p_fa: float,
     weights: Mapping[str, float] | None = ...,
     n_systems: int | None = ...,
-) -> RaimResult: ...
+) -> RaimResult:
+    """Residual chi-square RAIM with explicit false-alarm probability.
+
+    Pass inverse-variance weights derived from per-satellite residual
+    variances, for example ``{sat: 1.0 / variance_m2}`` using an
+    elevation/CN0 variance model. Unit weights with metre-scale residuals make
+    ``fault_detected`` saturate near 100%.
+    """
+    ...
 def qc_fde(
     sp3: Sp3,
     config: SppConfig,

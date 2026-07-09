@@ -206,7 +206,7 @@ iono corrections), `antex` (PCO/PCV), `frequencies` (carrier table),
 | Forward observable prediction                 | not-exposed | `observables::predict`.                                                            |
 | Receiver velocity / clock-drift solve         | not-exposed | `velocity::solve`, Doppler<->range-rate.                                           |
 | DGNSS code-differential corrections           | not-exposed | `dgnss`.                                                                           |
-| Quality: RAIM / FDE / weighting               | not-exposed | `quality::{raim,fde,weight_vector,validate_receiver_solution}`.                    |
+| Quality: RAIM / FDE / weighting               | partial     | Direct `raim`, QC FDE, and pseudorange weighting helpers exposed; `validate_receiver_solution` remains Rust-only. |
 | Signal: C/A code, correlation, acquisition    | not-exposed | `signal::{ca_code,correlate,acquire}`.                                             |
 | Carrier-phase combos + cycle-slip + smoothing | not-exposed | `carrier_phase::{geometry_free,melbourne_wubbena,detect_cycle_slips,smooth_code}`. |
 | PPP correction tables                         | not-exposed | `ppp_corrections::build`.                                                          |
