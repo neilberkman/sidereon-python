@@ -37,19 +37,18 @@ use sidereon_core::rtk_filter::{
     solve_wide_lane_fixed_rtk_arc as core_solve_wide_lane_fixed_rtk_arc, AmbiguityScale,
     AmbiguitySet, CycleSlipOptions, CycleSlipPolicy, CycleSlipSplitArc, DynamicsModel, Epoch,
     FilterState, FixedSolveOpts, FloatBaselineSolution, FloatResidual, FloatSolveOpts,
-    InnovationScreen, InnovationScreenOpts, IntegerSearchMeta, IntegerStatus as RtkIntegerStatus,
-    MeasModel, MovingBaselineEpoch, MovingBaselineEpochSolution, MovingBaselineOpts,
-    MovingBaselineStatus, ResidualValidationOpts, RtkArcConfig, RtkArcEpoch, RtkArcEpochSolution,
-    RtkArcObservation, RtkArcPreprocessing, RtkArcSolution, RtkDualCycleSlipConfig,
-    RtkDualFrequencyArcEpoch, RtkDualFrequencyObservation, RtkDualFrequencySatelliteObservation,
-    RtkIonosphereFreeArcConfig, RtkIonosphereFreeArcSolution, RtkRinexArc as CoreRtkRinexArc,
-    RtkRinexArcOptions as CoreRtkRinexArcOptions, RtkRinexDualArcOptions,
-    RtkRinexDualFrequencyArc as CoreRtkRinexDualFrequencyArc, RtkRinexDualSignalPair,
-    RtkRinexSignalPair, RtkStaticArcConfig, RtkStaticArcSolution, RtkWideLaneArcConfig,
-    RtkWideLaneArcSolution, RtkWideLaneFixedArcConfig, RtkWideLaneFixedArcSolution,
-    RtkWideLaneFixedArcSolveConfig, RtkWideLaneFixedStaticArcSolution, SatMeas, SearchOpts,
-    StochasticModel, UpdateOpts, ValidatedFixedBaselineSolution, ValidatedFixedSolveOpts,
-    WideLaneOptions,
+    IntegerSearchMeta, IntegerStatus as RtkIntegerStatus, MeasModel, MovingBaselineEpoch,
+    MovingBaselineEpochSolution, MovingBaselineOpts, MovingBaselineStatus, ResidualValidationOpts,
+    RtkArcConfig, RtkArcEpoch, RtkArcEpochSolution, RtkArcObservation, RtkArcPreprocessing,
+    RtkArcSolution, RtkDualCycleSlipConfig, RtkDualFrequencyArcEpoch, RtkDualFrequencyObservation,
+    RtkDualFrequencySatelliteObservation, RtkIonosphereFreeArcConfig, RtkIonosphereFreeArcSolution,
+    RtkRinexArc as CoreRtkRinexArc, RtkRinexArcOptions as CoreRtkRinexArcOptions,
+    RtkRinexDualArcOptions, RtkRinexDualFrequencyArc as CoreRtkRinexDualFrequencyArc,
+    RtkRinexDualSignalPair, RtkRinexSignalPair, RtkStaticArcConfig, RtkStaticArcSolution,
+    RtkWideLaneArcConfig, RtkWideLaneArcSolution, RtkWideLaneFixedArcConfig,
+    RtkWideLaneFixedArcSolution, RtkWideLaneFixedArcSolveConfig, RtkWideLaneFixedStaticArcSolution,
+    SatMeas, SearchOpts, StochasticModel, UpdateOpts, ValidatedFixedBaselineSolution,
+    ValidatedFixedSolveOpts, WideLaneOptions,
 };
 
 use crate::ephemeris::with_observable_source;
@@ -1477,9 +1476,7 @@ impl PyRtkArcUpdateOptions {
     /// Create RTK arc per-epoch update controls.
     ///
     /// `dynamics` is `"constant_position"` (default) or `"velocity_propagated"`.
-    /// A predicted-residual innovation screen is enabled only when
-    /// `innovation_threshold_sigma` is supplied. `process_noise_baseline_sigma_m`
-    /// at `0.0` is the static filter.
+    /// `process_noise_baseline_sigma_m` at `0.0` is the static filter.
     #[new]
     #[pyo3(signature = (
         hold_sigma_m=1.0e-4,
@@ -1489,8 +1486,6 @@ impl PyRtkArcUpdateOptions {
         process_noise_baseline_sigma_m=0.0,
         dynamics="constant_position".to_string(),
         float_only_systems=Vec::new(),
-        innovation_threshold_sigma=None,
-        innovation_min_rows=0,
         report_residuals=false,
         ar_arming_sigma_m=None,
         ratio_threshold=RATIO_THRESHOLD,
@@ -1504,18 +1499,11 @@ impl PyRtkArcUpdateOptions {
         process_noise_baseline_sigma_m: f64,
         dynamics: String,
         float_only_systems: Vec<String>,
-        innovation_threshold_sigma: Option<f64>,
-        innovation_min_rows: usize,
         report_residuals: bool,
         ar_arming_sigma_m: Option<f64>,
         ratio_threshold: f64,
     ) -> PyResult<Self> {
         let dynamics_model = extract_dynamics_model(&dynamics)?;
-        let innovation_screen =
-            innovation_threshold_sigma.map(|threshold_sigma| InnovationScreenOpts {
-                threshold_sigma,
-                min_rows: innovation_min_rows,
-            });
         Ok(Self {
             inner: UpdateOpts {
                 hold_sigma_m,
@@ -1525,7 +1513,6 @@ impl PyRtkArcUpdateOptions {
                 process_noise_baseline_sigma_m,
                 dynamics_model,
                 float_only_systems,
-                innovation_screen,
                 report_residuals,
                 receiver_antenna_corrections: None,
                 ar_arming_sigma_m,
@@ -1567,8 +1554,6 @@ impl Default for PyRtkArcUpdateOptions {
             0.0,
             "constant_position".to_string(),
             Vec::new(),
-            None,
-            0,
             false,
             None,
             RATIO_THRESHOLD,
@@ -1858,92 +1843,6 @@ impl PyRtkArcResidual {
     }
 }
 
-/// Predicted-residual (innovation) screen diagnostics for one RTK arc epoch.
-///
-/// Present only when the screen is enabled for the arc; carries the per-epoch
-/// accepted/rejected row counts and the `coasted` flag (set when the screen left
-/// too few rows for a measurement update, so the epoch carried the prior).
-#[pyclass(module = "sidereon._sidereon", name = "RtkArcInnovationScreen")]
-#[derive(Clone)]
-pub struct PyRtkArcInnovationScreen {
-    inner: InnovationScreen,
-}
-
-#[pymethods]
-impl PyRtkArcInnovationScreen {
-    /// Per-row normalized-innovation rejection threshold (sigma).
-    #[getter]
-    fn threshold_sigma(&self) -> f64 {
-        self.inner.threshold_sigma
-    }
-
-    /// Minimum surviving rows required to run the measurement update.
-    #[getter]
-    fn min_rows(&self) -> usize {
-        self.inner.min_rows
-    }
-
-    /// Candidate rows presented to the screen this epoch.
-    #[getter]
-    fn input_rows(&self) -> usize {
-        self.inner.input_rows
-    }
-
-    /// Rows that passed the screen and entered the update.
-    #[getter]
-    fn accepted_rows(&self) -> usize {
-        self.inner.accepted_rows
-    }
-
-    /// Rows the screen rejected this epoch.
-    #[getter]
-    fn rejected_rows(&self) -> usize {
-        self.inner.rejected_rows
-    }
-
-    /// Rejected rows that were code (pseudorange) rows.
-    #[getter]
-    fn rejected_code_rows(&self) -> usize {
-        self.inner.rejected_code_rows
-    }
-
-    /// Rejected rows that were phase (carrier) rows.
-    #[getter]
-    fn rejected_phase_rows(&self) -> usize {
-        self.inner.rejected_phase_rows
-    }
-
-    /// Largest absolute normalized innovation over all candidate rows, or `None`
-    /// when there were no rows.
-    #[getter]
-    fn max_abs_normalized_innovation(&self) -> Option<f64> {
-        self.inner.max_abs_normalized_innovation
-    }
-
-    /// Largest absolute normalized innovation among the rejected rows, or `None`
-    /// when none were rejected.
-    #[getter]
-    fn max_rejected_abs_normalized_innovation(&self) -> Option<f64> {
-        self.inner.max_rejected_abs_normalized_innovation
-    }
-
-    /// Whether the epoch coasted (too few surviving rows to update, prior carried).
-    #[getter]
-    fn coasted(&self) -> bool {
-        self.inner.coasted
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "RtkArcInnovationScreen(input_rows={}, accepted_rows={}, rejected_rows={}, coasted={})",
-            self.inner.input_rows,
-            self.inner.accepted_rows,
-            self.inner.rejected_rows,
-            self.inner.coasted
-        )
-    }
-}
-
 /// One epoch's reported baseline/ambiguity solution from the RTK arc driver.
 #[pyclass(module = "sidereon._sidereon", name = "RtkArcEpochSolution")]
 #[derive(Clone)]
@@ -2030,17 +1929,6 @@ impl PyRtkArcEpochSolution {
                 inner: inner.clone(),
             })
             .collect()
-    }
-
-    /// Predicted-residual (innovation) screen result for this epoch, or `None`
-    /// when the screen is disabled. Carries the rejected-row counts and the
-    /// `coasted` flag.
-    #[getter]
-    fn innovation_screen(&self) -> Option<PyRtkArcInnovationScreen> {
-        self.inner
-            .innovation_screen
-            .clone()
-            .map(|inner| PyRtkArcInnovationScreen { inner })
     }
 
     /// Geometry observability and covariance-validation diagnostics.
@@ -4444,7 +4332,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRtkArcConfig>()?;
     m.add_class::<PyRtkArcIntegerSearch>()?;
     m.add_class::<PyRtkArcResidual>()?;
-    m.add_class::<PyRtkArcInnovationScreen>()?;
     m.add_class::<PyRtkArcEpochSolution>()?;
     m.add_class::<PyCycleSlipSplitArc>()?;
     m.add_class::<PyRtkFilterState>()?;

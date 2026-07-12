@@ -445,55 +445,14 @@ def test_rtk_arc_rejects_unknown_dynamics():
         sidereon.RtkArcUpdateOptions(dynamics="bogus")
 
 
-def _arc_config_with_screen(fx, threshold_sigma):
-    options = sidereon.RtkArcUpdateOptions(
-        innovation_threshold_sigma=threshold_sigma,
-        innovation_min_rows=1,
-    )
-    return sidereon.RtkArcConfig(
-        base=fx["base_arp_m"],
-        model=_model(fx),
-        wavelengths_m={_arc_sd_key(k): v for k, v in fx["wavelengths_m"].items()},
-        offsets_m={_arc_sd_key(k): v for k, v in fx["offsets_m"].items()},
-        baseline_prior_sigma_m=30.0,
-        ambiguity_prior_sigma_m=30.0,
-        initial_baseline_m=[0.0, 0.0, 0.0],
-        update_options=options,
-    )
+def test_rtk_arc_unsound_innovation_screen_surface_is_removed():
+    assert not hasattr(sidereon, "RtkArcInnovationScreen")
+    with pytest.raises(TypeError):
+        sidereon.RtkArcUpdateOptions(innovation_threshold_sigma=6.0)
 
-
-def test_rtk_arc_innovation_screen_is_absent_by_default():
     fx = _fixture()
     sol = sidereon.solve_rtk_arc(_arc_epochs(fx), _arc_config(fx))
-    # No screen configured: every epoch carries no screen diagnostics.
-    assert all(epoch.innovation_screen is None for epoch in sol.epochs)
-
-
-def test_rtk_arc_exposes_innovation_screen_when_enabled():
-    fx = _fixture()
-    sol = sidereon.solve_rtk_arc(
-        _arc_epochs(fx), _arc_config_with_screen(fx, threshold_sigma=6.0)
-    )
-
-    screens = [epoch.innovation_screen for epoch in sol.epochs]
-    assert all(screen is not None for screen in screens)
-
-    for screen in screens:
-        assert screen.threshold_sigma == 6.0
-        assert screen.min_rows == 1
-        # The row accounting is internally consistent per epoch.
-        assert screen.input_rows == screen.accepted_rows + screen.rejected_rows
-        assert screen.rejected_rows == (
-            screen.rejected_code_rows + screen.rejected_phase_rows
-        )
-        assert isinstance(screen.coasted, bool)
-        assert "RtkArcInnovationScreen(" in repr(screen)
-
-    # The screen actually ran: at least one epoch presented rows to it, and the
-    # optional largest-innovation diagnostic surfaces as a float when rows exist.
-    assert any(screen.input_rows > 0 for screen in screens)
-    populated = next(screen for screen in screens if screen.input_rows > 0)
-    assert populated.max_abs_normalized_innovation is not None
+    assert all(not hasattr(epoch, "innovation_screen") for epoch in sol.epochs)
 
 
 def test_rtk_arc_rejects_empty_arc():
