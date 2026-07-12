@@ -2,6 +2,16 @@
 
 All notable changes to the Sidereon Python interface are documented here.
 
+## [0.26.1]
+
+### Security
+
+- Updated `sidereon` and `sidereon-core` to 0.26.1, which rejects RINEX 2
+  observation epoch headers that declare an oversized satellite count before
+  processing continuation records. Malicious input could otherwise request an
+  enormous allocation and terminate the Python process. Sidereon Python
+  versions 0.11.1 through 0.26.0 are affected; upgrade to 0.26.1.
+
 ## [0.26.0]
 
 ### Breaking

@@ -141,6 +141,29 @@ def test_load_rinex_obs_accepts_path_and_bytes_and_errors_are_typed():
         sidereon.parse_rinex_obs(text).epoch(99)
 
 
+def test_rinex2_oversized_epoch_count_is_rejected_before_allocation():
+    def header_line(body, label):
+        return f"{body:<60}{label}"
+
+    text = "\n".join(
+        [
+            header_line(
+                "     2.11           OBSERVATION DATA    G (GPS)",
+                "RINEX VERSION / TYPE",
+            ),
+            header_line(
+                "     6    L1    L2    C1    P1    S1    S2",
+                "# / TYPES OF OBSERV",
+            ),
+            header_line("", "END OF HEADER"),
+            "5 10 5 5 0 5 0 155444444444444",
+        ]
+    )
+
+    with pytest.raises(sidereon.RinexObsParseError, match="I3 field maximum of 999"):
+        sidereon.parse_rinex_obs(text)
+
+
 def test_to_rinex_string_round_trips_header_and_epochs():
     obs = sidereon.parse_rinex_obs(_read_obs())
     reparsed = sidereon.parse_rinex_obs(obs.to_rinex_string())
