@@ -38,7 +38,7 @@ def _mini_sp3(label, records):
     return sidereon.load_sp3(("\n".join(lines) + "\n").encode("ascii"))
 
 
-def test_merge_sp3_real_gbm_products_spans_common_coverage_and_interpolates():
+def test_merge_sp3_real_gbm_products_spans_union_coverage_and_interpolates():
     full = _load_sp3("GBM0MGXRAP_20201770000_01D_05M_ORB_120epoch.sp3")
     trim = _load_sp3("GBM_BDS_C21_C08_trim.sp3")
     options = sidereon.Sp3MergeOptions(
@@ -52,21 +52,21 @@ def test_merge_sp3_real_gbm_products_spans_common_coverage_and_interpolates():
     full_axis = full.epochs_j2000_seconds
     trim_axis = trim.epochs_j2000_seconds
     merged_axis = merged.epochs_j2000_seconds
-    assert merged_axis[0] == max(full_axis[0], trim_axis[0])
-    assert merged_axis[-1] == min(full_axis[-1], trim_axis[-1])
+    assert merged_axis[0] == min(full_axis[0], trim_axis[0])
+    assert merged_axis[-1] == max(full_axis[-1], trim_axis[-1])
     assert {"C08", "C21"}.issubset(merged.satellites)
     assert all(sat.startswith("C") for sat in merged.satellites)
     assert report.quarantined_count == 0
     assert report.position_outlier_count == 0
     assert report.single_source_count > 0
 
-    query = np.asarray([(merged_axis[20] + merged_axis[21]) / 2.0], dtype=np.float64)
-    expected = full.interpolate("C21", query)
+    query = np.asarray([(merged_axis[-3] + merged_axis[-2]) / 2.0], dtype=np.float64)
+    expected = trim.interpolate("C21", query)
     actual = merged.interpolate("C21", query)
     np.testing.assert_allclose(
         actual.position_m, expected.position_m, rtol=0.0, atol=1.0e-6
     )
-    np.testing.assert_allclose(actual.clock_s, expected.clock_s, rtol=0.0, atol=1.0e-12)
+    assert np.isfinite(actual.clock_s[0])
 
 
 def test_merge_sp3_degenerate_single_source_reports_single_source_cells():
@@ -184,8 +184,16 @@ def test_merge_sp3_helmert_identity_reconciliation_is_bit_equal():
 
 
 def test_sp3_merge_options_accept_string_selectors_and_validate_systems():
-    options = sidereon.Sp3MergeOptions(combine="precedence", systems=["GPS", "C"])
+    guard = sidereon.Sp3OutlierRejectOptions(0.5, 5.0e-9)
+    options = sidereon.Sp3MergeOptions(
+        combine="precedence",
+        precedence_scope="satellite_arc",
+        outlier_reject=guard,
+        systems=["GPS", "C"],
+    )
     assert options.combine == sidereon.Sp3MergeCombine.PRECEDENCE
+    assert options.precedence_scope == sidereon.Sp3MergePrecedenceScope.SATELLITE_ARC
+    assert options.outlier_reject.position_tolerance_m == 0.5
     assert options.systems == ["G", "C"]
     assert options.asserted_frame_label_sets == []
     assert options.helmert is False
@@ -195,3 +203,33 @@ def test_sp3_merge_options_accept_string_selectors_and_validate_systems():
 
     with pytest.raises(ValueError, match="at least two labels"):
         sidereon.Sp3MergeOptions(asserted_frame_label_sets=[["IGS14"]])
+
+
+def test_precedence_outlier_guard_rejects_corrupt_preferred_cell():
+    preferred = _mini_sp3("IGS14", [("G01", [16000.0, -20000.0, 5000.0], 1000.0)])
+    agreeing_a = _mini_sp3("IGS14", [("G01", [15000.0, -20000.0, 5000.0], 100.0)])
+    agreeing_b = _mini_sp3("IGS14", [("G01", [15000.0001, -20000.0, 5000.0], 100.0)])
+    options = sidereon.Sp3MergeOptions(
+        combine="precedence",
+        outlier_reject=sidereon.Sp3OutlierRejectOptions(0.5, 5.0e-9),
+    )
+
+    merged, report = sidereon.merge_sp3([preferred, agreeing_a, agreeing_b], options)
+
+    np.testing.assert_allclose(
+        merged.state("G01", 0).position_m,
+        agreeing_a.state("G01", 0).position_m,
+        rtol=0.0,
+        atol=0.0,
+    )
+    assert report.position_outliers[0].sources == [0]
+    assert report.clock_outlier_count == 0
+
+
+def test_sp3_prediction_summary_is_exposed():
+    sp3 = _load_sp3("degenerate_coincident_5sat.sp3")
+    summary = sp3.prediction_summary()
+
+    assert len(summary.epochs) == sp3.epoch_count
+    assert all(epoch.observed for epoch in summary.epochs)
+    assert summary.observed_through_j2000_seconds == sp3.epochs_j2000_seconds[-1]

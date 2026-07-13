@@ -413,8 +413,79 @@ def test_fetch_merged_sp3_offline_single_contributor(tmp_path):
     assert isinstance(sp3, sidereon.Sp3)
     assert report.single_product is True
     assert report.source_count == 1
-    assert report.merged is False
+    assert report.merged is True
+    assert report.merge_report is not None
     assert [c.center for c in report.contributors] == ["cod"]
+
+
+def test_fetch_merged_sp3_forwards_complete_merge_options(tmp_path):
+    cache = str(tmp_path)
+    prod = data.mgex_sp3("cod", SP3_DATE)
+    _seed(cache, prod, _core_sp3("COD0MGXFIN_20201770000_01D_05M_ORB.SP3"))
+    options = sidereon.Sp3MergeOptions(
+        combine="precedence",
+        precedence_scope="cell",
+        outlier_reject=sidereon.Sp3OutlierRejectOptions(0.5, 5.0e-9),
+        min_agree=1,
+    )
+
+    merged, report = data.fetch_merged_sp3(
+        SP3_DATE,
+        ["cod"],
+        offline=True,
+        cache_dir=cache,
+        merge_options=options,
+    )
+
+    assert merged.epoch_count > 0
+    assert report.merge_report is not None
+
+
+def test_ultra_sp3_candidates_include_current_primary_and_alternates():
+    candidates = data._sp3_candidates("esa_ult", dt.date(2026, 7, 13), None)
+
+    assert [candidate.pattern for candidate in candidates] == [
+        "primary_02D_05M",
+        "alternate_02D_15M",
+        "alternate_01D_05M",
+    ]
+
+
+def test_ultra_sp3_primary_miss_uses_alternate(monkeypatch):
+    calls = []
+
+    def fake_fetch(product, **_kwargs):
+        calls.append(product.pattern)
+        if product.pattern == "primary_02D_05M":
+            raise data.FileNotFoundOnArchive(product.archive_url())
+        return _core_sp3("COD0MGXFIN_20201770000_01D_05M_ORB.SP3")
+
+    monkeypatch.setattr(data, "fetch", fake_fetch)
+    result = data._fetch_center_sp3("esa_ult", dt.date(2026, 7, 13), None, {})
+
+    assert result[0] == "ok"
+    assert result[1].pattern == "alternate_02D_15M"
+    assert calls == ["primary_02D_05M", "alternate_02D_15M"]
+
+
+def test_ultra_sp3_all_variants_missing_records_absence(monkeypatch):
+    calls = []
+
+    def fake_fetch(product, **_kwargs):
+        calls.append(product.pattern)
+        raise data.FileNotFoundOnArchive(product.archive_url())
+
+    monkeypatch.setattr(data, "fetch", fake_fetch)
+    result = data._fetch_center_sp3("esa_ult", dt.date(2026, 7, 13), None, {})
+
+    assert result[0] == "absent"
+    assert result[1].reason == "not_published"
+    assert result[1].pattern == "alternate_01D_05M"
+    assert calls == [
+        "primary_02D_05M",
+        "alternate_02D_15M",
+        "alternate_01D_05M",
+    ]
 
 
 def test_fetch_merged_sp3_offline_records_absent_centers(tmp_path):

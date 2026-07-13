@@ -57,6 +57,59 @@ pub struct PySp3 {
     pub(crate) inner: Sp3,
 }
 
+/// Prediction status aggregated over every satellite record at one SP3 epoch.
+#[pyclass(module = "sidereon._sidereon", name = "Sp3EpochPrediction")]
+#[derive(Clone)]
+pub struct PySp3EpochPrediction {
+    epoch_j2000_seconds: f64,
+    orbit_predicted_satellites: Vec<String>,
+    clock_predicted_satellites: Vec<String>,
+}
+
+#[pymethods]
+impl PySp3EpochPrediction {
+    #[getter]
+    fn epoch_j2000_seconds(&self) -> f64 {
+        self.epoch_j2000_seconds
+    }
+
+    #[getter]
+    fn observed(&self) -> bool {
+        self.orbit_predicted_satellites.is_empty() && self.clock_predicted_satellites.is_empty()
+    }
+
+    #[getter]
+    fn orbit_predicted_satellites(&self) -> Vec<String> {
+        self.orbit_predicted_satellites.clone()
+    }
+
+    #[getter]
+    fn clock_predicted_satellites(&self) -> Vec<String> {
+        self.clock_predicted_satellites.clone()
+    }
+}
+
+/// Product-wide prediction metadata derived from SP3 record flags.
+#[pyclass(module = "sidereon._sidereon", name = "Sp3PredictionSummary")]
+#[derive(Clone)]
+pub struct PySp3PredictionSummary {
+    epochs: Vec<PySp3EpochPrediction>,
+    observed_through_j2000_seconds: Option<f64>,
+}
+
+#[pymethods]
+impl PySp3PredictionSummary {
+    #[getter]
+    fn epochs(&self) -> Vec<PySp3EpochPrediction> {
+        self.epochs.clone()
+    }
+
+    #[getter]
+    fn observed_through_j2000_seconds(&self) -> Option<f64> {
+        self.observed_through_j2000_seconds
+    }
+}
+
 impl PySp3 {
     /// Wrap an owned core product, for the staleness selection layer which hands
     /// back the selected (present or nearest-prior) product.
@@ -100,6 +153,35 @@ impl PySp3 {
     #[getter]
     fn epochs_j2000_seconds<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         np_array(py, &self.inner.epochs_j2000_seconds())
+    }
+
+    /// Per-epoch observed/predicted status and the contiguous observed-through
+    /// boundary, derived from actual SP3 record flags.
+    fn prediction_summary(&self) -> PySp3PredictionSummary {
+        let summary = self.inner.prediction_summary();
+        PySp3PredictionSummary {
+            epochs: summary
+                .epochs
+                .into_iter()
+                .map(|epoch| PySp3EpochPrediction {
+                    epoch_j2000_seconds: instant_to_j2000_seconds(&epoch.epoch).unwrap_or(f64::NAN),
+                    orbit_predicted_satellites: epoch
+                        .orbit_predicted_satellites
+                        .into_iter()
+                        .map(|satellite| satellite.to_string())
+                        .collect(),
+                    clock_predicted_satellites: epoch
+                        .clock_predicted_satellites
+                        .into_iter()
+                        .map(|satellite| satellite.to_string())
+                        .collect(),
+                })
+                .collect(),
+            observed_through_j2000_seconds: summary
+                .observed_through
+                .as_ref()
+                .and_then(instant_to_j2000_seconds),
+        }
     }
 
     /// Interpolate `satellite`'s position and clock at each query epoch.
@@ -1302,6 +1384,8 @@ fn instant_to_j2000_seconds(epoch: &Instant) -> Option<f64> {
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySp3>()?;
+    m.add_class::<PySp3EpochPrediction>()?;
+    m.add_class::<PySp3PredictionSummary>()?;
     m.add_class::<PySp3Interpolation>()?;
     m.add_class::<PyEphemerisSampleStatus>()?;
     m.add_class::<PyEphemerisSampleRow>()?;

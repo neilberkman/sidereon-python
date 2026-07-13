@@ -267,6 +267,35 @@ fn data_ultra_issue_candidates(
         .map_err(to_data_err)
 }
 
+type UltraSp3LocationTuple = (String, String, String, String, String, String);
+
+#[pyfunction]
+fn data_ultra_sp3_locations(
+    center_code: &str,
+    year: i32,
+    month: u8,
+    day: u8,
+    issue: &str,
+) -> PyResult<Vec<UltraSp3LocationTuple>> {
+    core::ultra_sp3_locations(center(center_code)?, date(year, month, day)?, issue)
+        .map(|locations| {
+            locations
+                .into_iter()
+                .map(|location| {
+                    (
+                        location.pattern,
+                        location.span,
+                        location.sample,
+                        location.filename,
+                        location.url,
+                        location.compression.as_str().to_string(),
+                    )
+                })
+                .collect()
+        })
+        .map_err(to_data_err)
+}
+
 #[pyfunction]
 #[allow(clippy::too_many_arguments)] // Mirrors the core timestamp signature used by the Python API.
 fn data_latest_ultra_issue(
@@ -350,6 +379,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(data_parse_skadi_tile_id, m)?)?;
     m.add_function(wrap_pyfunction!(data_hgt_to_dted, m)?)?;
     m.add_function(wrap_pyfunction!(data_ultra_issue_candidates, m)?)?;
+    m.add_function(wrap_pyfunction!(data_ultra_sp3_locations, m)?)?;
     m.add_function(wrap_pyfunction!(data_latest_ultra_issue, m)?)?;
     m.add_function(wrap_pyfunction!(data_gim_date_candidates, m)?)?;
     Ok(())

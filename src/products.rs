@@ -17,8 +17,8 @@ use sidereon_core::astro::time::civil::seconds_between_splits;
 use sidereon_core::astro::time::{Instant, InstantRepr};
 use sidereon_core::constants::J2000_JD;
 use sidereon_core::ephemeris::{
-    merge, MergeCombine, MergeFlag, MergeOptions, MergeReport, Sp3FrameLabelSet,
-    Sp3FrameReconciliation, Sp3FrameReconciliationOptions,
+    merge, MergeCombine, MergeFlag, MergeOptions, MergePrecedenceScope, MergeReport,
+    OutlierRejectOptions, Sp3FrameLabelSet, Sp3FrameReconciliation, Sp3FrameReconciliationOptions,
 };
 use sidereon_core::GnssSystem;
 
@@ -418,6 +418,108 @@ fn extract_merge_combine(obj: &Bound<'_, PyAny>) -> PyResult<PySp3MergeCombine> 
     PySp3MergeCombine::from_label(&obj.extract::<String>()?)
 }
 
+/// Scope used by precedence-mode SP3 source selection.
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "Sp3MergePrecedenceScope",
+    eq,
+    eq_int
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PySp3MergePrecedenceScope {
+    /// Select the highest-precedence source present in each cell.
+    CELL,
+    /// Keep one source owner for an entire satellite arc.
+    SATELLITE_ARC,
+}
+
+impl PySp3MergePrecedenceScope {
+    fn from_label(value: &str) -> PyResult<Self> {
+        match value {
+            "cell" => Ok(Self::CELL),
+            "satellite_arc" => Ok(Self::SATELLITE_ARC),
+            other => Err(PyValueError::new_err(format!(
+                "unknown SP3 precedence scope {other:?}; expected \"cell\" or \"satellite_arc\""
+            ))),
+        }
+    }
+}
+
+impl From<PySp3MergePrecedenceScope> for MergePrecedenceScope {
+    fn from(value: PySp3MergePrecedenceScope) -> Self {
+        match value {
+            PySp3MergePrecedenceScope::CELL => MergePrecedenceScope::Cell,
+            PySp3MergePrecedenceScope::SATELLITE_ARC => MergePrecedenceScope::SatelliteArc,
+        }
+    }
+}
+
+#[pymethods]
+impl PySp3MergePrecedenceScope {
+    /// Stable lowercase selector accepted as a string alias.
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::CELL => "cell",
+            Self::SATELLITE_ARC => "satellite_arc",
+        }
+    }
+
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::CELL => "Sp3MergePrecedenceScope.CELL",
+            Self::SATELLITE_ARC => "Sp3MergePrecedenceScope.SATELLITE_ARC",
+        }
+    }
+}
+
+fn extract_precedence_scope(obj: &Bound<'_, PyAny>) -> PyResult<PySp3MergePrecedenceScope> {
+    if let Ok(value) = obj.extract::<PySp3MergePrecedenceScope>() {
+        return Ok(value);
+    }
+    PySp3MergePrecedenceScope::from_label(&obj.extract::<String>()?)
+}
+
+/// Optional tolerances that guard contested precedence cells against outliers.
+#[pyclass(module = "sidereon._sidereon", name = "Sp3OutlierRejectOptions")]
+#[derive(Clone)]
+pub struct PySp3OutlierRejectOptions {
+    position_tolerance_m: f64,
+    clock_tolerance_s: f64,
+}
+
+#[pymethods]
+impl PySp3OutlierRejectOptions {
+    #[new]
+    #[pyo3(signature = (position_tolerance_m=0.5, clock_tolerance_s=5.0e-9))]
+    fn new(position_tolerance_m: f64, clock_tolerance_s: f64) -> PyResult<Self> {
+        require_nonnegative_finite("position_tolerance_m", position_tolerance_m)?;
+        require_nonnegative_finite("clock_tolerance_s", clock_tolerance_s)?;
+        Ok(Self {
+            position_tolerance_m,
+            clock_tolerance_s,
+        })
+    }
+
+    #[getter]
+    fn position_tolerance_m(&self) -> f64 {
+        self.position_tolerance_m
+    }
+
+    #[getter]
+    fn clock_tolerance_s(&self) -> f64 {
+        self.clock_tolerance_s
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Sp3OutlierRejectOptions(position_tolerance_m={}, clock_tolerance_s={})",
+            self.position_tolerance_m, self.clock_tolerance_s
+        )
+    }
+}
+
 /// Controls for merging SP3 precise orbit and clock products.
 #[pyclass(module = "sidereon._sidereon", name = "Sp3MergeOptions")]
 #[derive(Clone)]
@@ -427,6 +529,8 @@ pub struct PySp3MergeOptions {
     min_agree: usize,
     clock_min_common: usize,
     combine: PySp3MergeCombine,
+    precedence_scope: PySp3MergePrecedenceScope,
+    outlier_reject: Option<PySp3OutlierRejectOptions>,
     target_epoch_interval_s: Option<f64>,
     systems: Option<BTreeSet<GnssSystem>>,
     asserted_frame_label_sets: Vec<Vec<String>>,
@@ -447,6 +551,8 @@ impl PySp3MergeOptions {
         min_agree=2,
         clock_min_common=5,
         combine=PySp3MergeCombine::MEAN,
+        precedence_scope=PySp3MergePrecedenceScope::CELL,
+        outlier_reject=None,
         target_epoch_interval_s=None,
         systems=None,
         asserted_frame_label_sets=None,
@@ -459,6 +565,9 @@ impl PySp3MergeOptions {
         min_agree: usize,
         clock_min_common: usize,
         #[pyo3(from_py_with = extract_merge_combine)] combine: PySp3MergeCombine,
+        #[pyo3(from_py_with = extract_precedence_scope)]
+        precedence_scope: PySp3MergePrecedenceScope,
+        outlier_reject: Option<&PySp3OutlierRejectOptions>,
         target_epoch_interval_s: Option<f64>,
         systems: Option<Vec<String>>,
         asserted_frame_label_sets: Option<Vec<Vec<String>>>,
@@ -485,6 +594,8 @@ impl PySp3MergeOptions {
             min_agree,
             clock_min_common,
             combine,
+            precedence_scope,
+            outlier_reject: outlier_reject.cloned(),
             target_epoch_interval_s,
             systems,
             asserted_frame_label_sets,
@@ -522,7 +633,19 @@ impl PySp3MergeOptions {
         self.combine
     }
 
-    /// Output epoch spacing in seconds, or `None` for the coarsest input grid.
+    /// Precedence source-selection scope.
+    #[getter]
+    fn precedence_scope(&self) -> PySp3MergePrecedenceScope {
+        self.precedence_scope
+    }
+
+    /// Optional contested-cell outlier guard.
+    #[getter]
+    fn outlier_reject(&self) -> Option<PySp3OutlierRejectOptions> {
+        self.outlier_reject.clone()
+    }
+
+    /// Output epoch spacing in seconds, or `None` for the finest input grid.
     #[getter]
     fn target_epoch_interval_s(&self) -> Option<f64> {
         self.target_epoch_interval_s
@@ -553,11 +676,13 @@ impl PySp3MergeOptions {
 
     fn __repr__(&self) -> String {
         format!(
-            "Sp3MergeOptions(position_tolerance_m={}, clock_tolerance_s={}, min_agree={}, combine={:?}, helmert={})",
+            "Sp3MergeOptions(position_tolerance_m={}, clock_tolerance_s={}, min_agree={}, combine={:?}, precedence_scope={:?}, outlier_reject={}, helmert={})",
             self.position_tolerance_m,
             self.clock_tolerance_s,
             self.min_agree,
             self.combine.label(),
+            self.precedence_scope.label(),
+            self.outlier_reject.is_some(),
             self.helmert
         )
     }
@@ -571,6 +696,14 @@ impl PySp3MergeOptions {
             min_agree: self.min_agree,
             clock_min_common: self.clock_min_common,
             combine: self.combine.into(),
+            precedence_scope: self.precedence_scope.into(),
+            outlier_reject: self
+                .outlier_reject
+                .as_ref()
+                .map(|options| OutlierRejectOptions {
+                    position_tolerance_m: options.position_tolerance_m,
+                    clock_tolerance_s: options.clock_tolerance_s,
+                }),
             target_epoch_interval_s: self.target_epoch_interval_s,
             systems: self.systems.clone(),
             frame_reconciliation: Sp3FrameReconciliationOptions {
@@ -784,6 +917,7 @@ pub struct PySp3MergeReport {
     quarantined: Vec<PySp3MergeFlag>,
     single_source: Vec<PySp3MergeFlag>,
     position_outliers: Vec<PySp3MergeFlag>,
+    clock_outliers: Vec<PySp3MergeFlag>,
     agreement_count: usize,
     position_agreement_rms_m: Option<f64>,
     position_agreement_max_m: Option<f64>,
@@ -824,6 +958,12 @@ impl PySp3MergeReport {
         self.position_outliers.clone()
     }
 
+    /// Clock contributors rejected from an accepted consensus or guard.
+    #[getter]
+    fn clock_outliers(&self) -> Vec<PySp3MergeFlag> {
+        self.clock_outliers.clone()
+    }
+
     #[getter]
     fn quarantined_count(&self) -> usize {
         self.quarantined.len()
@@ -837,6 +977,11 @@ impl PySp3MergeReport {
     #[getter]
     fn position_outlier_count(&self) -> usize {
         self.position_outliers.len()
+    }
+
+    #[getter]
+    fn clock_outlier_count(&self) -> usize {
+        self.clock_outliers.len()
     }
 
     /// Number of accepted cells with per-cell agreement statistics (one per
@@ -883,12 +1028,13 @@ impl PySp3MergeReport {
 
     fn __repr__(&self) -> String {
         format!(
-            "Sp3MergeReport(frame_reconciliations={}, quarantined={}, single_source={}, position_outliers={}, \
+            "Sp3MergeReport(frame_reconciliations={}, quarantined={}, single_source={}, position_outliers={}, clock_outliers={}, \
              agreement_count={})",
             self.frame_reconciliations.len(),
             self.quarantined.len(),
             self.single_source.len(),
             self.position_outliers.len(),
+            self.clock_outliers.len(),
             self.agreement_count,
         )
     }
@@ -932,6 +1078,11 @@ impl From<MergeReport> for PySp3MergeReport {
                 .collect(),
             position_outliers: value
                 .position_outliers
+                .into_iter()
+                .map(PySp3MergeFlag::from)
+                .collect(),
+            clock_outliers: value
+                .clock_outliers
                 .into_iter()
                 .map(PySp3MergeFlag::from)
                 .collect(),
@@ -1050,6 +1201,16 @@ fn require_positive_finite(name: &str, value: f64) -> PyResult<()> {
     }
 }
 
+fn require_nonnegative_finite(name: &str, value: f64) -> PyResult<()> {
+    if value.is_finite() && value >= 0.0 {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err(format!(
+            "{name} must be non-negative and finite"
+        )))
+    }
+}
+
 fn parse_systems(values: Vec<String>) -> PyResult<BTreeSet<GnssSystem>> {
     if values.is_empty() {
         return Err(PyValueError::new_err("systems must not be empty"));
@@ -1123,6 +1284,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAntex>()?;
     m.add_class::<PyAntenna>()?;
     m.add_class::<PySp3MergeCombine>()?;
+    m.add_class::<PySp3MergePrecedenceScope>()?;
+    m.add_class::<PySp3OutlierRejectOptions>()?;
     m.add_class::<PySp3MergeOptions>()?;
     m.add_class::<PySp3MergeFlag>()?;
     m.add_class::<PySp3FrameReconciliation>()?;

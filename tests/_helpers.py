@@ -89,13 +89,26 @@ def _resolve_core_fixtures():
     if override:
         return override
 
-    sibling = os.path.normpath(
+    sibling_candidates = (
+        # The standard workspace layout keeps the binding and Rust repositories
+        # beside each other under one parent directory.
         os.path.join(
-            _HERE, "..", "..", "..", "crates", "sidereon-core", "tests", "fixtures"
-        )
+            _HERE,
+            "..",
+            "..",
+            "sidereon",
+            "crates",
+            "sidereon-core",
+            "tests",
+            "fixtures",
+        ),
+        # Also accept a standalone sidereon-core checkout beside this repository.
+        os.path.join(_HERE, "..", "..", "sidereon-core", "tests", "fixtures"),
     )
-    if os.path.isdir(sibling):
-        return sibling
+    for sibling in sibling_candidates:
+        sibling = os.path.normpath(sibling)
+        if os.path.isdir(sibling):
+            return sibling
 
     path_dep = _path_dependency_fixtures()
     if path_dep:

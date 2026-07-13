@@ -142,6 +142,9 @@ from sidereon._sidereon import (
 from sidereon._sidereon import (
     data_ultra_issue_candidates as _core_data_ultra_issue_candidates,
 )
+from sidereon._sidereon import (
+    data_ultra_sp3_locations as _core_data_ultra_sp3_locations,
+)
 
 __all__ = [
     "DataError",
@@ -604,6 +607,12 @@ class Product:
     date: _dt.date
     sample: str
     issue: Optional[str] = None
+    span: Optional[str] = None
+    pattern: Optional[str] = None
+    filename: Optional[str] = None
+    cache_filename: Optional[str] = None
+    url: Optional[str] = None
+    compression: Optional[str] = None
 
     def __post_init__(self) -> None:
         cdef = _center_def(self.center)
@@ -635,6 +644,8 @@ class Product:
 
     def canonical_filename(self) -> str:
         """The canonical IGS long-name filename (no ``.gz`` suffix)."""
+        if self.filename is not None:
+            return self.filename
         try:
             return _core_data_canonical_filename(
                 self.center,
@@ -649,6 +660,8 @@ class Product:
             raise _catalog_error(exc) from None
 
     def _compression(self) -> str:
+        if self.compression is not None:
+            return self.compression
         try:
             return _core_data_archive_compression(self.center, self.content)
         except ValueError as exc:
@@ -659,6 +672,8 @@ class Product:
 
     def archive_url(self) -> str:
         """The full, compressed (``.gz`` where gzipped) archive URL."""
+        if self.url is not None:
+            return self.url
         try:
             return _core_data_archive_url(
                 self.center,
@@ -1227,7 +1242,7 @@ def fetch(
     """
     resolved = _resolve_cache_dir(cache_dir)
     filename = product.canonical_filename()
-    path = _cache_path(resolved, filename)
+    path = _cache_path(resolved, product.cache_filename or filename)
 
     state, detail = _classify(path, sha256)
     if state == "hit":
@@ -1770,6 +1785,7 @@ class AbsentCenter:
     center: str
     filename: Optional[str]
     reason: str
+    pattern: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -1780,6 +1796,7 @@ class Contributor:
     filename: str
     date: _dt.date
     issue: Optional[str]
+    pattern: Optional[str] = None
 
 
 @dataclass
@@ -1787,7 +1804,8 @@ class MergeReport:
     """Audit report for a merged SP3 fetch.
 
     Carries the per-center contribution audit plus the binding's own SP3 merge
-    report (``merge_report``) when more than one center contributed.
+    report (``merge_report``). Single contributors deliberately follow the same
+    merge path so every supplied merge option is applied consistently.
     """
 
     contributors: list[Contributor]
@@ -1815,13 +1833,65 @@ def _sp3_candidates(
     if _ultra_center(center) and isinstance(target, _dt.datetime):
         candidates = _ultra_issue_candidates(center, _as_naive_datetime(target))
         return [
-            Product(center, "sp3", date, eff_sample, issue)
-            for (date, issue) in candidates
+            product
+            for date, issue in candidates
+            for product in _sp3_products_for_issue(center, date, issue, sample)
         ]
     date = _as_date(target)
     if _ultra_center(center):
-        return [Product(center, "sp3", date, eff_sample, "0000")]
+        return _sp3_products_for_issue(center, date, "0000", sample)
     return [Product(center, "sp3", date, eff_sample)]
+
+
+def _sp3_products_for_issue(
+    center: str,
+    date: _dt.date,
+    issue: str,
+    requested_sample: Optional[str],
+) -> list[Product]:
+    if requested_sample is not None:
+        return [
+            Product(
+                center,
+                "sp3",
+                date,
+                requested_sample,
+                issue,
+                pattern="requested_sample",
+            )
+        ]
+    try:
+        locations = _core_data_ultra_sp3_locations(
+            center, date.year, date.month, date.day, issue
+        )
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
+    return [
+        Product(
+            center=center,
+            content="sp3",
+            date=date,
+            sample=candidate_sample,
+            issue=issue,
+            span=span,
+            pattern=pattern,
+            filename=filename,
+            cache_filename=_candidate_cache_filename(
+                pattern, center, date, issue, filename
+            ),
+            url=url,
+            compression=compression,
+        )
+        for pattern, span, candidate_sample, filename, url, compression in locations
+    ]
+
+
+def _candidate_cache_filename(
+    pattern: str, center: str, date: _dt.date, issue: str, filename: str
+) -> Optional[str]:
+    if pattern.startswith("alias_"):
+        return f"{center}_{date:%Y%m%d}_{issue}_{filename}"
+    return None
 
 
 def _fetch_center_sp3(
@@ -1837,7 +1907,7 @@ def _fetch_center_sp3(
         # UnknownCenter (a caller mistake) propagates rather than being recorded.
         return ("absent", AbsentCenter(center, None, _reason_str(exc)))
 
-    last: Optional[tuple[str, DataError]] = None
+    last: Optional[tuple[str, Optional[str], DataError]] = None
     for prod in candidates:
         filename = prod.canonical_filename()
         try:
@@ -1846,16 +1916,21 @@ def _fetch_center_sp3(
             # Expected absence for this candidate; try the next. Integrity,
             # cache, and transport failures are real and propagate instead of
             # being silently recorded as an absent center.
-            last = (filename, exc)
+            last = (filename, prod.pattern, exc)
             continue
         sp3 = sidereon.load_sp3(path)
         return (
             "ok",
-            Contributor(center, filename, prod.date, prod.issue),
+            Contributor(
+                center, filename, prod.date, prod.issue, prod.pattern or "canonical"
+            ),
             sp3,
         )
     if last is not None:
-        return ("absent", AbsentCenter(center, last[0], _reason_str(last[1])))
+        return (
+            "absent",
+            AbsentCenter(center, last[0], _reason_str(last[2]), last[1]),
+        )
     return ("absent", AbsentCenter(center, None, "no_candidate"))
 
 
@@ -1880,6 +1955,7 @@ def fetch_merged_sp3(
     systems: Optional[Sequence[str]] = None,
     epoch_interval_s: Optional[float] = None,
     sample: Optional[str] = None,
+    merge_options: Optional["sidereon.Sp3MergeOptions"] = None,
     **fetch_opts,
 ) -> tuple["sidereon.Sp3", MergeReport]:
     """Fetch SP3 from several centers and merge the available ones.
@@ -1889,6 +1965,9 @@ def fetch_merged_sp3(
     parsed merged :class:`sidereon.Sp3` and a :class:`MergeReport`. Raises
     :class:`NoProducts` when no center contributes and
     :class:`IncompatibleSources` when the fetched sources cannot be combined.
+    Ultra-rapid centers probe current primary, alternate, and documented alias
+    patterns after archive misses. Pass a complete :class:`Sp3MergeOptions` as
+    ``merge_options``; single contributors follow the same merge path.
     """
     if not isinstance(centers, (list, tuple)):
         raise UnsupportedProduct("centers must be a list of center codes")
@@ -1909,20 +1988,14 @@ def fetch_merged_sp3(
     if not contributors:
         raise NoProducts(absent)
 
-    if len(contributors) == 1:
-        _state, info, sp3 = contributors[0]
-        report = MergeReport(
-            contributors=[info],
-            absent=absent,
-            source_count=1,
-            single_product=True,
-            merged=False,
-            merge_report=None,
-        )
-        return sp3, report
-
     sources = [c[2] for c in contributors]
-    options = _merge_options(systems, epoch_interval_s)
+    if merge_options is not None and (
+        systems is not None or epoch_interval_s is not None
+    ):
+        raise UnsupportedProduct(
+            "merge_options cannot be combined with systems or epoch_interval_s"
+        )
+    options = merge_options or _merge_options(systems, epoch_interval_s)
     try:
         merged, merge_report = sidereon.merge_sp3(sources, options)
     except sidereon.SidereonError as exc:
@@ -1932,7 +2005,7 @@ def fetch_merged_sp3(
         contributors=[c[1] for c in contributors],
         absent=absent,
         source_count=len(contributors),
-        single_product=False,
+        single_product=len(contributors) == 1,
         merged=True,
         merge_report=merge_report,
     )
@@ -1983,6 +2056,7 @@ def fetch_merged_sp3_file(
     systems: Optional[Sequence[str]] = None,
     epoch_interval_s: Optional[float] = None,
     sample: Optional[str] = None,
+    merge_options: Optional["sidereon.Sp3MergeOptions"] = None,
     **fetch_opts,
 ) -> str:
     """Fetch the merged SP3 from several centers and persist it to ``path``.
@@ -1998,6 +2072,7 @@ def fetch_merged_sp3_file(
         systems=systems,
         epoch_interval_s=epoch_interval_s,
         sample=sample,
+        merge_options=merge_options,
         **fetch_opts,
     )
     return write_sp3(merged, path, gzip=gzip)

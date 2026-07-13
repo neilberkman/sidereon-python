@@ -2,6 +2,22 @@
 
 All notable changes to the Sidereon Python interface are documented here.
 
+## [Unreleased]
+
+## [0.28.0]
+
+### Added
+
+- Added per-cell SP3 precedence, optional deterministic outlier rejection,
+  clock-outlier provenance, and observed/predicted epoch summaries.
+- Added current/alternate ultra-rapid product probing and complete merge-policy
+  forwarding through `data.fetch_merged_sp3`.
+
+### Fixed
+
+- Fixed sibling Rust fixture discovery in the standard multi-repository
+  development layout.
+
 ## [0.27.1]
 
 ### Fixed

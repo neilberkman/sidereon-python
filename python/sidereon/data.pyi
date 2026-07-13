@@ -58,6 +58,12 @@ class Product:
     date: _dt.date
     sample: str
     issue: Optional[str] = ...
+    span: Optional[str] = ...
+    pattern: Optional[str] = ...
+    filename: Optional[str] = ...
+    cache_filename: Optional[str] = ...
+    url: Optional[str] = ...
+    compression: Optional[str] = ...
     @property
     def gps_week(self) -> int: ...
     @property
@@ -70,6 +76,7 @@ class AbsentCenter:
     center: str
     filename: Optional[str]
     reason: str
+    pattern: Optional[str] = ...
 
 @dataclass(frozen=True)
 class Contributor:
@@ -77,6 +84,7 @@ class Contributor:
     filename: str
     date: _dt.date
     issue: Optional[str]
+    pattern: Optional[str] = ...
 
 @dataclass
 class MergeReport:
@@ -257,6 +265,7 @@ def fetch_merged_sp3(
     systems: Optional[Sequence[str]] = ...,
     epoch_interval_s: Optional[float] = ...,
     sample: Optional[str] = ...,
+    merge_options: Optional[sidereon.Sp3MergeOptions] = ...,
     **fetch_opts: object,
 ) -> tuple[sidereon.Sp3, MergeReport]: ...
 def fetch_merged_sp3_file(
@@ -270,6 +279,7 @@ def fetch_merged_sp3_file(
     systems: Optional[Sequence[str]] = ...,
     epoch_interval_s: Optional[float] = ...,
     sample: Optional[str] = ...,
+    merge_options: Optional[sidereon.Sp3MergeOptions] = ...,
     **fetch_opts: object,
 ) -> str: ...
 def write_sp3(sp3: sidereon.Sp3, path: str, *, gzip: bool = ...) -> str: ...
