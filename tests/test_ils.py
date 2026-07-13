@@ -88,3 +88,10 @@ def test_ils_non_finite_input_raises_value_error():
     cov = np.eye(2, dtype=np.float64)
     with pytest.raises(ValueError):
         sidereon.bounded_ils_search(float_cycles, cov)
+
+
+def test_lambda_rejects_values_outside_integer_result_domain():
+    float_cycles = np.array([np.finfo(np.float64).max], dtype=np.float64)
+    cov = np.eye(1, dtype=np.float64)
+    with pytest.raises(ValueError, match="outside integer search range"):
+        sidereon.lambda_ils_search(float_cycles, cov)

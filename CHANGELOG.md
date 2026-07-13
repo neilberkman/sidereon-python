@@ -2,6 +2,14 @@
 
 All notable changes to the Sidereon Python interface are documented here.
 
+## [0.27.1]
+
+### Fixed
+
+- Updated `sidereon` and `sidereon-core` to 0.27.1 so LAMBDA integer
+  ambiguity searches reject finite values outside the `i64` result domain
+  instead of returning saturated integers with non-finite scores.
+
 ## [0.27.0]
 
 ### Added
