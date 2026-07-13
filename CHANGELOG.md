@@ -2,6 +2,23 @@
 
 All notable changes to the Sidereon Python interface are documented here.
 
+## [0.27.0]
+
+### Added
+
+- Added `GeoidGrid.from_proj_egm96_gtx` and
+  `GeoidGrid.undulation_proj_rad` for PROJ 9.3.0-compatible interpolation of
+  the public EGM96 15-arcminute GTX grid.
+- Added the required `ProjVgridshiftArithmetic` policy so callers explicitly
+  select fused or separately rounded multiply-add evaluation to match their
+  reference PROJ build.
+- Added typed `ProjVgridshiftError` subclasses for non-finite and outside-grid
+  lookup coordinates.
+
+### Changed
+
+- Updated `sidereon` and `sidereon-core` to 0.27.0.
+
 ## [0.26.1]
 
 ### Security

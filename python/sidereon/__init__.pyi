@@ -25,6 +25,15 @@ class TleParseError(ParseError):
 class GeodesicError(ValueError):
     """Raised when WGS84 geodesic inputs are invalid."""
 
+class ProjVgridshiftError(ValueError):
+    """Base class for invalid PROJ vertical-grid lookup coordinates."""
+
+class ProjVgridshiftNonFiniteCoordinateError(ProjVgridshiftError):
+    """Raised when a PROJ vertical-grid latitude or longitude is not finite."""
+
+class ProjVgridshiftCoordinateOutsideGridError(ProjVgridshiftError):
+    """Raised when a PROJ vertical-grid coordinate is outside the grid extent."""
+
 class GeofenceError(SidereonError):
     """Raised when geofence construction or evaluation fails."""
 
@@ -8303,6 +8312,13 @@ class Egm2008GridSpacing(enum.Enum):
     def global_dimensions(self) -> tuple[int, int]: ...
     def __repr__(self) -> str: ...
 
+class ProjVgridshiftArithmetic(enum.Enum):
+    """Floating-point evaluation recipe for PROJ vertical-grid interpolation."""
+
+    SEPARATE_MULTIPLY_ADD = ...
+    FUSED_MULTIPLY_ADD = ...
+    def __repr__(self) -> str: ...
+
 class Egm2008RasterWindow:
     """Descriptor for a full or cropped EGM2008 raster window."""
 
@@ -8346,6 +8362,8 @@ class GeoidGrid:
     @staticmethod
     def from_egm96_dac(data: bytes) -> GeoidGrid: ...
     @staticmethod
+    def from_proj_egm96_gtx(data: bytes) -> GeoidGrid: ...
+    @staticmethod
     def from_egm2008_raster(data: bytes, spacing: Egm2008GridSpacing) -> GeoidGrid: ...
     @staticmethod
     def from_egm2008_raster_window(
@@ -8353,6 +8371,12 @@ class GeoidGrid:
     ) -> GeoidGrid: ...
     def undulation_deg(self, lat_deg: float, lon_deg: float) -> float: ...
     def undulation_rad(self, lat_rad: float, lon_rad: float) -> float: ...
+    def undulation_proj_rad(
+        self,
+        lat_rad: float,
+        lon_rad: float,
+        arithmetic: ProjVgridshiftArithmetic,
+    ) -> float: ...
     def undulations_deg(
         self, points_deg: npt.NDArray[np.float64]
     ) -> npt.NDArray[np.float64]: ...

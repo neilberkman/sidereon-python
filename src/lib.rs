@@ -150,6 +150,27 @@ create_exception!(
 
 create_exception!(
     _sidereon,
+    ProjVgridshiftError,
+    PyValueError,
+    "Base class for invalid PROJ vertical-grid lookup coordinates."
+);
+
+create_exception!(
+    _sidereon,
+    ProjVgridshiftNonFiniteCoordinateError,
+    ProjVgridshiftError,
+    "Raised when a PROJ vertical-grid latitude or longitude is not finite."
+);
+
+create_exception!(
+    _sidereon,
+    ProjVgridshiftCoordinateOutsideGridError,
+    ProjVgridshiftError,
+    "Raised when a PROJ vertical-grid coordinate is outside the grid extent."
+);
+
+create_exception!(
+    _sidereon,
     GeofenceError,
     SidereonError,
     "Raised when geofence construction, containment, probability, or crossing evaluation fails."
@@ -347,6 +368,15 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("AntexParseError", py.get_type::<AntexParseError>())?;
     m.add("TleParseError", py.get_type::<TleParseError>())?;
     m.add("GeodesicError", py.get_type::<GeodesicError>())?;
+    m.add("ProjVgridshiftError", py.get_type::<ProjVgridshiftError>())?;
+    m.add(
+        "ProjVgridshiftNonFiniteCoordinateError",
+        py.get_type::<ProjVgridshiftNonFiniteCoordinateError>(),
+    )?;
+    m.add(
+        "ProjVgridshiftCoordinateOutsideGridError",
+        py.get_type::<ProjVgridshiftCoordinateOutsideGridError>(),
+    )?;
     m.add("GeofenceError", py.get_type::<GeofenceError>())?;
     m.add("SolveError", py.get_type::<SolveError>())?;
     m.add("PrimitiveError", py.get_type::<PrimitiveError>())?;

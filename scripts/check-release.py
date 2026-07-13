@@ -20,13 +20,42 @@ def main() -> None:
         python_version = tomllib.load(handle)["project"]["version"]
     with (ROOT / "Cargo.toml").open("rb") as handle:
         cargo = tomllib.load(handle)
+    with (ROOT / "uv.lock").open("rb") as handle:
+        uv_packages = tomllib.load(handle)["package"]
 
     rust_version = cargo["package"]["version"]
+    engine_dependencies = {
+        name: cargo["dependencies"][name] for name in ("sidereon", "sidereon-core")
+    }
+    non_registry_pins = {
+        name: value
+        for name, value in engine_dependencies.items()
+        if not isinstance(value, str)
+    }
+    if non_registry_pins:
+        details = ", ".join(
+            f"{name}={value!r}" for name, value in non_registry_pins.items()
+        )
+        raise SystemExit(
+            "engine dependencies must be plain registry version pins; " + details
+        )
+
+    uv_project_versions = [
+        package["version"]
+        for package in uv_packages
+        if package["name"] == "sidereon" and package.get("source") == {"editable": "."}
+    ]
+    if len(uv_project_versions) != 1:
+        raise SystemExit(
+            "uv.lock must contain exactly one editable sidereon project package"
+        )
+
     expected = {
         "Python package": python_version,
         "Rust extension crate": rust_version,
-        "sidereon dependency": cargo["dependencies"]["sidereon"],
-        "sidereon-core dependency": cargo["dependencies"]["sidereon-core"],
+        "sidereon dependency": engine_dependencies["sidereon"],
+        "sidereon-core dependency": engine_dependencies["sidereon-core"],
+        "uv project lock": uv_project_versions[0],
     }
     mismatches = {
         name: version for name, version in expected.items() if version != python_version

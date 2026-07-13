@@ -1,10 +1,16 @@
 """Geoid undulation and height conversion delegate to ``sidereon_core::geoid``."""
 
 import math
+import struct
 
 import numpy as np
 import pytest
 import sidereon
+
+
+def _constant_proj_egm96_gtx(value_m: float) -> bytes:
+    header = struct.pack(">ddddii", -90.0, -180.0, 0.25, 0.25, 721, 1440)
+    return header + struct.pack(">f", value_m) * (721 * 1440)
 
 
 def test_builtin_undulation_and_height_inverse():
@@ -91,6 +97,49 @@ def test_egm96_batch_and_dac_loader_are_pinned():
     grid = sidereon.GeoidGrid.from_egm96_dac(dac_bytes)
     assert grid.undulation_deg(40.0, -105.0) == pytest.approx(1.23)
     np.testing.assert_allclose(grid.undulations_deg(points), np.array([1.23, 1.23]))
+
+
+def test_proj_egm96_gtx_loader_requires_explicit_arithmetic():
+    with pytest.raises(ValueError, match="PROJ egm96_15.gtx must be"):
+        sidereon.GeoidGrid.from_proj_egm96_gtx(b"")
+
+    grid = sidereon.GeoidGrid.from_proj_egm96_gtx(_constant_proj_egm96_gtx(2.5))
+
+    assert grid.undulation_proj_rad(
+        math.radians(40.0),
+        math.radians(-105.0),
+        sidereon.ProjVgridshiftArithmetic.SEPARATE_MULTIPLY_ADD,
+    ) == pytest.approx(2.5)
+    assert grid.undulation_proj_rad(
+        math.radians(40.0),
+        math.radians(-105.0),
+        sidereon.ProjVgridshiftArithmetic.FUSED_MULTIPLY_ADD,
+    ) == pytest.approx(2.5)
+    assert (
+        repr(sidereon.ProjVgridshiftArithmetic.FUSED_MULTIPLY_ADD)
+        == "ProjVgridshiftArithmetic.FUSED_MULTIPLY_ADD"
+    )
+
+
+def test_proj_vgridshift_coordinate_errors_are_typed():
+    grid = sidereon.GeoidGrid.from_proj_egm96_gtx(_constant_proj_egm96_gtx(2.5))
+    arithmetic = sidereon.ProjVgridshiftArithmetic.FUSED_MULTIPLY_ADD
+
+    with pytest.raises(
+        sidereon.ProjVgridshiftNonFiniteCoordinateError,
+        match="latitude coordinate is not finite",
+    ) as nonfinite:
+        grid.undulation_proj_rad(math.nan, 0.0, arithmetic)
+    assert isinstance(nonfinite.value, sidereon.ProjVgridshiftError)
+    assert isinstance(nonfinite.value, ValueError)
+
+    with pytest.raises(
+        sidereon.ProjVgridshiftCoordinateOutsideGridError,
+        match="latitude coordinate is outside the grid",
+    ) as outside:
+        grid.undulation_proj_rad(math.radians(91.0), 0.0, arithmetic)
+    assert isinstance(outside.value, sidereon.ProjVgridshiftError)
+    assert isinstance(outside.value, ValueError)
 
 
 def test_grid_rejects_sample_count_mismatch():

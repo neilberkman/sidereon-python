@@ -100,10 +100,46 @@ jobs:
           name: wheels-sdist
           path: dist
 
+  verify:
+    name: installed wheel + source distribution
+    runs-on: ubuntu-latest
+    needs: [linux, macos, windows, sdist]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: wheels-*
+          merge-multiple: true
+      - name: Smoke-test installed x86_64 Linux wheel
+        shell: bash
+        run: |
+          wheels=(dist/*manylinux*x86_64.whl)
+          test "${#wheels[@]}" -eq 1
+          python -m venv .venv-wheel
+          . .venv-wheel/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install "${wheels[0]}"
+          SIDEREON_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" python scripts/smoke-release.py
+      - name: Build and smoke-test installed source distribution
+        shell: bash
+        run: |
+          sdists=(dist/*.tar.gz)
+          test "${#sdists[@]}" -eq 1
+          python -m venv .venv-sdist
+          . .venv-sdist/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install "${sdists[0]}"
+          SIDEREON_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" python scripts/smoke-release.py
+
   publish:
     name: Publish to PyPI (keyless OIDC + attestations)
     runs-on: ubuntu-latest
-    needs: [linux, macos, windows, sdist]
+    needs: [verify]
     environment: pypi
     permissions:
       contents: read

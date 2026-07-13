@@ -24,11 +24,24 @@ use sidereon_core::geoid::{
     geoid_undulations_deg as core_geoid_undulations_deg,
     geoid_undulations_rad as core_geoid_undulations_rad,
     orthometric_height_m as core_orthometric_height_m, Egm2008GridSpacing, Egm2008RasterWindow,
-    GeoidGrid,
+    GeoidGrid, ProjVgridshiftArithmetic, ProjVgridshiftError,
 };
+
+use crate::{ProjVgridshiftCoordinateOutsideGridError, ProjVgridshiftNonFiniteCoordinateError};
 
 fn to_geoid_err<E: std::fmt::Debug>(err: E) -> PyErr {
     PyValueError::new_err(format!("{err:?}"))
+}
+
+fn to_proj_vgridshift_err(err: ProjVgridshiftError) -> PyErr {
+    match err {
+        ProjVgridshiftError::NonFiniteCoordinate { .. } => {
+            ProjVgridshiftNonFiniteCoordinateError::new_err(err.to_string())
+        }
+        ProjVgridshiftError::CoordinateOutsideGrid { .. } => {
+            ProjVgridshiftCoordinateOutsideGridError::new_err(err.to_string())
+        }
+    }
 }
 
 fn points2_from_array(name: &str, points: &PyReadonlyArray2<'_, f64>) -> PyResult<Vec<(f64, f64)>> {
@@ -104,6 +117,41 @@ impl PyEgm2008GridSpacing {
         match self {
             Self::ONE_MINUTE => "Egm2008GridSpacing.ONE_MINUTE",
             Self::TWO_POINT_FIVE_MINUTE => "Egm2008GridSpacing.TWO_POINT_FIVE_MINUTE",
+        }
+    }
+}
+
+/// Floating-point evaluation recipe for PROJ vertical-grid interpolation.
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "ProjVgridshiftArithmetic",
+    eq,
+    eq_int
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyProjVgridshiftArithmetic {
+    /// Round each multiplication and addition separately.
+    SEPARATE_MULTIPLY_ADD,
+    /// Evaluate each accumulation as a fused multiply-add.
+    FUSED_MULTIPLY_ADD,
+}
+
+impl From<PyProjVgridshiftArithmetic> for ProjVgridshiftArithmetic {
+    fn from(value: PyProjVgridshiftArithmetic) -> Self {
+        match value {
+            PyProjVgridshiftArithmetic::SEPARATE_MULTIPLY_ADD => Self::SeparateMultiplyAdd,
+            PyProjVgridshiftArithmetic::FUSED_MULTIPLY_ADD => Self::FusedMultiplyAdd,
+        }
+    }
+}
+
+#[pymethods]
+impl PyProjVgridshiftArithmetic {
+    fn __repr__(&self) -> &'static str {
+        match self {
+            Self::SEPARATE_MULTIPLY_ADD => "ProjVgridshiftArithmetic.SEPARATE_MULTIPLY_ADD",
+            Self::FUSED_MULTIPLY_ADD => "ProjVgridshiftArithmetic.FUSED_MULTIPLY_ADD",
         }
     }
 }
@@ -249,6 +297,14 @@ impl PyGeoidGrid {
         Ok(Self { inner })
     }
 
+    /// Parse PROJ's public EGM96 15-arcminute `egm96_15.gtx` grid from bytes.
+    /// Use `undulation_proj_rad` for PROJ-compatible interpolation.
+    #[staticmethod]
+    fn from_proj_egm96_gtx(data: &[u8]) -> PyResult<Self> {
+        let inner = GeoidGrid::from_proj_egm96_gtx(data).map_err(to_geoid_err)?;
+        Ok(Self { inner })
+    }
+
     /// Parse an official full-global NGA EGM2008 interpolation raster.
     #[staticmethod]
     fn from_egm2008_raster(data: &[u8], spacing: PyEgm2008GridSpacing) -> PyResult<Self> {
@@ -274,6 +330,21 @@ impl PyGeoidGrid {
     /// radians (latitude positive north, longitude positive east).
     fn undulation_rad(&self, lat_rad: f64, lon_rad: f64) -> f64 {
         self.inner.undulation_rad(lat_rad, lon_rad)
+    }
+
+    /// PROJ 9.3.0-compatible EGM96 vertical-grid interpolation in radians.
+    /// The arithmetic recipe is required because reference PROJ builds may
+    /// contract multiply-add operations differently. Invalid coordinates raise
+    /// a typed `ProjVgridshiftError` subclass.
+    fn undulation_proj_rad(
+        &self,
+        lat_rad: f64,
+        lon_rad: f64,
+        arithmetic: PyProjVgridshiftArithmetic,
+    ) -> PyResult<f64> {
+        self.inner
+            .undulation_proj_rad(lat_rad, lon_rad, arithmetic.into())
+            .map_err(to_proj_vgridshift_err)
     }
 
     /// Batch bilinear undulations for `(lat_deg, lon_deg)` rows.
@@ -424,6 +495,7 @@ fn egm96_ellipsoidal_height_m(orthometric_height_m: f64, lat_rad: f64, lon_rad: 
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEgm2008GridSpacing>()?;
+    m.add_class::<PyProjVgridshiftArithmetic>()?;
     m.add_class::<PyEgm2008RasterWindow>()?;
     m.add_class::<PyGeoidGrid>()?;
     m.add_function(wrap_pyfunction!(geoid_undulation, m)?)?;

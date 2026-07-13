@@ -77,6 +77,26 @@ print(solution.position)     # numpy [x, y, z] ECEF metres
 print(solution.rx_clock_s)   # receiver clock bias, seconds
 ```
 
+PROJ-compatible EGM96 vertical-grid interpolation is available when bit-level
+agreement with a particular PROJ build matters. Load the public
+`egm96_15.gtx` grid and select the reference build's floating-point arithmetic
+explicitly:
+
+```python
+import sidereon
+
+grid = sidereon.GeoidGrid.from_proj_egm96_gtx(open("egm96_15.gtx", "rb").read())
+undulation_m = grid.undulation_proj_rad(
+    latitude_rad,
+    longitude_rad,
+    sidereon.ProjVgridshiftArithmetic.FUSED_MULTIPLY_ADD,
+)
+```
+
+Use `SEPARATE_MULTIPLY_ADD` for a PROJ build that does not contract the
+multiply-add operations. Invalid coordinates raise a typed
+`ProjVgridshiftError` subclass instead of panicking or extrapolating.
+
 ## Capabilities
 
 The Python package mirrors the full breadth of the engine.
@@ -145,7 +165,8 @@ The Python package mirrors the full breadth of the engine.
   levels, carrier-phase combinations, and Hatch smoothing.
 - **Terrain:** DTED elevation lookup with batch probes, a memory-mappable
   terrain store with tile-list builders and store byte/tile metadata, and
-  geoid height conversion from EGM96 and EGM2008 grids.
+  geoid height conversion from EGM96 and EGM2008 grids, including PROJ 9.3.0
+  EGM96 GTX interpolation with explicit fused or separately rounded arithmetic.
 - **RF:** link budget (FSPL, EIRP, C/N0, antenna gain).
 - **GNSS/INS fusion:** strapdown mechanization with an error-state EKF (UKF
   option), loose and tight coupling, IGG-III loose updates with an outlier
