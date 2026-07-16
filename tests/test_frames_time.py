@@ -27,6 +27,60 @@ FX = _fixture()
 SAMPLE_POS = np.asarray([hex_to_f64(h) for h in FX["sample"]["position_km_hex"]])
 SAMPLE_VEL = np.asarray([hex_to_f64(h) for h in FX["sample"]["velocity_km_s_hex"]])
 
+# Independent Skyfield 1.49 oracle. Unlike ``frames_time.json``, these values
+# were captured from Skyfield with ``float.hex()`` and were not emitted by
+# Sidereon. Keep this gate separate from the binding-vs-engine fixture checks.
+SKYFIELD_TEME_POS = np.asarray(
+    [
+        hex_to_f64(h)
+        for h in (
+            "0x40ace86c23dffb6b",
+            "0x409f7fa61c81cb47",
+            "0x40b4bd8359159cde",
+        )
+    ]
+)
+SKYFIELD_TEME_VEL = np.asarray(
+    [
+        hex_to_f64(h)
+        for h in (
+            "0xc00b2ffb7cf9ad7d",
+            "0x401b7a8751f7fc4a",
+            "0xbfceb36925f07cb4",
+        )
+    ]
+)
+SKYFIELD_GCRS_POS = np.asarray(
+    [
+        hex_to_f64(h)
+        for h in (
+            "0x40ad0bd9193713e1",
+            "0x409f41a3b2073733",
+            "0x40b4b6ffad1289d1",
+        )
+    ]
+)
+SKYFIELD_GCRS_VEL = np.asarray(
+    [
+        hex_to_f64(h)
+        for h in (
+            "0xc00af690723d6cb1",
+            "0x401b88e06212f969",
+            "0xbfcde8575471eaf0",
+        )
+    ]
+)
+SKYFIELD_ITRS_POS = np.asarray(
+    [
+        hex_to_f64(h)
+        for h in (
+            "0xc092d5d32b319db8",
+            "0x40af8b3b3a722474",
+            "0x40b4bd8359159cdb",
+        )
+    ]
+)
+
 
 def _epochs_array():
     return np.asarray([e["unix_micros"] for e in FX["epochs"]], dtype=np.int64)
@@ -121,6 +175,19 @@ def test_teme_to_gcrs_matches_reference_bits():
                 assert gcrs_vel[idx, axis] == hex_to_f64(ref["velocity_hex"][axis])
 
 
+def test_teme_to_gcrs_matches_skyfield_1_49_at_zero_ulp():
+    epoch = sidereon.Instant.from_utc(2018, 7, 4, 0, 0, 0.0).unix_micros
+    result = sidereon.teme_to_gcrs(
+        SKYFIELD_TEME_POS.reshape(1, 3),
+        SKYFIELD_TEME_VEL.reshape(1, 3),
+        np.asarray([epoch], dtype=np.int64),
+        skyfield_compat=True,
+    )
+
+    np.testing.assert_array_equal(result.position_km[0], SKYFIELD_GCRS_POS)
+    np.testing.assert_array_equal(result.velocity_km_s[0], SKYFIELD_GCRS_VEL)
+
+
 def test_gcrs_to_itrs_matches_reference_bits():
     epochs = _epochs_array()
     n = len(epochs)
@@ -135,6 +202,17 @@ def test_gcrs_to_itrs_matches_reference_bits():
         for idx, e in enumerate(FX["epochs"]):
             for axis in range(3):
                 assert itrs[idx, axis] == hex_to_f64(e[key][axis])
+
+
+def test_gcrs_to_itrs_matches_skyfield_1_49_at_zero_ulp():
+    epoch = sidereon.Instant.from_utc(2018, 7, 4, 0, 0, 0.0).unix_micros
+    result = sidereon.gcrs_to_itrs(
+        SKYFIELD_GCRS_POS.reshape(1, 3),
+        np.asarray([epoch], dtype=np.int64),
+        skyfield_compat=True,
+    )
+
+    np.testing.assert_array_equal(result[0], SKYFIELD_ITRS_POS)
 
 
 def test_itrs_to_gcrs_matches_reference_bits():
