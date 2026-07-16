@@ -13,6 +13,9 @@ publish = false
 name = "_sidereon"
 crate-type = ["cdylib"]
 
+[features]
+exact-cache-test-failpoints = ["sidereon-core/exact-cache-test-failpoints"]
+
 [dependencies]
 # The thin ergonomic engine surface this binding marshals to. No modeling logic
 # lives here: every solve delegates to a `sidereon` entry point, which in turn
