@@ -29,8 +29,12 @@ All notable changes to the Sidereon Python interface are documented here.
   separate observational acquisition facts. Reports carry the core-backed,
   versioned `stable_input_identity`; `fetch_merged_sp3_file(...,
   return_report=True)` preserves the same report while writing the product.
-- Added `data.sp3_merge_input_identity` for deterministic, order-independent
-  identity of a complete verified artifact set and merge policy.
+- Added `data.sp3_merge_input_identity` for deterministic identity of a
+  complete verified artifact set and merge policy. Mean and median contributor
+  order is canonicalized; precedence order remains identity-bearing priority.
+- Added `data.verify_merge_report` to restore and core-verify the exact
+  artifacts, effective policy, precedence order, and stable identity from a
+  persisted `MergeReport.to_dict()` value.
 
 ### Changed
 

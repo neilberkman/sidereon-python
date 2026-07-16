@@ -608,6 +608,18 @@ def test_merged_sp3_exposes_exact_two_contributor_provenance(tmp_path):
     persisted = report.to_dict()["contributors"][0]["artifact_identity"]
     assert data.ArtifactIdentity.from_dict(persisted) == artifacts[0]
 
+    _, precedence_report = data.fetch_merged_sp3(
+        SP3_DATE,
+        ["cod", "esa"],
+        cache_dir=cache,
+        offline=True,
+        merge_options=sidereon.Sp3MergeOptions(combine="precedence"),
+    )
+    precedence_record = precedence_report.to_dict()
+    assert data.verify_merge_report(precedence_record)
+    precedence_record["contributors"].reverse()
+    assert not data.verify_merge_report(precedence_record)
+
 
 def test_merged_sp3_cache_hit_does_not_change_stable_identity(tmp_path):
     product = data.mgex_sp3("cod", SP3_DATE)
@@ -722,6 +734,21 @@ def test_merged_sp3_report_serialization_excludes_secrets_and_local_paths(tmp_pa
     assert "cookie" not in serialized.lower()
     assert "temporary" not in serialized.lower()
     assert "stable_input_identity" in serialized
+    persisted = json.loads(serialized)
+    assert data.verify_merge_report(persisted)
+
+    observational_change = json.loads(serialized)
+    observational_change["contributors"][0]["acquisition_facts"]["retrieved_at"] = (
+        "2099-01-01T00:00:00+00:00"
+    )
+    observational_change["contributors"][0]["acquisition_facts"]["cache_hit"] = False
+    assert data.verify_merge_report(observational_change)
+
+    changed_artifact = json.loads(serialized)
+    changed_artifact["contributors"][0]["artifact_identity"]["product_sha256"] = (
+        "00" * 32
+    )
+    assert not data.verify_merge_report(changed_artifact)
 
 
 def test_ultra_sp3_candidates_include_current_primary_and_alternates():
@@ -809,6 +836,12 @@ def test_ultra_sp3_primary_miss_uses_alternate(monkeypatch):
     assert result[0] == "ok"
     assert result[1].pattern == "alternate_02D_15M"
     assert calls == ["primary_02D_05M", "alternate_02D_15M"]
+    attempts = result[1].acquisition_facts.attempts
+    assert len(attempts) == 1
+    assert attempts[0].source is distribution.DistributionSource.DIRECT
+    assert attempts[0].error_type == "product_not_published"
+    assert attempts[0].status == 404
+    assert attempts[0].url.endswith("_02D_05M_ORB.SP3.gz")
 
 
 def test_ultra_sp3_all_variants_missing_records_absence(monkeypatch):

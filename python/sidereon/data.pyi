@@ -411,6 +411,7 @@ def sp3_merge_input_identity(
     contributors: Sequence[ArtifactIdentity],
     merge_options: Optional[sidereon.Sp3MergeOptions] = ...,
 ) -> tuple[int, str]: ...
+def verify_merge_report(value: Mapping[str, object]) -> bool: ...
 def fetch_merged_sp3_file(
     target: Union[_dt.date, _dt.datetime],
     centers: Sequence[str],

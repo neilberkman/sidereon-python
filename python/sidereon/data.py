@@ -53,7 +53,7 @@ import json as _json
 import math as _math
 import os as _os
 import zlib as _zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Iterable, Mapping, Optional, Sequence, Union
 from urllib.parse import urljoin, urlsplit
 
@@ -222,6 +222,7 @@ __all__ = [
     "fetch_merged_sp3",
     "fetch_merged_sp3_file",
     "sp3_merge_input_identity",
+    "verify_merge_report",
     "write_sp3",
     "DistributionSource",
     "Distribution",
@@ -2237,6 +2238,7 @@ def _fetch_center_sp3(
         return ("absent", AbsentCenter(center, None, _reason_str(exc)))
 
     last: Optional[tuple[Product, str, DataError]] = None
+    candidate_attempts = []
     for prod in candidates:
         filename = prod.canonical_filename()
         try:
@@ -2246,10 +2248,23 @@ def _fetch_center_sp3(
             # cache, and transport failures are real and propagate instead of
             # being silently recorded as an absent center.
             last = (prod, filename, exc)
+            candidate_attempts.append(
+                distribution.SourceFailure(
+                    source=distribution.DistributionSource.DIRECT,
+                    error_type=getattr(exc, "code", type(exc).__name__),
+                    message=str(exc),
+                    url=getattr(exc, "url", None),
+                    status=getattr(exc, "status", None),
+                )
+            )
             continue
         sp3 = sidereon.load_sp3(acquired.path)
         artifact_identity = ArtifactIdentity._from_provenance(acquired.provenance)
         acquisition_facts = AcquisitionFacts._from_provenance(acquired.provenance)
+        acquisition_facts = replace(
+            acquisition_facts,
+            attempts=tuple(candidate_attempts) + acquisition_facts.attempts,
+        )
         return (
             "ok",
             Contributor(
@@ -2298,10 +2313,12 @@ def sp3_merge_input_identity(
 ) -> tuple[int, str]:
     """Return ``(schema_version, stable_id)`` for exact inputs and merge policy.
 
-    Contributor order and mapping insertion order do not affect the result.
-    Observational acquisition facts are not accepted and therefore cannot
-    perturb the identity. The shared Rust core validates every complete
-    artifact record and fails closed on malformed or inconsistent provenance.
+    Contributor and mapping insertion order do not affect mean or median merge
+    identities. Contributor order is semantic source priority for precedence
+    merges and therefore does affect their identity. Observational acquisition
+    facts are not accepted and cannot perturb the identity. The shared Rust core
+    validates every complete artifact record and fails closed on malformed or
+    inconsistent provenance.
     """
     artifacts = list(contributors)
     if not all(isinstance(item, ArtifactIdentity) for item in artifacts):
@@ -2313,6 +2330,136 @@ def sp3_merge_input_identity(
         for item in artifacts
     ]
     return _core_sp3_merge_input_identity(encoded, merge_options)
+
+
+def _merge_options_from_policy(value: Mapping[str, object]):
+    expected_fields = {
+        "schema_version",
+        "position_tolerance_m",
+        "clock_tolerance_s",
+        "min_agree",
+        "clock_min_common",
+        "combine",
+        "precedence_scope",
+        "outlier_reject",
+        "target_epoch_interval_s",
+        "systems",
+        "asserted_frame_label_sets",
+        "helmert",
+        "precedence_artifact_sha256",
+    }
+    if set(value) != expected_fields or int(str(value["schema_version"])) != 1:
+        raise ValueError("invalid merged-SP3 policy record")
+    outlier_value = value["outlier_reject"]
+    outlier = None
+    if outlier_value is not None:
+        if not isinstance(outlier_value, Mapping) or set(outlier_value) != {
+            "position_tolerance_m",
+            "clock_tolerance_s",
+        }:
+            raise ValueError("invalid merged-SP3 outlier policy")
+        outlier = sidereon.Sp3OutlierRejectOptions(
+            float(outlier_value["position_tolerance_m"]),
+            float(outlier_value["clock_tolerance_s"]),
+        )
+    systems = value["systems"]
+    frame_sets = value["asserted_frame_label_sets"]
+    if systems is not None and not isinstance(systems, list):
+        raise ValueError("invalid merged-SP3 systems policy")
+    if not isinstance(frame_sets, list):
+        raise ValueError("invalid merged-SP3 frame policy")
+    helmert = value["helmert"]
+    if not isinstance(helmert, bool):
+        raise ValueError("invalid merged-SP3 Helmert policy")
+    return sidereon.Sp3MergeOptions(
+        position_tolerance_m=float(value["position_tolerance_m"]),
+        clock_tolerance_s=float(value["clock_tolerance_s"]),
+        min_agree=int(str(value["min_agree"])),
+        clock_min_common=int(str(value["clock_min_common"])),
+        combine=str(value["combine"]),
+        precedence_scope=str(value["precedence_scope"]),
+        outlier_reject=outlier,
+        target_epoch_interval_s=(
+            None
+            if value["target_epoch_interval_s"] is None
+            else float(value["target_epoch_interval_s"])
+        ),
+        systems=systems,
+        asserted_frame_label_sets=frame_sets,
+        helmert=helmert,
+    )
+
+
+def verify_merge_report(value: Mapping[str, object]) -> bool:
+    """Verify a persisted :meth:`MergeReport.to_dict` record with the core.
+
+    Returns ``False`` for incomplete, malformed, internally inconsistent, or
+    identity-mismatched reports. Observational acquisition facts are parsed but
+    never enter the stable identity.
+    """
+    try:
+        if int(str(value.get("schema_version", 0))) != 1:
+            return False
+        contributors_value = value["contributors"]
+        policy_value = value["merge_policy"]
+        if not isinstance(contributors_value, list) or not isinstance(
+            policy_value, Mapping
+        ):
+            return False
+        artifacts = []
+        for contributor in contributors_value:
+            if not isinstance(contributor, Mapping):
+                return False
+            artifact_value = contributor.get("artifact_identity")
+            facts_value = contributor.get("acquisition_facts")
+            if not isinstance(artifact_value, Mapping) or not isinstance(
+                facts_value, Mapping
+            ):
+                return False
+            artifact = ArtifactIdentity.from_dict(artifact_value)
+            AcquisitionFacts.from_dict(facts_value)
+            if contributor.get("center") != artifact.requested_identity.analysis_center:
+                return False
+            if contributor.get("date") != artifact.requested_identity.date.isoformat():
+                return False
+            contributor_issue = contributor.get("issue")
+            if ("0000" if contributor_issue is None else contributor_issue) != (
+                artifact.requested_identity.issue
+            ):
+                return False
+            artifacts.append(artifact)
+        source_count = value["source_count"]
+        single_product = value["single_product"]
+        merged = value["merged"]
+        if (
+            not artifacts
+            or not isinstance(source_count, int)
+            or isinstance(source_count, bool)
+            or source_count != len(artifacts)
+        ):
+            return False
+        if not isinstance(single_product, bool) or single_product != (
+            len(artifacts) == 1
+        ):
+            return False
+        if merged is not True:
+            return False
+        options = _merge_options_from_policy(policy_value)
+        precedence = policy_value["precedence_artifact_sha256"]
+        expected_precedence = (
+            [artifact.product_sha256 for artifact in artifacts]
+            if options.combine.label == "precedence"
+            else []
+        )
+        if precedence != expected_precedence:
+            return False
+        schema_version, stable_id = sp3_merge_input_identity(artifacts, options)
+        return (
+            int(str(value["input_identity_schema_version"])) == schema_version
+            and value["stable_input_identity"] == stable_id
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
 
 
 def _merge_policy_to_dict(

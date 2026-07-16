@@ -138,9 +138,11 @@ HTTP metadata, and prior failed attempts.
 
 The report's `stable_input_identity` is computed by the Rust core from the
 complete artifact identities and effective `Sp3MergeOptions`. It is unchanged
-by cache hits, retrieval timestamps, contributor enumeration, or mapping order;
-changing an artifact, resolved identity, contributor set, or merge policy
-changes it. `input_identity_schema_version` identifies the canonical encoding.
+by cache hits, retrieval timestamps, mapping order, or mean/median contributor
+enumeration. Precedence contributor order is input priority and remains
+identity-bearing. Changing an artifact, resolved identity, contributor set, or
+merge policy changes the identity. `input_identity_schema_version` identifies
+the canonical encoding.
 An incomplete or inconsistent artifact record is rejected rather than hashed.
 The JSON-safe `merge_policy` records every effective option. When precedence
 combining is selected, `precedence_artifact_sha256` records the ordered artifact
@@ -148,11 +150,13 @@ priority; mean and median policies leave that list empty.
 
 ```python
 merged, report = data.fetch_merged_sp3(day, ["cod", "esa"])
-persist(json.dumps(report.to_dict(), sort_keys=True))
+persisted_report_json = json.dumps(report.to_dict(), sort_keys=True)
 
 path, same_report = data.fetch_merged_sp3_file(
     day, ["cod", "esa"], "merged.sp3", return_report=True
 )
+
+assert data.verify_merge_report(json.loads(persisted_report_json))
 ```
 
 The default file-helper return remains the written path for compatibility.
