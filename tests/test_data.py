@@ -17,10 +17,12 @@ import json
 import os
 import shutil
 
+import httpx
 import numpy as np
 import pytest
 import sidereon
 import sidereon.data as data
+import sidereon.distribution as distribution
 from _helpers import CORE_FIXTURES
 
 # --- fixtures ------------------------------------------------------------
@@ -32,6 +34,35 @@ def _core_sp3(name):
 
 def _core_ionex(name):
     return os.path.join(CORE_FIXTURES, "ionex", name)
+
+
+def _ionex_bytes_for(date, interval_hours=1):
+    with open(_core_ionex("synthetic_2map_7x7.20i"), "rb") as handle:
+        lines = handle.read().decode("ascii").splitlines()
+    map_index = 0
+    for index, line in enumerate(lines):
+        if line.rstrip().endswith("EPOCH OF CURRENT MAP"):
+            lines[index] = (
+                f"{date.year:6d}{date.month:6d}{date.day:6d}"
+                f"{map_index * interval_hours:6d}{0:6d}{0:6d}{line[36:]}"
+            )
+            map_index += 1
+    return ("\n".join(lines) + "\n").encode("ascii")
+
+
+def _seed_exact_direct_ionex(cache_dir, product):
+    exact = distribution.request(product, [distribution.Distribution.direct()])
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            request=request,
+            content=gzip.compress(_ionex_bytes_for(product.date), mtime=0),
+            headers={"content-type": "application/gzip"},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        return distribution.acquire(exact, cache_dir=cache_dir, http_client=client)
 
 
 def _core_dted_tile():
@@ -237,10 +268,22 @@ def test_predicted_ionex_filenames_match_reference():
     assert p2.canonical_filename() == "COD0OPSPRD_20261660000_01D_01H_GIM.INX"
 
 
-def test_predicted_ionex_urls_use_aiub_code_root_with_gz():
+def test_predicted_ionex_urls_use_aiub_tier_and_resolved_year():
     p1 = data.predicted_ionex("cod_prd1", IONEX_DATE)
     assert p1.archive_url() == (
-        "http://ftp.aiub.unibe.ch/CODE/COD0OPSPRD_20261650000_01D_01H_GIM.INX.gz"
+        "https://www.aiub.unibe.ch/download/CODE/IONO/P1/2026/"
+        "COD0OPSPRD_20261650000_01D_01H_GIM.INX.gz"
+    )
+    p2 = data.predicted_ionex("cod_prd2", IONEX_DATE)
+    assert p2.archive_url() == (
+        "https://www.aiub.unibe.ch/download/CODE/IONO/P2/2026/"
+        "COD0OPSPRD_20261660000_01D_01H_GIM.INX.gz"
+    )
+    boundary = data.predicted_ionex("cod_prd2", dt.date(2026, 12, 31))
+    assert boundary.date == dt.date(2027, 1, 1)
+    assert boundary.archive_url() == (
+        "https://www.aiub.unibe.ch/download/CODE/IONO/P2/2027/"
+        "COD0OPSPRD_20270010000_01D_01H_GIM.INX.gz"
     )
 
 
@@ -380,9 +423,8 @@ def test_unknown_center_in_fetch_ionex_raises(tmp_path):
 
 def test_fetch_ionex_offline_reads_cache_and_parses(tmp_path):
     cache = str(tmp_path)
-    # Seed the newest candidate day (offset 0 for cod_prd1) with a real IONEX.
     prod = data.predicted_ionex("cod_prd1", IONEX_DATE)
-    _seed(cache, prod, _core_ionex("synthetic_2map_7x7.20i"))
+    _seed_exact_direct_ionex(cache, prod)
 
     ionex = data.fetch_ionex("cod_prd1", IONEX_DATE, offline=True, cache_dir=cache)
     assert isinstance(ionex, sidereon.Ionex)
@@ -393,7 +435,7 @@ def test_fetch_ionex_offline_walks_back_to_older_cached_day(tmp_path):
     # Only the day-before is cached; the newest candidate is absent. The
     # newest-first walk must fall back to it.
     older = data.predicted_ionex("cod_prd1", IONEX_DATE - dt.timedelta(days=1))
-    _seed(cache, older, _core_ionex("synthetic_2map_7x7.20i"))
+    _seed_exact_direct_ionex(cache, older)
 
     ionex = data.fetch_ionex("cod_prd1", IONEX_DATE, offline=True, cache_dir=cache)
     assert isinstance(ionex, sidereon.Ionex)
@@ -402,6 +444,31 @@ def test_fetch_ionex_offline_walks_back_to_older_cached_day(tmp_path):
 def test_fetch_ionex_offline_empty_cache_raises_offline_miss(tmp_path):
     with pytest.raises(data.OfflineCacheMiss):
         data.fetch_ionex("cod_prd1", IONEX_DATE, offline=True, cache_dir=str(tmp_path))
+
+
+def test_fetch_ionex_uses_exact_semantic_validation(tmp_path):
+    product = data.predicted_ionex("cod_prd1", IONEX_DATE)
+    wrong = _ionex_bytes_for(product.date + dt.timedelta(days=1))
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            request=request,
+            content=gzip.compress(wrong, mtime=0),
+            headers={"content-type": "application/gzip"},
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(distribution.ProductValidationFailure),
+    ):
+        data.fetch_ionex(
+            "cod_prd1",
+            IONEX_DATE,
+            lookback=2,
+            cache_dir=str(tmp_path),
+            http_client=client,
+        )
 
 
 # --- offline merged SP3 --------------------------------------------------

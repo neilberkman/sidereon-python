@@ -8,6 +8,7 @@ import json
 import os
 import threading
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -29,6 +30,27 @@ def _ionex_bytes():
     path = os.path.join(CORE_FIXTURES, "ionex", "synthetic_2map_7x7.20i")
     with open(path, "rb") as handle:
         return handle.read()
+
+
+def _ionex_bytes_for(date, interval_hours=1):
+    lines = _ionex_bytes().decode("ascii").splitlines()
+    map_index = 0
+    for index, line in enumerate(lines):
+        if line.rstrip().endswith("EPOCH OF CURRENT MAP"):
+            hour = map_index * interval_hours
+            lines[index] = (
+                f"{date.year:6d}{date.month:6d}{date.day:6d}"
+                f"{hour:6d}{0:6d}{0:6d}{line[36:]}"
+            )
+            map_index += 1
+    return ("\n".join(lines) + "\n").encode("ascii")
+
+
+def _predicted_ionex_request(center, target, *sources):
+    product = data.predicted_ionex(center, target)
+    return distribution.request(
+        product, sources or [distribution.Distribution.direct()]
+    )
 
 
 def _sp3_request(*sources):
@@ -102,6 +124,113 @@ def test_ionex_cddis_year_day_path_and_parsed_acquisition(tmp_path):
     assert result.provenance.requested_identity == exact.identity
     with open(result.path, "rb") as handle:
         assert handle.read() == _ionex_bytes()
+
+
+def test_predicted_ionex_direct_path_and_semantic_identity(tmp_path):
+    target = dt.date(2026, 7, 15)
+    exact = _predicted_ionex_request("cod_prd1", target)
+    expected_url = (
+        "https://www.aiub.unibe.ch/download/CODE/IONO/P1/2026/"
+        "COD0OPSPRD_20261960000_01D_01H_GIM.INX.gz"
+    )
+
+    def handler(request):
+        assert str(request.url) == expected_url
+        return _gzip_response(request, _ionex_bytes_for(exact.identity.date))
+
+    with _client(handler) as client:
+        result = distribution.acquire(exact, cache_dir=tmp_path, http_client=client)
+    assert result.provenance.requested_identity == exact.identity
+    assert result.provenance.resolved_identity.date == exact.identity.date
+    assert result.provenance.original_url == expected_url
+
+
+def test_predicted_ionex_wrong_date_is_typed_validation_failure(tmp_path):
+    exact = _predicted_ionex_request("cod_prd2", dt.date(2026, 7, 15))
+    wrong = _ionex_bytes_for(exact.identity.date - dt.timedelta(days=1))
+    request = distribution.ProductRequest(
+        exact.identity, (distribution.Distribution.in_memory(wrong),)
+    )
+    with pytest.raises(distribution.ProductValidationFailure):
+        distribution.acquire(request, cache_dir=tmp_path)
+
+
+def test_predicted_tiers_with_same_filename_cannot_share_cache(tmp_path):
+    p1 = _predicted_ionex_request("cod_prd1", dt.date(2026, 7, 16)).identity
+    p2 = _predicted_ionex_request("cod_prd2", dt.date(2026, 7, 15)).identity
+    assert p1.official_filename == p2.official_filename
+    assert p1.key != p2.key
+    assert distribution._cache_path(
+        tmp_path, p1, distribution.DistributionSource.DIRECT
+    ) != distribution._cache_path(tmp_path, p2, distribution.DistributionSource.DIRECT)
+
+    seeded = distribution.ProductRequest(
+        p1,
+        (distribution.Distribution.in_memory(_ionex_bytes_for(p1.date)),),
+    )
+    distribution.acquire(seeded, cache_dir=tmp_path)
+    with pytest.raises(data.OfflineCacheMiss):
+        distribution.acquire(
+            _predicted_ionex_request("cod_prd2", dt.date(2026, 7, 15)),
+            cache_dir=tmp_path,
+            offline=True,
+        )
+
+
+def test_exact_predicted_ionex_404_does_not_look_back(tmp_path):
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(404, request=request)
+
+    with _client(handler) as client, pytest.raises(distribution.ProductNotPublished):
+        distribution.acquire(
+            _predicted_ionex_request("cod_prd1", dt.date(2026, 7, 15)),
+            cache_dir=tmp_path,
+            http_client=client,
+            retries=1,
+        )
+    assert len(calls) == 1
+
+
+def test_concurrent_different_predicted_products_are_immutable(tmp_path):
+    requests = []
+    expected = {}
+    for center, target in (
+        ("cod_prd1", dt.date(2026, 7, 15)),
+        ("cod_prd2", dt.date(2026, 7, 15)),
+    ):
+        identity = _predicted_ionex_request(center, target).identity
+        content = _ionex_bytes_for(identity.date)
+        exact = distribution.ProductRequest(
+            identity, (distribution.Distribution.in_memory(content),)
+        )
+        requests.append(exact)
+        expected[identity.analysis_center] = content
+
+    results = []
+    failures = []
+    threads = [
+        threading.Thread(
+            target=lambda exact=exact: _thread_acquire(
+                results, failures, exact, tmp_path, None
+            )
+        )
+        for exact in requests
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert failures == []
+    assert len({result.path for result in results}) == 2
+    snapshots = {result.path: Path(result.path).read_bytes() for result in results}
+    for result in results:
+        center = result.provenance.requested_identity.analysis_center
+        assert snapshots[result.path] == expected[center]
+    assert {path: Path(path).read_bytes() for path in snapshots} == snapshots
 
 
 def test_earthdata_redirect_cookie_client_and_bearer_are_secret_safe(tmp_path):

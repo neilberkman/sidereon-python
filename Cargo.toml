@@ -1,6 +1,6 @@
 [package]
 name = "sidereon-py"
-version = "0.29.0"
+version = "0.29.1"
 authors = []
 edition = "2021"
 description = "Python (PyO3) bindings over the sidereon ergonomic API: SP3 loading and SPP/RTK/PPP positioning solves"
@@ -17,8 +17,8 @@ crate-type = ["cdylib"]
 # The thin ergonomic engine surface this binding marshals to. No modeling logic
 # lives here: every solve delegates to a `sidereon` entry point, which in turn
 # delegates to `sidereon-core`.
-sidereon = "0.29.0"
-sidereon-core = "0.29.0"
+sidereon = "0.29.1"
+sidereon-core = "0.29.1"
 # The standalone general-purpose trust-region least-squares solver: a data-driven
 # `least_squares` whose residual and Jacobian are evaluated entirely in Rust, so
 # no per-iteration Python callback is paid.

@@ -1827,23 +1827,36 @@ def fetch_ionex(
     """Fetch the newest available IONEX map for a target day, parsed.
 
     Walks candidate days newest-first (the rapid map lands a day or two late,
-    predicted maps are published ahead of their target day) and returns the
-    first hit parsed via :func:`sidereon.load_ionex`. Raises the last error when
-    every candidate misses (preserving :class:`OfflineCacheMiss` offline).
+    predicted maps are published ahead of their target day). Every candidate
+    uses the exact-identity acquisition path, including semantic date/cadence
+    validation and source-specific cache isolation. Raises the last absence
+    when every explicitly permitted lookback candidate misses.
     """
+    from sidereon import distribution
+
     dates = _gim_date_candidates(center, target, lookback)
     last_error: Optional[DataError] = None
+    acquire_opts = dict(fetch_opts)
+    if "max_compressed_bytes" in acquire_opts:
+        acquire_opts["max_archive_bytes"] = acquire_opts.pop("max_compressed_bytes")
+    if "max_decompressed_bytes" in acquire_opts:
+        acquire_opts["max_product_bytes"] = acquire_opts.pop("max_decompressed_bytes")
     for date in dates:
         prod = product(center, "ionex", date, sample)
+        exact = distribution.request(prod, [distribution.Distribution.direct()])
         try:
-            path = fetch(prod, cache_dir=cache_dir, offline=offline, **fetch_opts)
-        except (FileNotFoundOnArchive, OfflineCacheMiss) as exc:
-            # Expected absence for this candidate day; walk to the next one.
-            # Integrity and transport failures (checksum, decompress, HTTP, cache)
-            # are real problems and propagate rather than being masked as a miss.
+            acquired = distribution.acquire(
+                exact,
+                cache_dir=cache_dir,
+                offline=offline,
+                **acquire_opts,
+            )
+        except (distribution.ProductNotPublished, OfflineCacheMiss) as exc:
+            # This API explicitly permits lookback. Integrity, cache, and
+            # transport failures remain terminal instead of becoming absence.
             last_error = exc
             continue
-        return sidereon.load_ionex(path)
+        return sidereon.load_ionex(acquired.path)
     if last_error is not None:
         raise last_error
     raise UnsupportedProduct("no candidate IONEX days to try")
