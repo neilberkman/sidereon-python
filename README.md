@@ -189,7 +189,10 @@ The Python package mirrors the full breadth of the engine.
   CRINEX, SP3, IONEX, ANTEX, Bias-SINEX, SBAS logs, RTCM, and NMEA.
 - **Data acquisition:** the `sidereon.data` module downloads and caches GNSS
   products (SP3 and IONEX from IGS/MGEX analysis centers, including merged
-  multi-center SP3) and DTED terrain tiles.
+  multi-center SP3) and DTED terrain tiles. Exact-product requests can select
+  direct archives, NASA CDDIS/Earthdata, local files, or caller-provided bytes
+  without changing product identity; see
+  [Public GNSS distribution sources](docs/public-gnss-distribution-sources.md).
 
 RAIM residual tests must be weighted with per-satellite residual variances.
 The Python API takes inverse-variance weights, so build them from your range

@@ -4,6 +4,21 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.29.0]
+
+### Added
+
+- Added an exact GNSS acquisition API that separates product identity from its
+  ordered, caller-selected distributors: direct archives, NASA CDDIS/Earthdata,
+  local files, and in-memory bytes.
+- Added caller-supplied Earthdata bearer-token and netrc authentication,
+  structured source failures, secret-free provenance, validated source-specific
+  caches, original archive retention, and parsed SP3/IONEX semantic checks.
+
+### Changed
+
+- Updated `sidereon` and `sidereon-core` to 0.29.0.
+
 ## [0.28.1]
 
 ### Fixed

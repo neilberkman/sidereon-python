@@ -174,6 +174,7 @@ __all__ = [
     "default_terrain_cache_dir",
     "centers",
     "content_types",
+    "allowed_hosts",
     "gps_week",
     "day_of_year",
     "canonical_filename",
@@ -208,7 +209,40 @@ __all__ = [
     "fetch_merged_sp3",
     "fetch_merged_sp3_file",
     "write_sp3",
+    "DistributionSource",
+    "Distribution",
+    "ProductIdentity",
+    "ProductRequest",
+    "EarthdataAuth",
+    "SourceFailure",
+    "AcquisitionProvenance",
+    "AcquiredProduct",
+    "AcquisitionError",
+    "UnsupportedDistribution",
+    "HttpAcquisitionError",
+    "ProductNotPublished",
+    "AuthenticationRequired",
+    "AuthenticationFailed",
+    "AuthorizationDenied",
+    "RedirectPolicyFailure",
+    "RetiredEndpoint",
+    "MalformedUrl",
+    "TransportFailure",
+    "InvalidContentType",
+    "ErrorDocument",
+    "ContentLengthMismatch",
+    "DecompressionFailure",
+    "ProductValidationFailure",
+    "CacheReadFailure",
+    "CacheWriteFailure",
+    "AllDistributorsFailed",
+    "identity",
+    "request",
+    "cddis_url",
+    "acquire",
 ]
+
+_DISTRIBUTION_EXPORTS = frozenset(__all__[__all__.index("DistributionSource") :])
 
 
 # --- errors --------------------------------------------------------------
@@ -373,6 +407,11 @@ def centers() -> list[str]:
 def content_types() -> list[str]:
     """All supported content-type codes."""
     return list(_core_data_content_types())
+
+
+def allowed_hosts() -> list[str]:
+    """Archive hosts allowed by the core public data catalog."""
+    return sorted(_ALLOWED_HOSTS)
 
 
 def _catalog_error(exc: ValueError) -> DataError:
@@ -675,6 +714,10 @@ class Product:
             return _core_data_archive_compression(self.center, self.content)
         except ValueError as exc:
             raise _catalog_error(exc) from None
+
+    def archive_compression(self) -> str:
+        """Transport compression used by this product's direct archive."""
+        return self._compression()
 
     def _protocol(self) -> str:
         return _center_def(self.center)["protocol"]
@@ -2116,3 +2159,12 @@ def fetch_merged_sp3_file(
         **fetch_opts,
     )
     return write_sp3(merged, path, gzip=gzip)
+
+
+def __getattr__(name: str):
+    """Lazily expose exact-distribution APIs without an import cycle."""
+    if name in _DISTRIBUTION_EXPORTS:
+        from sidereon import distribution
+
+        return getattr(distribution, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

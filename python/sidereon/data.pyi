@@ -5,6 +5,99 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional, Sequence, Union
 
 import sidereon
+from sidereon.distribution import (
+    AcquiredProduct as AcquiredProduct,
+)
+from sidereon.distribution import (
+    AcquisitionError as AcquisitionError,
+)
+from sidereon.distribution import (
+    AcquisitionProvenance as AcquisitionProvenance,
+)
+from sidereon.distribution import (
+    AllDistributorsFailed as AllDistributorsFailed,
+)
+from sidereon.distribution import (
+    AuthenticationFailed as AuthenticationFailed,
+)
+from sidereon.distribution import (
+    AuthenticationRequired as AuthenticationRequired,
+)
+from sidereon.distribution import (
+    AuthorizationDenied as AuthorizationDenied,
+)
+from sidereon.distribution import (
+    CacheReadFailure as CacheReadFailure,
+)
+from sidereon.distribution import (
+    CacheWriteFailure as CacheWriteFailure,
+)
+from sidereon.distribution import (
+    ContentLengthMismatch as ContentLengthMismatch,
+)
+from sidereon.distribution import (
+    DecompressionFailure as DecompressionFailure,
+)
+from sidereon.distribution import (
+    Distribution as Distribution,
+)
+from sidereon.distribution import (
+    DistributionSource as DistributionSource,
+)
+from sidereon.distribution import (
+    EarthdataAuth as EarthdataAuth,
+)
+from sidereon.distribution import (
+    ErrorDocument as ErrorDocument,
+)
+from sidereon.distribution import (
+    HttpAcquisitionError as HttpAcquisitionError,
+)
+from sidereon.distribution import (
+    InvalidContentType as InvalidContentType,
+)
+from sidereon.distribution import (
+    MalformedUrl as MalformedUrl,
+)
+from sidereon.distribution import (
+    ProductIdentity as ProductIdentity,
+)
+from sidereon.distribution import (
+    ProductNotPublished as ProductNotPublished,
+)
+from sidereon.distribution import (
+    ProductRequest as ProductRequest,
+)
+from sidereon.distribution import (
+    ProductValidationFailure as ProductValidationFailure,
+)
+from sidereon.distribution import (
+    RedirectPolicyFailure as RedirectPolicyFailure,
+)
+from sidereon.distribution import (
+    RetiredEndpoint as RetiredEndpoint,
+)
+from sidereon.distribution import (
+    SourceFailure as SourceFailure,
+)
+from sidereon.distribution import (
+    TransportFailure as TransportFailure,
+)
+from sidereon.distribution import (
+    UnsupportedDistribution as UnsupportedDistribution,
+)
+from sidereon.distribution import (
+    acquire as acquire,
+)
+from sidereon.distribution import (
+    cddis_url as cddis_url,
+)
+from sidereon.distribution import (
+    identity as identity,
+)
+from sidereon.distribution import (
+    request as request,
+)
 
 __all__: list[str]
 
@@ -70,6 +163,7 @@ class Product:
     def day_of_year(self) -> int: ...
     def canonical_filename(self) -> str: ...
     def archive_url(self) -> str: ...
+    def archive_compression(self) -> str: ...
 
 @dataclass(frozen=True)
 class AbsentCenter:
@@ -122,6 +216,7 @@ def default_cache_dir() -> str: ...
 def default_terrain_cache_dir() -> str: ...
 def centers() -> list[str]: ...
 def content_types() -> list[str]: ...
+def allowed_hosts() -> list[str]: ...
 def gps_week(date: _dt.date) -> int: ...
 def day_of_year(date: _dt.date) -> int: ...
 def predicted_day_offset(center: str) -> int: ...
