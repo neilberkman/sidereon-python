@@ -15,6 +15,13 @@ import sidereon
 RE = 6378.1363
 
 
+def assert_float64_bits(actual, expected):
+    """Assert exact IEEE-754 equality, including the sign bit of zero."""
+    actual_bits = np.asarray(actual, dtype=np.float64).view(np.uint64)
+    expected_bits = np.asarray(expected, dtype=np.float64).view(np.uint64)
+    np.testing.assert_array_equal(actual_bits, expected_bits)
+
+
 def test_lambert_battin_short_high():
     # crate `battin_short_high`.
     r1 = np.array([2.5 * RE, 0.0, 0.0], dtype=np.float64)
@@ -85,9 +92,7 @@ def test_gibbs_example_7_3():
     r2 = np.array([0.0, -4464.696, -5102.509], dtype=np.float64)
     r3 = np.array([0.0, 5740.323, 3189.068], dtype=np.float64)
     v2, theta12, theta23, copa = sidereon.gibbs(r1, r2, r3)
-    np.testing.assert_allclose(
-        v2, [0.0, 5.5311472050176125, -5.191806413494606], atol=1e-10
-    )
+    assert_float64_bits(v2, [0.0, 5.5311472050176125, -5.191806413494606])
     assert math.isclose(math.degrees(theta12), 138.81407085944375, rel_tol=1e-9)
     assert math.isclose(math.degrees(theta23), 160.24053069723146, rel_tol=1e-9)
     assert abs(copa) < 1e-9
@@ -102,8 +107,8 @@ def test_hgibbs_example_7_4():
     jd2 = (60.0 + 16.48) / 86400.0
     jd3 = (120.0 + 33.04) / 86400.0
     v2, theta12, theta23, _copa = sidereon.hgibbs(r1, r2, r3, jd1, jd2, jd3)
-    np.testing.assert_allclose(
-        v2, [-6.441557227511062, 3.777559606719521, -1.7205675602414345], atol=1e-10
+    assert_float64_bits(
+        v2, [-6.441557227511062, 3.777559606719521, -1.7205675602414345]
     )
     assert math.isclose(math.degrees(theta12), 4.499996147374992, rel_tol=1e-9)
     assert math.isclose(math.degrees(theta23), 4.499998402168982, rel_tol=1e-9)
