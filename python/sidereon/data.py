@@ -236,9 +236,11 @@ __all__ = [
     "CacheReadFailure",
     "CacheWriteFailure",
     "AllDistributorsFailed",
+    "ExactProductSetError",
     "identity",
     "request",
     "cddis_url",
+    "validate_exact_product_set",
     "acquire",
 ]
 

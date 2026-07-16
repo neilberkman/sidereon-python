@@ -154,12 +154,21 @@ class AllDistributorsFailed(AcquisitionError):
     attempts: Tuple[SourceFailure, ...]
     def __init__(self, attempts: Sequence[SourceFailure]) -> None: ...
 
+class ExactProductSetError(AcquisitionError):
+    missing: Tuple[ProductIdentity, ...]
+    unexpected: Tuple[ProductIdentity, ...]
+    duplicate_expected: Tuple[ProductIdentity, ...]
+    duplicate_available: Tuple[ProductIdentity, ...]
+
 def identity(product: _data.Product) -> ProductIdentity: ...
 def request(
     product: _data.Product,
     distributors: Sequence[Union[Distribution, DistributionSource]],
 ) -> ProductRequest: ...
 def cddis_url(product_identity: ProductIdentity) -> str: ...
+def validate_exact_product_set(
+    expected: Sequence[ProductIdentity], available: Sequence[ProductIdentity]
+) -> None: ...
 def acquire(
     exact_request: ProductRequest,
     *,

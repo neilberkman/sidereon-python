@@ -388,6 +388,27 @@ class AllDistributorsFailed(AcquisitionError):
         super().__init__(f"all explicitly allowed distributors failed ({detail})")
 
 
+class ExactProductSetError(AcquisitionError):
+    """An available identity inventory is not the declared exact product set."""
+
+    code = "exact_product_set_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        missing: Sequence[ProductIdentity] = (),
+        unexpected: Sequence[ProductIdentity] = (),
+        duplicate_expected: Sequence[ProductIdentity] = (),
+        duplicate_available: Sequence[ProductIdentity] = (),
+    ) -> None:
+        self.missing = tuple(missing)
+        self.unexpected = tuple(unexpected)
+        self.duplicate_expected = tuple(duplicate_expected)
+        self.duplicate_available = tuple(duplicate_available)
+        super().__init__(message)
+
+
 _SOLUTION_NAMES = {
     "FIN": "final",
     "RAP": "rapid",
@@ -481,6 +502,95 @@ def cddis_url(product_identity: ProductIdentity) -> str:
         )
     raise UnsupportedDistribution(
         f"NASA CDDIS source does not support {product_identity.family}"
+    )
+
+
+def validate_exact_product_set(
+    expected: Sequence[ProductIdentity], available: Sequence[ProductIdentity]
+) -> None:
+    """Require ``available`` to be exactly the declared identity set.
+
+    Both lists are validated, duplicates are rejected, missing products fail,
+    and undeclared products fail. Comparison uses the complete
+    distributor-independent identity rather than only the official filename;
+    a format version resolved from validated bytes may be present only on the
+    available copy. For SP3 observed/predicted timing, use
+    :meth:`sidereon.Sp3.prediction_summary`; catalog fields and issue times are
+    not substitutes for the prediction flags in the parsed product.
+    """
+    expected = tuple(expected)
+    available = tuple(available)
+    if not expected:
+        raise ExactProductSetError("exact product set has no expected products")
+    for item in (*expected, *available):
+        _validate_requested_identity(item)
+
+    expected_counts = _identity_counts(expected)
+    available_counts = _identity_counts(available)
+    missing = _unique_by_key(
+        item for item in expected if _product_set_key(item) not in available_counts
+    )
+    unexpected = _unique_by_key(
+        item for item in available if _product_set_key(item) not in expected_counts
+    )
+    duplicate_expected = _unique_by_key(
+        item for item in expected if expected_counts[_product_set_key(item)] > 1
+    )
+    duplicate_available = _unique_by_key(
+        item for item in available if available_counts[_product_set_key(item)] > 1
+    )
+    if not (missing or unexpected or duplicate_expected or duplicate_available):
+        return
+
+    def labels(items: Sequence[ProductIdentity]) -> str:
+        return ", ".join(item.key for item in items) or "none"
+
+    raise ExactProductSetError(
+        "exact product set mismatch "
+        f"(missing: {labels(missing)}; unexpected: {labels(unexpected)}; "
+        f"duplicate expected: {labels(duplicate_expected)}; "
+        f"duplicate available: {labels(duplicate_available)})",
+        missing=missing,
+        unexpected=unexpected,
+        duplicate_expected=duplicate_expected,
+        duplicate_available=duplicate_available,
+    )
+
+
+def _identity_counts(
+    identities: Sequence[ProductIdentity],
+) -> dict[tuple[object, ...], int]:
+    counts: dict[tuple[object, ...], int] = {}
+    for item in identities:
+        key = _product_set_key(item)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _unique_by_key(identities) -> Tuple[ProductIdentity, ...]:
+    unique: dict[tuple[object, ...], ProductIdentity] = {}
+    for item in identities:
+        unique.setdefault(_product_set_key(item), item)
+    return tuple(unique.values())
+
+
+def _product_set_key(identity: ProductIdentity) -> tuple[object, ...]:
+    # ``format_version`` is resolved from validated bytes after acquisition; it
+    # is not part of the distributor-independent catalog identity.
+    return (
+        identity.family,
+        identity.analysis_center,
+        identity.publisher,
+        identity.solution_class,
+        identity.campaign,
+        identity.filename_version,
+        identity.date,
+        identity.issue,
+        identity.span,
+        identity.sample,
+        identity.official_filename,
+        identity.format,
+        identity.prediction_horizon_days,
     )
 
 
@@ -1332,8 +1442,10 @@ __all__ = [
     "CacheReadFailure",
     "CacheWriteFailure",
     "AllDistributorsFailed",
+    "ExactProductSetError",
     "identity",
     "request",
     "cddis_url",
+    "validate_exact_product_set",
     "acquire",
 ]

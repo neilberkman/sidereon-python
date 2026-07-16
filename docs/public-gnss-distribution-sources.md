@@ -38,6 +38,28 @@ same `ProductIdentity`. Sidereon does not change center, tier, issue, cadence,
 date, product family, or official filename. Earlier public failures are retained
 in `result.provenance.attempts`.
 
+For a workflow that requires several exact products, declare the complete set
+before acquisition and gate dependent processing on the resolved identities:
+
+```python
+expected = [request_a.identity, request_b.identity]
+available = [
+    result_a.provenance.resolved_identity,
+    result_b.provenance.resolved_identity,
+]
+data.validate_exact_product_set(expected, available)
+```
+
+The gate rejects empty declarations, duplicates, missing products, undeclared
+products, and same-filename identities with different prediction metadata. It
+returns only by completing successfully; otherwise it raises
+`ExactProductSetError`. A format version resolved from validated bytes may be
+present only on the available identity.
+
+For SP3 observed/predicted timing, use `sp3.prediction_summary()`. It reads the
+record flags in the product; issue times and catalog fields are not substitutes
+for that metadata.
+
 ## Sources and caller input
 
 The supported source descriptors are:

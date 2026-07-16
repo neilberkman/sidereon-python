@@ -105,6 +105,48 @@ def test_identity_is_independent_of_distributor_and_paths_are_exact():
     assert data.ProductIdentity is distribution.ProductIdentity
 
 
+def test_exact_product_set_is_order_independent_but_fail_closed():
+    first = distribution.request(
+        data.mgex_sp3("cod", SP3_DATE), [distribution.Distribution.direct()]
+    ).identity
+    second = distribution.request(
+        data.mgex_sp3("cod", SP3_DATE + dt.timedelta(days=1)),
+        [distribution.Distribution.direct()],
+    ).identity
+
+    assert (
+        distribution.validate_exact_product_set([first, second], [second, first])
+        is None
+    )
+    with pytest.raises(distribution.ExactProductSetError) as caught:
+        distribution.validate_exact_product_set([first, second], [first])
+    assert caught.value.missing == (second,)
+    assert caught.value.unexpected == ()
+
+    with pytest.raises(distribution.ExactProductSetError) as caught:
+        distribution.validate_exact_product_set([first, first], [first, second, second])
+    assert caught.value.duplicate_expected == (first,)
+    assert caught.value.duplicate_available == (second,)
+    assert caught.value.unexpected == (second,)
+
+
+def test_exact_product_set_retains_prediction_tier_metadata():
+    one_day = _predicted_ionex_request("cod_prd1", dt.date(2026, 7, 15)).identity
+    two_day = _predicted_ionex_request("cod_prd2", dt.date(2026, 7, 14)).identity
+    assert one_day.official_filename == two_day.official_filename
+
+    with pytest.raises(distribution.ExactProductSetError) as caught:
+        distribution.validate_exact_product_set([one_day], [two_day])
+    assert caught.value.missing == (one_day,)
+    assert caught.value.unexpected == (two_day,)
+
+
+def test_exact_product_set_accepts_resolved_format_metadata():
+    expected = _sp3_request().identity
+    resolved = dataclasses.replace(expected, format_version="SP3-c")
+    assert distribution.validate_exact_product_set([expected], [resolved]) is None
+
+
 def test_ionex_cddis_year_day_path_and_parsed_acquisition(tmp_path):
     product = data.mgex_ionex("esa", IONEX_DATE)
     exact = distribution.request(product, [distribution.Distribution.nasa_cddis()])

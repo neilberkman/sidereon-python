@@ -4,6 +4,23 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.29.2]
+
+### Added
+
+- Added `validate_exact_product_set` and structured
+  `ExactProductSetError` diagnostics. Multi-product workflows can now require
+  the complete declared identity inventory before dependent processing starts;
+  empty declarations, duplicates, missing products, and undeclared products
+  fail closed.
+- Exact-set comparison preserves prediction-tier identity even when official
+  filenames match. SP3 observed/predicted timing remains sourced from
+  `Sp3.prediction_summary()` record flags rather than inferred metadata.
+
+### Changed
+
+- Updated `sidereon` and `sidereon-core` to 0.29.2.
+
 ## [0.29.1]
 
 ### Fixed

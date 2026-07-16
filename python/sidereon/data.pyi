@@ -51,6 +51,9 @@ from sidereon.distribution import (
     ErrorDocument as ErrorDocument,
 )
 from sidereon.distribution import (
+    ExactProductSetError as ExactProductSetError,
+)
+from sidereon.distribution import (
     HttpAcquisitionError as HttpAcquisitionError,
 )
 from sidereon.distribution import (
@@ -97,6 +100,9 @@ from sidereon.distribution import (
 )
 from sidereon.distribution import (
     request as request,
+)
+from sidereon.distribution import (
+    validate_exact_product_set as validate_exact_product_set,
 )
 
 __all__: list[str]
