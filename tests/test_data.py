@@ -91,9 +91,10 @@ def _seed_terrain_bare(cache_dir, lat_index=36, lon_index=-107):
 
 
 class _StubResponse:
-    def __init__(self, status_code, body=b""):
+    def __init__(self, status_code, body=b"", headers=None):
         self.status_code = status_code
         self._body = body
+        self.headers = headers or {}
         self.closed = False
 
     def iter_bytes(self):
@@ -129,8 +130,10 @@ def _stub_http(monkeypatch, responses):
         )
         if not queue:
             raise AssertionError("unexpected HTTP request")
-        status, body = queue.pop(0)
-        return _StubStream(_StubResponse(status, body))
+        response = queue.pop(0)
+        status, body = response[:2]
+        headers = response[2] if len(response) == 3 else None
+        return _StubStream(_StubResponse(status, body, headers))
 
     monkeypatch.setattr(data.httpx, "stream", stream)
     return calls
@@ -274,10 +277,12 @@ def test_sp3_center_urls_match_reference():
         "https://isdc-data.gfz.de/gnss/products/rapid/w2111/"
         "GFZ0OPSRAP_20201760000_01D_15M_ORB.SP3.gz"
     )
-    # CODE ultra-rapid SP3 is served uncompressed on the AIUB /CODE root.
+    # CODE ultra-rapid SP3 is served uncompressed on AIUB's HTTPS /CODE root.
     assert data.archive_url(
-        "cod_ult", "sp3", dt.date(2026, 6, 11), "05M", issue="0000"
-    ) == ("http://ftp.aiub.unibe.ch/CODE/COD0OPSULT_20261620000_01D_05M_ORB.SP3")
+        "cod_ult", "sp3", dt.date(2026, 7, 14), "05M", issue="0000"
+    ) == (
+        "https://www.aiub.unibe.ch/download/CODE/COD0OPSULT_20261950000_01D_05M_ORB.SP3"
+    )
     assert data.archive_url(
         "igs_ult", "sp3", dt.date(2024, 9, 3), "15M", issue="0600"
     ) == (
@@ -451,6 +456,51 @@ def test_ultra_sp3_candidates_include_current_primary_and_alternates():
     ]
 
 
+def test_code_ultra_sp3_candidates_pin_primary_alternate_and_alias_urls():
+    candidates = data._sp3_candidates("cod_ult", dt.date(2026, 7, 14), None)
+
+    assert [candidate.pattern for candidate in candidates] == [
+        "primary_01D_05M",
+        "alternate_02D_05M",
+        "alias_latest",
+    ]
+    assert [candidate.archive_url() for candidate in candidates] == [
+        "https://www.aiub.unibe.ch/download/CODE/"
+        "COD0OPSULT_20261950000_01D_05M_ORB.SP3",
+        "https://www.aiub.unibe.ch/download/CODE/"
+        "COD0OPSULT_20261950000_02D_05M_ORB.SP3",
+        "https://www.aiub.unibe.ch/download/CODE/COD0OPSULT.SP3",
+    ]
+
+
+def test_aiub_download_follows_only_validated_object_store_redirect(monkeypatch):
+    source = "https://www.aiub.unibe.ch/download/CODE/COD0OPSULT.SP3"
+    download = "https://download.aiub.unibe.ch/CODE/COD0OPSULT.SP3"
+    target = "https://zhw-b.s3.cloud.switch.ch/aiub/CODE/COD0OPSULT.SP3"
+    calls = _stub_http(
+        monkeypatch,
+        [
+            (302, b"", {"location": download}),
+            (301, b"", {"location": target}),
+            (200, b"#dP fixture"),
+        ],
+    )
+
+    assert data._download_once(source, 1.0, 1024) == b"#dP fixture"
+    assert [call["url"] for call in calls] == [source, download, target]
+
+
+def test_aiub_download_rejects_untrusted_redirect_target(monkeypatch):
+    source = "https://www.aiub.unibe.ch/download/CODE/COD0OPSULT.SP3"
+    _stub_http(
+        monkeypatch,
+        [(302, b"", {"location": "https://example.com/COD0OPSULT.SP3"})],
+    )
+
+    with pytest.raises(data.RedirectNotAllowed):
+        data._download_once(source, 1.0, 1024)
+
+
 def test_ultra_sp3_primary_miss_uses_alternate(monkeypatch):
     calls = []
 
@@ -479,8 +529,12 @@ def test_ultra_sp3_all_variants_missing_records_absence(monkeypatch):
     result = data._fetch_center_sp3("esa_ult", dt.date(2026, 7, 13), None, {})
 
     assert result[0] == "absent"
-    assert result[1].reason == "not_published"
+    assert result[1].reason == "candidate_not_found"
     assert result[1].pattern == "alternate_01D_05M"
+    assert result[1].url is not None
+    assert result[1].url.startswith("https://navigation-office.esa.int/")
+    assert result[1].url.endswith("_01D_05M_ORB.SP3.gz")
+    assert result[1].http_status == 404
     assert calls == [
         "primary_02D_05M",
         "alternate_02D_15M",
@@ -804,6 +858,18 @@ def test_populate_terrain_cache_accepts_bbox_mapping(tmp_path, monkeypatch):
 
 
 # --- network tests (excluded by default) ---------------------------------
+
+
+@pytest.mark.network
+def test_network_fetch_code_ultra_day_195(tmp_path):
+    product = data.ops_ultra_sp3("cod_ult", dt.date(2026, 7, 14))
+    path = data.fetch(product, cache_dir=str(tmp_path))
+
+    assert os.path.getsize(path) == 1_473_962
+    with open(path, "rb") as handle:
+        assert handle.read(3) == b"#dP"
+    sp3 = sidereon.load_sp3(path)
+    assert sp3.epoch_count == 289
 
 
 @pytest.mark.network

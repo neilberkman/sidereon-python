@@ -55,7 +55,7 @@ import os as _os
 import zlib as _zlib
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Optional, Sequence, Union
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 import platformdirs
@@ -243,7 +243,12 @@ class OfflineCacheMiss(DataError):
 
 
 class FileNotFoundOnArchive(DataError):
-    """The archive returned 404 for the product URL."""
+    """A candidate URL returned HTTP 404."""
+
+    def __init__(self, url: str, status: int = 404) -> None:
+        self.status = status
+        self.url = url
+        super().__init__(f"HTTP {status} for candidate URL {url}")
 
 
 class HttpStatusError(DataError):
@@ -324,6 +329,10 @@ _DEFAULT_MAX_COMPRESSED_BYTES = 64 * 1024 * 1024
 _DEFAULT_TIMEOUT_S = 30.0
 _DEFAULT_RETRIES = 3
 _DEFAULT_BACKOFF_S = 0.5
+_MAX_REDIRECTS = 5
+_AIUB_WEB_HOST = "www.aiub.unibe.ch"
+_AIUB_DOWNLOAD_HOST = "download.aiub.unibe.ch"
+_AIUB_OBJECT_STORE_SUFFIX = ".s3.cloud.switch.ch"
 
 
 @dataclass(frozen=True)
@@ -1169,31 +1178,53 @@ def _sleep(seconds: float) -> None:
 
 
 def _download_once(url: str, timeout: float, max_bytes: int) -> bytes:
-    try:
-        with httpx.stream(
-            "GET",
-            url,
-            follow_redirects=False,
-            timeout=timeout,
-        ) as response:
-            status = response.status_code
-            if status == 200:
-                buf = bytearray()
-                for chunk in response.iter_bytes():
-                    buf += chunk
-                    if len(buf) > max_bytes:
-                        response.close()
-                        raise DownloadSizeExceeded(
-                            f"compressed payload exceeded {max_bytes} bytes"
-                        )
-                return bytes(buf)
-            if status == 404:
-                raise FileNotFoundOnArchive(url)
-            if 300 <= status < 400:
-                raise RedirectNotAllowed(status, url)
-            raise HttpStatusError(status, url)
-    except httpx.HTTPError as exc:
-        raise NetworkError(f"network error for {url}: {exc}") from exc
+    current_url = url
+    for redirect_count in range(_MAX_REDIRECTS + 1):
+        try:
+            with httpx.stream(
+                "GET",
+                current_url,
+                follow_redirects=False,
+                timeout=timeout,
+            ) as response:
+                status = response.status_code
+                if status == 200:
+                    buf = bytearray()
+                    for chunk in response.iter_bytes():
+                        buf += chunk
+                        if len(buf) > max_bytes:
+                            response.close()
+                            raise DownloadSizeExceeded(
+                                f"compressed payload exceeded {max_bytes} bytes"
+                            )
+                    return bytes(buf)
+                if status == 404:
+                    raise FileNotFoundOnArchive(current_url, status)
+                if 300 <= status < 400:
+                    location = response.headers.get("location")
+                    if location is None or redirect_count == _MAX_REDIRECTS:
+                        raise RedirectNotAllowed(status, current_url)
+                    current_url = _validated_redirect_url(current_url, status, location)
+                    continue
+                raise HttpStatusError(status, current_url)
+        except httpx.HTTPError as exc:
+            raise NetworkError(f"network error for {current_url}: {exc}") from exc
+    raise RedirectNotAllowed(310, current_url)
+
+
+def _validated_redirect_url(source_url: str, status: int, location: str) -> str:
+    target_url = urljoin(source_url, location)
+    source = urlsplit(source_url)
+    target = urlsplit(target_url)
+    target_host = target.hostname or ""
+    if source.scheme == "https" and target.scheme == "https":
+        if source.hostname == _AIUB_WEB_HOST and target_host == _AIUB_DOWNLOAD_HOST:
+            return target_url
+        if source.hostname in {_AIUB_WEB_HOST, _AIUB_DOWNLOAD_HOST} and (
+            target_host.endswith(_AIUB_OBJECT_STORE_SUFFIX)
+        ):
+            return target_url
+    raise RedirectNotAllowed(status, source_url)
 
 
 def _provenance(
@@ -1786,6 +1817,8 @@ class AbsentCenter:
     filename: Optional[str]
     reason: str
     pattern: Optional[str] = None
+    url: Optional[str] = None
+    http_status: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -1907,7 +1940,7 @@ def _fetch_center_sp3(
         # UnknownCenter (a caller mistake) propagates rather than being recorded.
         return ("absent", AbsentCenter(center, None, _reason_str(exc)))
 
-    last: Optional[tuple[str, Optional[str], DataError]] = None
+    last: Optional[tuple[Product, str, DataError]] = None
     for prod in candidates:
         filename = prod.canonical_filename()
         try:
@@ -1916,7 +1949,7 @@ def _fetch_center_sp3(
             # Expected absence for this candidate; try the next. Integrity,
             # cache, and transport failures are real and propagate instead of
             # being silently recorded as an absent center.
-            last = (filename, prod.pattern, exc)
+            last = (prod, filename, exc)
             continue
         sp3 = sidereon.load_sp3(path)
         return (
@@ -1929,7 +1962,14 @@ def _fetch_center_sp3(
     if last is not None:
         return (
             "absent",
-            AbsentCenter(center, last[0], _reason_str(last[2]), last[1]),
+            AbsentCenter(
+                center,
+                last[1],
+                _reason_str(last[2]),
+                last[0].pattern,
+                last[0].archive_url(),
+                getattr(last[2], "status", None),
+            ),
         )
     return ("absent", AbsentCenter(center, None, "no_candidate"))
 
@@ -1938,7 +1978,7 @@ def _reason_str(exc: DataError) -> str:
     if isinstance(exc, OfflineCacheMiss):
         return "offline_miss"
     if isinstance(exc, FileNotFoundOnArchive):
-        return "not_published"
+        return "candidate_not_found"
     if isinstance(exc, ChecksumMismatch):
         return "checksum"
     if isinstance(exc, HttpStatusError):

@@ -4,6 +4,23 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.28.1]
+
+### Fixed
+
+- Updated CODE ultra-rapid SP3 retrieval to AIUB's official HTTPS endpoint,
+  including narrowly validated redirects to AIUB's public object store.
+- Candidate-URL 404 results now retain the attempted URL, HTTP status,
+  filename, center, and candidate pattern without claiming authoritative
+  publication status. Access and transport failures remain typed errors.
+
+### Changed
+
+- Updated `sidereon` and `sidereon-core` to 0.28.1. Sequential RTK updates
+  inherit the core's exact information-matrix symmetry enforcement when
+  process noise is enabled; the zero-process-noise path and Python API are
+  unchanged.
+
 ## [0.28.0]
 
 ### Added
