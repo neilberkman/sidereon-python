@@ -624,8 +624,13 @@ def acquire(
     for distributor in exact_request.distributors:
         path = _cache_path(root, exact_request.identity, distributor.source)
         try:
-            with _exact_cache.entry_lock(path, cache_lock_timeout_s):
-                _exact_cache.cleanup_abandoned(path)
+            with _exact_cache.entry_lock(
+                path,
+                exact_request.identity,
+                distributor.source,
+                cache_lock_timeout_s,
+            ) as exact_cache:
+                exact_cache.cleanup_abandoned()
                 cache_error: Optional[_data.DataError] = None
                 try:
                     cached = _load_cached(
@@ -634,6 +639,7 @@ def acquire(
                         distributor.source,
                         attempts,
                         sha256,
+                        exact_cache,
                     )
                 except _data.DataError as caught:
                     if isinstance(caught, CacheWriteFailure):
@@ -664,6 +670,7 @@ def acquire(
                             max_product_bytes,
                             http_client,
                             attempts,
+                            exact_cache,
                         )
                     except (_data.DataError, OSError) as caught:
                         error = _normalize_error(caught)
@@ -709,6 +716,7 @@ def _acquire_one(
     max_product_bytes: int,
     http_client: Optional[httpx.Client],
     attempts: Sequence[SourceFailure],
+    exact_cache: _exact_cache.ExactCache,
 ) -> AcquiredProduct:
     source = distributor.source
     if source is DistributionSource.DIRECT:
@@ -789,7 +797,9 @@ def _acquire_one(
         archive_sha256=hashlib.sha256(archive).hexdigest(),
         attempts=tuple(attempts),
     )
-    committed_path = _commit_cache(path, content, archive, provenance)
+    committed_path = _commit_cache(
+        path, content, archive, provenance, exact_cache=exact_cache
+    )
     return AcquiredProduct(str(committed_path), provenance)
 
 
@@ -1277,9 +1287,10 @@ def _load_cached(
     source: DistributionSource,
     attempts: Sequence[SourceFailure],
     expected_sha256: Optional[str],
+    exact_cache: Optional[_exact_cache.ExactCache] = None,
 ) -> Optional[AcquiredProduct]:
     try:
-        files = _exact_cache.committed_files(path)
+        files = _exact_cache.committed_files(path, requested, source)
     except _exact_cache.CacheFormatError:
         raise CacheReadFailure(
             f"invalid cache commit for exact product {path.name}"
@@ -1288,20 +1299,24 @@ def _load_cached(
     if files is None:
         if not legacy:
             return None
-        files = _exact_cache.CacheFiles(
-            path,
-            _archive_path(path),
-            _provenance_path(path),
-            "legacy",
-        )
+        product_path = path
+        archive_path = _archive_path(path)
+        provenance_path = _provenance_path(path)
+        content = archive = provenance_bytes = None
+    else:
+        product_path = files.product
+        archive_path = files.archive
+        provenance_path = files.provenance
+        content = files.product_bytes
+        archive = files.archive_bytes
+        provenance_bytes = files.provenance_bytes
     try:
-        content = files.product.read_bytes()
-        archive = files.archive.read_bytes()
-        provenance_bytes = (
-            files.provenance_bytes
-            if files.provenance_bytes is not None
-            else files.provenance.read_bytes()
-        )
+        if content is None:
+            content = product_path.read_bytes()
+        if archive is None:
+            archive = archive_path.read_bytes()
+        if provenance_bytes is None:
+            provenance_bytes = provenance_path.read_bytes()
         provenance = AcquisitionProvenance.from_dict(json.loads(provenance_bytes))
     except OSError:
         raise CacheReadFailure(
@@ -1334,9 +1349,11 @@ def _load_cached(
     if resolved != provenance.resolved_identity:
         raise CacheReadFailure(f"cached resolved identity mismatch for {path.name}")
     if legacy:
-        committed = _commit_cache(path, content, archive, provenance)
+        committed = _commit_cache(
+            path, content, archive, provenance, exact_cache=exact_cache
+        )
     else:
-        committed = files.product
+        committed = product_path
     return AcquiredProduct(
         str(committed), replace(provenance, cache_hit=True, attempts=tuple(attempts))
     )
@@ -1355,10 +1372,25 @@ def _commit_cache(
     content: bytes,
     archive: bytes,
     provenance: AcquisitionProvenance,
+    *,
+    exact_cache: Optional[_exact_cache.ExactCache] = None,
 ) -> Path:
-    try:
-        files = _exact_cache.publish(
+    if exact_cache is None:
+        with _exact_cache.entry_lock(
             path,
+            provenance.requested_identity,
+            provenance.distribution_source,
+            30.0,
+        ) as owned_cache:
+            return _commit_cache(
+                path,
+                content,
+                archive,
+                provenance,
+                exact_cache=owned_cache,
+            )
+    try:
+        files = exact_cache.publish(
             content,
             archive,
             json.dumps(provenance.to_dict(), indent=2, sort_keys=True).encode("utf-8"),

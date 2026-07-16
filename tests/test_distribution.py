@@ -574,13 +574,10 @@ def test_verified_cache_is_kept_when_remote_transport_would_fail(tmp_path):
 
 
 def test_atomic_commit_failure_leaves_no_committed_product(tmp_path, monkeypatch):
-    def fail_after_metadata(step):
-        if step == "after_metadata":
-            raise OSError("simulated interruption")
+    def fail_publish(*_args):
+        raise OSError("simulated publication failure")
 
-    monkeypatch.setattr(
-        distribution._exact_cache, "_hit_failpoint", fail_after_metadata
-    )
+    monkeypatch.setattr(distribution._exact_cache.ExactCache, "publish", fail_publish)
     with (
         _client(_gzip_response) as client,
         pytest.raises(distribution.CacheWriteFailure),
@@ -594,7 +591,13 @@ def test_atomic_commit_failure_leaves_no_committed_product(tmp_path, monkeypatch
         _sp3_request().identity,
         distribution.DistributionSource.NASA_CDDIS,
     )
-    assert distribution._exact_cache.committed_files(stable) is None
+    request = _sp3_request()
+    assert (
+        distribution._exact_cache.committed_files(
+            stable, request.identity, distribution.DistributionSource.NASA_CDDIS
+        )
+        is None
+    )
     assert not list(tmp_path.rglob("current.json"))
 
 

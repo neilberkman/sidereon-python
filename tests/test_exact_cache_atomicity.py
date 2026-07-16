@@ -1,18 +1,49 @@
 """Process and crash-boundary tests for the exact-product cache."""
 
+import datetime as dt
 import gzip
 import hashlib
 import json
 import multiprocessing
 import os
-import threading
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 import sidereon._exact_cache as exact_cache
+import sidereon.data as data
 import sidereon.distribution as distribution
+import sidereon.exact_cache as public_exact_cache
 from test_distribution import _client, _gzip_response, _sp3_bytes, _sp3_request
+
+
+def test_public_exact_cache_surface_round_trips_authenticated_bytes(tmp_path):
+    golden_identity = distribution.identity(data.mgex_sp3("cod", dt.date(2026, 7, 12)))
+    assert golden_identity.key == "cod-final-a91258c21fa4860c34ce"
+
+    request = _sp3_request(distribution.Distribution.in_memory(_sp3_bytes()))
+    stable = tmp_path / request.identity.key / request.identity.official_filename
+    with public_exact_cache.entry_lock(
+        stable,
+        request.identity,
+        distribution.DistributionSource.IN_MEMORY,
+    ) as cache:
+        assert cache.committed_files() is None
+        published = cache.publish(b"validated product", b"archive", b"provenance")
+        assert published.product_bytes == b"validated product"
+        assert published.archive_bytes == b"archive"
+        assert published.provenance_bytes == b"provenance"
+
+    read = public_exact_cache.read(
+        stable,
+        request.identity,
+        distribution.DistributionSource.IN_MEMORY,
+    )
+    assert read is not None
+    assert read.entry_id == published.entry_id
+    assert read.product_bytes == b"validated product"
+    assert read.archive_bytes == b"archive"
+    assert read.provenance_bytes == b"provenance"
 
 
 def _process_acquire(source_kind, source_path, cache_dir, ready, start, results):
@@ -39,18 +70,20 @@ def _process_acquire(source_kind, source_path, cache_dir, ready, start, results)
 
 
 def _process_crash_commit(path, content, archive, provenance, step):
-    def stop_at(current):
-        if current == step:
-            os._exit(86)
-
-    exact_cache._hit_failpoint = stop_at
+    os.environ["SIDEREON_TEST_EXACT_CACHE_FAILPOINT"] = step
     distribution._commit_cache(Path(path), content, archive, provenance)
 
 
 def _process_hold_lock(path, ready, release):
     stable = Path(path)
-    with exact_cache.entry_lock(stable, 5.0):
-        orphan = stable.parent / ".sidereon-cache-v2" / "entries" / ("f" * 32)
+    request = _sp3_request(distribution.Distribution.in_memory(_sp3_bytes()))
+    with exact_cache.entry_lock(
+        stable,
+        request.identity,
+        distribution.DistributionSource.IN_MEMORY,
+        5.0,
+    ):
+        orphan = stable.parent / exact_cache.CONTROL_DIRECTORY / "entries" / ("f" * 32)
         orphan.mkdir(parents=True)
         ready.put(str(orphan))
         release.wait()
@@ -175,30 +208,20 @@ def test_process_death_at_every_commit_boundary_keeps_old_or_new_entry(tmp_path,
     )
 
 
-def test_existing_entry_is_readable_until_refresh_commit_marker_moves(
-    tmp_path, monkeypatch
-):
+def test_existing_entry_is_readable_until_refresh_commit_marker_moves(tmp_path):
     request = _sp3_request(distribution.Distribution.in_memory(_sp3_bytes()))
     first = distribution.acquire(request, cache_dir=tmp_path)
     stable = distribution._cache_path(
         tmp_path, request.identity, distribution.DistributionSource.IN_MEMORY
     )
     content, archive, provenance = _alternate_candidate(first)
-    staged = threading.Event()
-    release = threading.Event()
-
-    def pause_before_marker(step):
-        if step == "after_entry_sync":
-            staged.set()
-            assert release.wait(10)
-
-    monkeypatch.setattr(exact_cache, "_hit_failpoint", pause_before_marker)
-    writer = threading.Thread(
-        target=distribution._commit_cache,
-        args=(stable, content, archive, provenance),
+    staged = stable.parent / exact_cache.CONTROL_DIRECTORY / "entries" / ("e" * 32)
+    staged.mkdir(parents=True)
+    (staged / stable.name).write_bytes(content)
+    (staged / f"{stable.name}.archive").write_bytes(archive)
+    (staged / f"{stable.name}.provenance.json").write_text(
+        json.dumps(provenance.to_dict())
     )
-    writer.start()
-    assert staged.wait(10)
     during = distribution._load_cached(
         stable,
         request.identity,
@@ -208,9 +231,7 @@ def test_existing_entry_is_readable_until_refresh_commit_marker_moves(
     )
     assert during is not None
     assert during.provenance.sha256 == first.provenance.sha256
-    release.set()
-    writer.join(10)
-    assert not writer.is_alive()
+    distribution._commit_cache(stable, content, archive, provenance)
     after = distribution._load_cached(
         stable,
         request.identity,
@@ -228,7 +249,9 @@ def test_mismatched_and_corrupt_committed_payloads_are_rejected(tmp_path):
     stable = distribution._cache_path(
         tmp_path, request.identity, distribution.DistributionSource.IN_MEMORY
     )
-    files = exact_cache.committed_files(stable)
+    files = exact_cache.committed_files(
+        stable, request.identity, distribution.DistributionSource.IN_MEMORY
+    )
     assert files is not None
     original = files.product.read_bytes()
     files.product.write_bytes(b"mismatched payload")
@@ -261,7 +284,9 @@ def test_reader_parses_the_provenance_bytes_bound_by_the_commit(tmp_path, monkey
     stable = distribution._cache_path(
         tmp_path, request.identity, distribution.DistributionSource.IN_MEMORY
     )
-    files = exact_cache.committed_files(stable)
+    files = exact_cache.committed_files(
+        stable, request.identity, distribution.DistributionSource.IN_MEMORY
+    )
     assert files is not None
     real_read_bytes = Path.read_bytes
     provenance_reads = 0
@@ -283,7 +308,7 @@ def test_reader_parses_the_provenance_bytes_bound_by_the_commit(tmp_path, monkey
         None,
     )
     assert accepted is not None
-    assert provenance_reads == 1
+    assert provenance_reads == 0
 
 
 def test_legacy_verified_triple_is_migrated_to_one_committed_entry(tmp_path):
@@ -300,7 +325,12 @@ def test_legacy_verified_triple_is_migrated_to_one_committed_entry(tmp_path):
     )
     migrated = distribution.acquire(request, cache_dir=tmp_path)
     assert migrated.provenance.cache_hit
-    assert exact_cache.committed_files(stable) is not None
+    assert (
+        exact_cache.committed_files(
+            stable, request.identity, distribution.DistributionSource.IN_MEMORY
+        )
+        is not None
+    )
     assert Path(migrated.path).parent.name != stable.parent.name
 
 
@@ -331,7 +361,7 @@ def test_failed_legacy_migration_is_terminal_before_transport(tmp_path, monkeypa
     def fail_publish(*_args):
         raise OSError("read-only cache")
 
-    monkeypatch.setattr(exact_cache, "publish", fail_publish)
+    monkeypatch.setattr(exact_cache.ExactCache, "publish", fail_publish)
     with _client(handler) as client, pytest.raises(distribution.CacheWriteFailure):
         distribution.acquire(request, cache_dir=tmp_path / "target", http_client=client)
     assert calls == 0
@@ -352,8 +382,13 @@ def test_abandoned_cleanup_waits_for_live_writer_lock(tmp_path):
     orphan = Path(ready.get(timeout=10))
     assert orphan.is_dir()
     with pytest.raises(exact_cache.CacheLockTimeout):
-        with exact_cache.entry_lock(stable, 0.05):
-            exact_cache.cleanup_abandoned(stable)
+        with exact_cache.entry_lock(
+            stable,
+            request.identity,
+            distribution.DistributionSource.IN_MEMORY,
+            0.05,
+        ) as cache:
+            cache.cleanup_abandoned()
     assert orphan.is_dir()
     fallback_source = tmp_path / "fallback.SP3"
     fallback_source.write_bytes(_sp3_bytes())
@@ -370,6 +405,11 @@ def test_abandoned_cleanup_waits_for_live_writer_lock(tmp_path):
     release.set()
     process.join(10)
     assert process.exitcode == 0
-    with exact_cache.entry_lock(stable, 1.0):
-        exact_cache.cleanup_abandoned(stable)
+    with exact_cache.entry_lock(
+        stable,
+        request.identity,
+        distribution.DistributionSource.IN_MEMORY,
+        1.0,
+    ) as cache:
+        cache.cleanup_abandoned()
     assert not orphan.exists()

@@ -142,14 +142,15 @@ files and their directories have been synchronized. Readers follow only the
 commit record and then repeat the content-hash, length, identity, source,
 caller-checksum, and parsed-product checks.
 
-On Linux and macOS, concurrent processes and threads use the same per-entry
-POSIX advisory lock. The lock covers cache validation, acquisition, and commit,
-so a waiter rechecks and reuses the completed entry instead of downloading it
-again. `cache_lock_timeout_s` bounds the wait (30 seconds by default); a timeout
-is a terminal `CacheWriteFailure` and does not authorize trying another source.
-The operating system releases the lock if its owner exits or is killed. A later
-lock owner may remove uncommitted transaction directories without guessing
-whether a writer is still alive.
+On Linux and macOS, acquisition delegates to the shared Rust transaction
+implementation. Concurrent processes and threads use its per-entry advisory
+lock across cache validation, acquisition, and commit, so a waiter rechecks and
+reuses the completed entry instead of downloading it again.
+`cache_lock_timeout_s` bounds the wait (30 seconds by default); a timeout is a
+terminal `CacheWriteFailure` and does not authorize trying another source. The
+operating system releases the lock if its owner exits or is killed. A later lock
+owner may remove uncommitted transaction directories without guessing whether
+a writer is still alive.
 
 Publication relies on same-filesystem atomic `rename`/`replace`, `fsync` of each
 file, and `fsync` of the entry, entries, and commit-record directories. A process
@@ -164,6 +165,10 @@ macOS. Filesystems that do not honor POSIX advisory locks, atomic same-directory
 rename, or directory synchronization are outside the guarantee. Existing
 verified entries are returned without a remote request, including during a
 remote outage.
+
+Low-level consumers can use `sidereon.exact_cache.ExactProductCache`,
+`entry_lock`, and `read` directly. Those calls authenticate bytes and identity;
+the caller remains responsible for transport and product-format validation.
 
 ## Typed failures
 

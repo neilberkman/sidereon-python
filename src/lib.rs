@@ -45,6 +45,7 @@ mod equinoctial;
 mod error_metrics;
 mod estimation;
 mod events;
+mod exact_cache;
 mod fallback;
 mod forces;
 mod frame_catalog;
@@ -479,6 +480,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     doppler::register(m)?;
     defaults::register(m)?;
     data_catalog::register(m)?;
+    exact_cache::register(m)?;
     elements::register(m)?;
     almanac::register(m)?;
     anomaly::register(m)?;
