@@ -2,7 +2,34 @@
 
 All notable changes to the Sidereon Python interface are documented here.
 
-## [Unreleased]
+## [0.30.0] - 2026-07-16
+
+### Fixed
+
+- Publishes exact-product cache entries as immutable payload/archive/provenance
+  transactions selected by one atomic digest-bound commit record. Cache hits
+  cannot observe a mixed three-file update after concurrent processes or a
+  process death at a write boundary.
+- Delegates cache-first acquisition to the shared Rust transaction
+  implementation. Its bounded advisory lock coordinates Linux and macOS
+  processes; dead owners release automatically, duplicate downloads are
+  avoided, and abandoned transactions are removed only while the entry lock is
+  held.
+- Revalidates and atomically migrates valid 0.29.0-0.29.2 cache triples without
+  downloading them again. Cache lock/write failures are terminal and never
+  authorize distributor substitution.
+
+### Added
+
+- Added the optional `cache_lock_timeout_s` acquisition argument, defaulting to
+  30 seconds.
+- Added the public `sidereon.exact_cache` module for native locked publication,
+  locked and unlocked verified reads, and abandoned-entry cleanup.
+
+### Changed
+
+- Updated `sidereon` and `sidereon-core` to 0.30.0. Full identity hashing now
+  uses the same golden canonical key in all five interfaces.
 
 ## [0.29.2]
 

@@ -88,7 +88,7 @@ jobs:
       - name: Build the extension (maturin develop)
         run: |
           . .venv/bin/activate
-          maturin develop
+          maturin develop --features exact-cache-test-failpoints
       - name: stub accuracy
         run: |
           . .venv/bin/activate

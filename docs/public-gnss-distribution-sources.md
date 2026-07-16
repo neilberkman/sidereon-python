@@ -135,11 +135,40 @@ cannot collide. A cache hit is accepted only after checking the decompressed
 and archive hashes, lengths, stored identity, provenance, and a fresh SP3 or
 IONEX parse with coverage-start and cadence checks.
 
-Writes use temporary files, `fsync`, and atomic promotion. The decompressed data
-file becomes visible last, so an interrupted first acquisition cannot be used
-as a cache hit. Concurrent requests for the same source and identity share one
-in-process acquisition lock. Existing verified entries are returned without a
-remote request, including during a remote outage.
+Each accepted entry is one immutable transaction containing the decompressed
+product, original archive, and provenance. A SHA-256-bound commit record names
+that transaction. The commit record is replaced atomically only after all three
+files and their directories have been synchronized. Readers follow only the
+commit record and then repeat the content-hash, length, identity, source,
+caller-checksum, and parsed-product checks.
+
+On Linux and macOS, acquisition delegates to the shared Rust transaction
+implementation. Concurrent processes and threads use its per-entry advisory
+lock across cache validation, acquisition, and commit, so a waiter rechecks and
+reuses the completed entry instead of downloading it again.
+`cache_lock_timeout_s` bounds the wait (30 seconds by default); a timeout is a
+terminal `CacheWriteFailure` and does not authorize trying another source. The
+operating system releases the lock if its owner exits or is killed. A later lock
+owner may remove uncommitted transaction directories without guessing whether
+a writer is still alive.
+
+Publication relies on same-filesystem atomic `rename`/`replace`, `fsync` of each
+file, and `fsync` of the entry, entries, and commit-record directories. A process
+death or power loss at a publication boundary therefore leaves the previous
+complete commit or no acceptable commit. Valid cache triples from the
+0.29.0-0.29.2 layout are fully revalidated and migrated without a remote
+request. The legacy files are then ignored. `result.path` retains the official
+filename inside the immutable transaction directory.
+
+These crash and cross-process guarantees are for local filesystems on Linux and
+macOS. Filesystems that do not honor POSIX advisory locks, atomic same-directory
+rename, or directory synchronization are outside the guarantee. Existing
+verified entries are returned without a remote request, including during a
+remote outage.
+
+Low-level consumers can use `sidereon.exact_cache.ExactProductCache`,
+`entry_lock`, and `read` directly. Those calls authenticate bytes and identity;
+the caller remains responsible for transport and product-format validation.
 
 ## Typed failures
 

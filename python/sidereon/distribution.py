@@ -14,8 +14,6 @@ import json
 import netrc
 import os
 import re
-import tempfile
-import threading
 import time
 import zlib
 from dataclasses import asdict, dataclass, field, replace
@@ -27,6 +25,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import httpx
 
 import sidereon
+from sidereon import _exact_cache
 from sidereon import data as _data
 
 
@@ -421,9 +420,6 @@ _MAX_REDIRECTS = 8
 _DEFAULT_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 _DEFAULT_MAX_PRODUCT_BYTES = 500 * 1024 * 1024
 
-_LOCKS_GUARD = threading.Lock()
-_LOCKS: dict[str, threading.Lock] = {}
-
 
 def identity(product: _data.Product) -> ProductIdentity:
     """Resolve a legacy :class:`sidereon.data.Product` to exact identity."""
@@ -602,6 +598,7 @@ def acquire(
     earthdata_auth: Optional[EarthdataAuth] = None,
     sha256: Optional[str] = None,
     timeout_s: float = 30.0,
+    cache_lock_timeout_s: float = 30.0,
     retries: int = 3,
     backoff_s: float = 0.5,
     max_archive_bytes: int = _DEFAULT_MAX_ARCHIVE_BYTES,
@@ -612,8 +609,11 @@ def acquire(
     _validate_requested_identity(exact_request.identity)
     if retries < 1:
         raise ValueError("retries must be at least one")
-    if timeout_s <= 0 or backoff_s < 0:
-        raise ValueError("timeout_s must be positive and backoff_s non-negative")
+    if timeout_s <= 0 or backoff_s < 0 or cache_lock_timeout_s < 0:
+        raise ValueError(
+            "timeouts must be non-negative, timeout_s must be positive, "
+            "and backoff_s must be non-negative"
+        )
     if max_archive_bytes <= 0 or max_product_bytes <= 0:
         raise ValueError("byte limits must be positive")
     auth = earthdata_auth or EarthdataAuth()
@@ -623,50 +623,70 @@ def acquire(
 
     for distributor in exact_request.distributors:
         path = _cache_path(root, exact_request.identity, distributor.source)
-        lock = _path_lock(path)
-        with lock:
-            cache_error: Optional[_data.DataError] = None
-            try:
-                cached = _load_cached(
-                    path,
-                    exact_request.identity,
-                    distributor.source,
-                    attempts,
-                    sha256,
-                )
-            except _data.DataError as caught:
-                cached = None
-                cache_error = caught
-            if cached is not None:
-                return cached
-            if offline and distributor.source in (
-                DistributionSource.DIRECT,
-                DistributionSource.NASA_CDDIS,
-            ):
-                error: _data.DataError = cache_error or _data.OfflineCacheMiss(
-                    f"exact product not cached from {distributor.source.value}"
-                )
-            else:
+        try:
+            with _exact_cache.entry_lock(
+                path,
+                exact_request.identity,
+                distributor.source,
+                cache_lock_timeout_s,
+            ) as exact_cache:
+                exact_cache.cleanup_abandoned()
+                cache_error: Optional[_data.DataError] = None
                 try:
-                    return _acquire_one(
-                        exact_request.identity,
-                        distributor,
+                    cached = _load_cached(
                         path,
-                        auth,
-                        sha256,
-                        timeout_s,
-                        retries,
-                        backoff_s,
-                        max_archive_bytes,
-                        max_product_bytes,
-                        http_client,
+                        exact_request.identity,
+                        distributor.source,
                         attempts,
+                        sha256,
+                        exact_cache,
                     )
-                except (_data.DataError, OSError) as caught:
-                    error = _normalize_error(caught)
-            failure = _source_failure(distributor.source, error)
-            attempts.append(failure)
-            last_error = error
+                except _data.DataError as caught:
+                    if isinstance(caught, CacheWriteFailure):
+                        raise
+                    cached = None
+                    cache_error = caught
+                if cached is not None:
+                    return cached
+                if offline and distributor.source in (
+                    DistributionSource.DIRECT,
+                    DistributionSource.NASA_CDDIS,
+                ):
+                    error: _data.DataError = cache_error or _data.OfflineCacheMiss(
+                        f"exact product not cached from {distributor.source.value}"
+                    )
+                else:
+                    try:
+                        return _acquire_one(
+                            exact_request.identity,
+                            distributor,
+                            path,
+                            auth,
+                            sha256,
+                            timeout_s,
+                            retries,
+                            backoff_s,
+                            max_archive_bytes,
+                            max_product_bytes,
+                            http_client,
+                            attempts,
+                            exact_cache,
+                        )
+                    except (_data.DataError, OSError) as caught:
+                        error = _normalize_error(caught)
+                        if isinstance(error, CacheWriteFailure):
+                            raise error from caught
+        except _exact_cache.CacheLockTimeout:
+            raise CacheWriteFailure(
+                f"timed out waiting for exact-product cache lock {path.name}"
+            ) from None
+        except OSError:
+            raise CacheWriteFailure(
+                f"cannot coordinate exact-product cache {path.name}"
+            ) from None
+        failure = _source_failure(distributor.source, error)
+        attempts.append(failure)
+        last_error = error
 
     if len(attempts) == 1 and last_error is not None:
         raise last_error
@@ -696,6 +716,7 @@ def _acquire_one(
     max_product_bytes: int,
     http_client: Optional[httpx.Client],
     attempts: Sequence[SourceFailure],
+    exact_cache: _exact_cache.ExactCache,
 ) -> AcquiredProduct:
     source = distributor.source
     if source is DistributionSource.DIRECT:
@@ -776,8 +797,10 @@ def _acquire_one(
         archive_sha256=hashlib.sha256(archive).hexdigest(),
         attempts=tuple(attempts),
     )
-    _commit_cache(path, content, archive, provenance)
-    return AcquiredProduct(str(path), provenance)
+    committed_path = _commit_cache(
+        path, content, archive, provenance, exact_cache=exact_cache
+    )
+    return AcquiredProduct(str(committed_path), provenance)
 
 
 def _product_from_identity(value: ProductIdentity) -> _data.Product:
@@ -1258,26 +1281,43 @@ def _safe_filename(filename: str) -> bool:
     )
 
 
-def _path_lock(path: Path) -> threading.Lock:
-    key = str(path)
-    with _LOCKS_GUARD:
-        return _LOCKS.setdefault(key, threading.Lock())
-
-
 def _load_cached(
     path: Path,
     requested: ProductIdentity,
     source: DistributionSource,
     attempts: Sequence[SourceFailure],
     expected_sha256: Optional[str],
+    exact_cache: Optional[_exact_cache.ExactCache] = None,
 ) -> Optional[AcquiredProduct]:
-    if not path.exists():
-        return None
-    sidecar = _provenance_path(path)
     try:
-        content = path.read_bytes()
-        archive = _archive_path(path).read_bytes()
-        provenance = AcquisitionProvenance.from_dict(json.loads(sidecar.read_text()))
+        files = _exact_cache.committed_files(path, requested, source)
+    except _exact_cache.CacheFormatError:
+        raise CacheReadFailure(
+            f"invalid cache commit for exact product {path.name}"
+        ) from None
+    legacy = files is None and path.exists()
+    if files is None:
+        if not legacy:
+            return None
+        product_path = path
+        archive_path = _archive_path(path)
+        provenance_path = _provenance_path(path)
+        content = archive = provenance_bytes = None
+    else:
+        product_path = files.product
+        archive_path = files.archive
+        provenance_path = files.provenance
+        content = files.product_bytes
+        archive = files.archive_bytes
+        provenance_bytes = files.provenance_bytes
+    try:
+        if content is None:
+            content = product_path.read_bytes()
+        if archive is None:
+            archive = archive_path.read_bytes()
+        if provenance_bytes is None:
+            provenance_bytes = provenance_path.read_bytes()
+        provenance = AcquisitionProvenance.from_dict(json.loads(provenance_bytes))
     except OSError:
         raise CacheReadFailure(
             f"cannot read cached exact product {path.name}"
@@ -1308,8 +1348,14 @@ def _load_cached(
         ) from None
     if resolved != provenance.resolved_identity:
         raise CacheReadFailure(f"cached resolved identity mismatch for {path.name}")
+    if legacy:
+        committed = _commit_cache(
+            path, content, archive, provenance, exact_cache=exact_cache
+        )
+    else:
+        committed = product_path
     return AcquiredProduct(
-        str(path), replace(provenance, cache_hit=True, attempts=tuple(attempts))
+        str(committed), replace(provenance, cache_hit=True, attempts=tuple(attempts))
     )
 
 
@@ -1326,58 +1372,34 @@ def _commit_cache(
     content: bytes,
     archive: bytes,
     provenance: AcquisitionProvenance,
-) -> None:
+    *,
+    exact_cache: Optional[_exact_cache.ExactCache] = None,
+) -> Path:
+    if exact_cache is None:
+        with _exact_cache.entry_lock(
+            path,
+            provenance.requested_identity,
+            provenance.distribution_source,
+            30.0,
+        ) as owned_cache:
+            return _commit_cache(
+                path,
+                content,
+                archive,
+                provenance,
+                exact_cache=owned_cache,
+            )
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        raise CacheWriteFailure(
-            f"cannot create cache directory {path.parent}"
-        ) from None
-    temporary: list[Path] = []
-    try:
-        data_tmp = _temp_file(path.parent, content)
-        temporary.append(data_tmp)
-        archive_tmp = _temp_file(path.parent, archive)
-        temporary.append(archive_tmp)
-        provenance_tmp = _temp_file(
-            path.parent,
+        files = exact_cache.publish(
+            content,
+            archive,
             json.dumps(provenance.to_dict(), indent=2, sort_keys=True).encode("utf-8"),
         )
-        temporary.append(provenance_tmp)
-        os.replace(archive_tmp, _archive_path(path))
-        temporary.remove(archive_tmp)
-        os.replace(provenance_tmp, _provenance_path(path))
-        temporary.remove(provenance_tmp)
-        os.replace(data_tmp, path)
-        temporary.remove(data_tmp)
     except OSError:
         raise CacheWriteFailure(
             f"cannot atomically commit exact product {path.name}"
         ) from None
-    finally:
-        for item in temporary:
-            try:
-                item.unlink()
-            except OSError:
-                pass
-
-
-def _temp_file(directory: Path, content: bytes) -> Path:
-    name: Optional[str] = None
-    try:
-        fd, name = tempfile.mkstemp(prefix=".sidereon-", dir=str(directory))
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        return Path(name)
-    except OSError:
-        if name is not None:
-            try:
-                Path(name).unlink()
-            except OSError:
-                pass
-        raise CacheWriteFailure(f"cannot write temporary file in {directory}") from None
+    return files.product
 
 
 def _normalize_error(error: BaseException) -> AcquisitionError:

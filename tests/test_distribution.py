@@ -573,18 +573,11 @@ def test_verified_cache_is_kept_when_remote_transport_would_fail(tmp_path):
     assert second.provenance.cache_hit
 
 
-def test_atomic_commit_failure_leaves_no_visible_product_or_temp(tmp_path, monkeypatch):
-    real_replace = distribution.os.replace
-    replaces = 0
+def test_atomic_commit_failure_leaves_no_committed_product(tmp_path, monkeypatch):
+    def fail_publish(*_args):
+        raise OSError("simulated publication failure")
 
-    def fail_second(source, target):
-        nonlocal replaces
-        replaces += 1
-        if replaces == 2:
-            raise OSError("simulated interruption")
-        return real_replace(source, target)
-
-    monkeypatch.setattr(distribution.os, "replace", fail_second)
+    monkeypatch.setattr(distribution._exact_cache.ExactCache, "publish", fail_publish)
     with (
         _client(_gzip_response) as client,
         pytest.raises(distribution.CacheWriteFailure),
@@ -593,8 +586,19 @@ def test_atomic_commit_failure_leaves_no_visible_product_or_temp(tmp_path, monke
             _sp3_request(), cache_dir=tmp_path, http_client=client, retries=1
         )
 
-    assert not list(tmp_path.rglob("*.SP3"))
-    assert not list(tmp_path.rglob(".sidereon-*"))
+    stable = distribution._cache_path(
+        tmp_path,
+        _sp3_request().identity,
+        distribution.DistributionSource.NASA_CDDIS,
+    )
+    request = _sp3_request()
+    assert (
+        distribution._exact_cache.committed_files(
+            stable, request.identity, distribution.DistributionSource.NASA_CDDIS
+        )
+        is None
+    )
+    assert not list(tmp_path.rglob("current.json"))
 
 
 def test_concurrent_requests_download_once(tmp_path):
