@@ -4,6 +4,25 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Publishes exact-product cache entries as immutable payload/archive/provenance
+  transactions selected by one atomic digest-bound commit record. Cache hits
+  cannot observe a mixed three-file update after concurrent processes or a
+  process death at a write boundary.
+- Coordinates cache-first acquisition across Linux and macOS processes with a
+  bounded POSIX advisory lock. Dead owners release automatically, duplicate
+  downloads are avoided, and abandoned transactions are removed only while the
+  entry lock is held.
+- Revalidates and atomically migrates valid 0.29.0-0.29.2 cache triples without
+  downloading them again. Cache lock/write failures are terminal and never
+  authorize distributor substitution.
+
+### Added
+
+- Added the optional `cache_lock_timeout_s` acquisition argument, defaulting to
+  30 seconds.
+
 ## [0.29.2]
 
 ### Added
