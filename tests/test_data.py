@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import shutil
+from dataclasses import replace
 
 import httpx
 import numpy as np
@@ -63,6 +64,53 @@ def _seed_exact_direct_ionex(cache_dir, product):
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         return distribution.acquire(exact, cache_dir=cache_dir, http_client=client)
+
+
+def _sp3_payload():
+    with open(_core_sp3("COD0MGXFIN_20201770000_01D_05M_ORB.SP3"), "rb") as handle:
+        return handle.read()
+
+
+def _archive_for_catalog_product(product, content):
+    identity = distribution._catalog_product_identity(product)
+    _, compression = distribution._catalog_direct_location(product, identity)
+    return gzip.compress(content, mtime=0) if compression == "gzip" else content
+
+
+def _seed_exact_direct_sp3(cache_dir, product, content=None):
+    payload = _sp3_payload() if content is None else content
+    archive = _archive_for_catalog_product(product, payload)
+
+    def handler(request):
+        return httpx.Response(200, request=request, content=archive)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        return distribution._acquire_catalog_product(
+            product, cache_dir=cache_dir, http_client=client
+        )
+
+
+def _provenance_for_catalog_product(product):
+    requested = distribution._catalog_product_identity(product)
+    resolved = replace(requested, format_version="SP3-d")
+    return distribution.AcquisitionProvenance(
+        requested_identity=requested,
+        resolved_identity=resolved,
+        publisher=requested.publisher,
+        distribution_source=distribution.DistributionSource.DIRECT,
+        official_filename=requested.official_filename,
+        original_url=product.archive_url(),
+        final_url=product.archive_url(),
+        retrieved_at="2026-07-16T00:00:00+00:00",
+        byte_length=1,
+        sha256="11" * 32,
+        etag=None,
+        last_modified=None,
+        cache_hit=False,
+        archive_compression=product.archive_compression(),
+        archive_byte_length=1,
+        archive_sha256="22" * 32,
+    )
 
 
 def _core_dted_tile():
@@ -477,7 +525,7 @@ def test_fetch_ionex_uses_exact_semantic_validation(tmp_path):
 def test_fetch_merged_sp3_offline_single_contributor(tmp_path):
     cache = str(tmp_path)
     prod = data.mgex_sp3("cod", SP3_DATE)
-    _seed(cache, prod, _core_sp3("COD0MGXFIN_20201770000_01D_05M_ORB.SP3"))
+    _seed_exact_direct_sp3(cache, prod)
 
     sp3, report = data.fetch_merged_sp3(
         SP3_DATE, ["cod"], offline=True, cache_dir=cache
@@ -493,7 +541,7 @@ def test_fetch_merged_sp3_offline_single_contributor(tmp_path):
 def test_fetch_merged_sp3_forwards_complete_merge_options(tmp_path):
     cache = str(tmp_path)
     prod = data.mgex_sp3("cod", SP3_DATE)
-    _seed(cache, prod, _core_sp3("COD0MGXFIN_20201770000_01D_05M_ORB.SP3"))
+    _seed_exact_direct_sp3(cache, prod)
     options = sidereon.Sp3MergeOptions(
         combine="precedence",
         precedence_scope="cell",
@@ -511,6 +559,169 @@ def test_fetch_merged_sp3_forwards_complete_merge_options(tmp_path):
 
     assert merged.epoch_count > 0
     assert report.merge_report is not None
+    assert report.merge_policy["combine"] == "precedence"
+    assert report.merge_policy["precedence_artifact_sha256"] == [
+        report.contributors[0].artifact_identity.product_sha256
+    ]
+
+
+def test_merged_sp3_exposes_exact_two_contributor_provenance(tmp_path):
+    cache = str(tmp_path)
+    products = [
+        data.mgex_sp3("cod", SP3_DATE),
+        data.mgex_sp3("esa", SP3_DATE),
+    ]
+    payload = _sp3_payload()
+    archives = {
+        product.archive_url(): _archive_for_catalog_product(product, payload)
+        for product in products
+    }
+
+    def handler(request):
+        return httpx.Response(200, request=request, content=archives[str(request.url)])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        _, report = data.fetch_merged_sp3(
+            SP3_DATE,
+            ["cod", "esa"],
+            cache_dir=cache,
+            http_client=client,
+        )
+
+    assert report.source_count == 2
+    assert report.input_identity_schema_version == 1
+    assert report.stable_input_identity.startswith("sidereon-sp3-merge-input-v1:")
+    artifacts = [item.artifact_identity for item in report.contributors]
+    assert all(artifact is not None for artifact in artifacts)
+    assert [artifact.requested_identity.analysis_center for artifact in artifacts] == [
+        "cod",
+        "esa",
+    ]
+    assert all(
+        artifact.resolved_identity.format_version == "SP3-d" for artifact in artifacts
+    )
+    assert all(len(artifact.product_sha256) == 64 for artifact in artifacts)
+    assert all(len(artifact.archive_sha256) == 64 for artifact in artifacts)
+    assert all(item.acquisition_facts is not None for item in report.contributors)
+    assert report.merge_policy["combine"] == "mean"
+    assert report.merge_policy["precedence_artifact_sha256"] == []
+    persisted = report.to_dict()["contributors"][0]["artifact_identity"]
+    assert data.ArtifactIdentity.from_dict(persisted) == artifacts[0]
+
+
+def test_merged_sp3_cache_hit_does_not_change_stable_identity(tmp_path):
+    product = data.mgex_sp3("cod", SP3_DATE)
+    archive = _archive_for_catalog_product(product, _sp3_payload())
+
+    def handler(request):
+        return httpx.Response(200, request=request, content=archive)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        _, miss = data.fetch_merged_sp3(
+            SP3_DATE, ["cod"], cache_dir=str(tmp_path), http_client=client
+        )
+    _, hit = data.fetch_merged_sp3(
+        SP3_DATE, ["cod"], cache_dir=str(tmp_path), offline=True
+    )
+
+    assert miss.contributors[0].acquisition_facts.cache_hit is False
+    assert hit.contributors[0].acquisition_facts.cache_hit is True
+    assert miss.stable_input_identity == hit.stable_input_identity
+
+
+def test_sp3_merge_input_identity_binds_artifact_set_order_and_policy(tmp_path):
+    first = data.mgex_sp3("cod", SP3_DATE)
+    second = data.mgex_sp3("esa", SP3_DATE)
+    first_acquired = _seed_exact_direct_sp3(str(tmp_path / "first"), first)
+    second_acquired = _seed_exact_direct_sp3(str(tmp_path / "second"), second)
+    first_artifact = data.ArtifactIdentity._from_provenance(first_acquired.provenance)
+    second_artifact = data.ArtifactIdentity._from_provenance(second_acquired.provenance)
+
+    original = data.sp3_merge_input_identity([first_artifact, second_artifact])
+    reversed_order = data.sp3_merge_input_identity([second_artifact, first_artifact])
+    changed_policy = data.sp3_merge_input_identity(
+        [first_artifact, second_artifact],
+        sidereon.Sp3MergeOptions(combine="median"),
+    )
+    precedence = sidereon.Sp3MergeOptions(combine="precedence")
+    precedence_forward = data.sp3_merge_input_identity(
+        [first_artifact, second_artifact], precedence
+    )
+    precedence_reverse = data.sp3_merge_input_identity(
+        [second_artifact, first_artifact], precedence
+    )
+    first_mapping = first_artifact.to_dict()
+    reversed_mapping = dict(reversed(list(first_mapping.items())))
+    mapped = data._core_sp3_merge_input_identity([json.dumps(first_mapping)], None)
+    reversed_mapped = data._core_sp3_merge_input_identity(
+        [json.dumps(reversed_mapping)], None
+    )
+
+    assert original == reversed_order
+    assert original != changed_policy
+    assert precedence_forward != precedence_reverse
+    assert mapped == reversed_mapped
+
+
+def test_sp3_merge_input_identity_changes_with_contributor_bytes(tmp_path):
+    product = data.mgex_sp3("cod", SP3_DATE)
+    original_payload = _sp3_payload()
+    changed_payload = original_payload.replace(
+        b"/* CODE MGEX orbits", b"/* C0DE MGEX orbits", 1
+    )
+    assert changed_payload != original_payload
+    original = _seed_exact_direct_sp3(
+        str(tmp_path / "original"), product, original_payload
+    )
+    changed = _seed_exact_direct_sp3(
+        str(tmp_path / "changed"), product, changed_payload
+    )
+    original_artifact = data.ArtifactIdentity._from_provenance(original.provenance)
+    changed_artifact = data.ArtifactIdentity._from_provenance(changed.provenance)
+
+    assert data.sp3_merge_input_identity(
+        [original_artifact]
+    ) != data.sp3_merge_input_identity([changed_artifact])
+
+
+def test_sp3_merge_input_identity_accepts_zero_tolerances(tmp_path):
+    product = data.mgex_sp3("cod", SP3_DATE)
+    acquired = _seed_exact_direct_sp3(str(tmp_path), product)
+    artifact = data.ArtifactIdentity._from_provenance(acquired.provenance)
+    policy = sidereon.Sp3MergeOptions(
+        position_tolerance_m=0.0,
+        clock_tolerance_s=0.0,
+    )
+
+    schema_version, stable_id = data.sp3_merge_input_identity([artifact], policy)
+
+    assert schema_version == 1
+    assert stable_id.startswith("sidereon-sp3-merge-input-v1:")
+
+
+def test_sp3_merge_input_identity_rejects_malformed_provenance(tmp_path):
+    product = data.mgex_sp3("cod", SP3_DATE)
+    acquired = _seed_exact_direct_sp3(str(tmp_path), product)
+    artifact = data.ArtifactIdentity._from_provenance(acquired.provenance)
+
+    with pytest.raises(ValueError, match="product SHA-256"):
+        data.sp3_merge_input_identity(
+            [replace(artifact, product_sha256="not-a-digest")]
+        )
+
+
+def test_merged_sp3_report_serialization_excludes_secrets_and_local_paths(tmp_path):
+    cache = str(tmp_path / "cache-with-secret-name")
+    product = data.mgex_sp3("cod", SP3_DATE)
+    _seed_exact_direct_sp3(cache, product)
+    _, report = data.fetch_merged_sp3(SP3_DATE, ["cod"], cache_dir=cache, offline=True)
+
+    serialized = json.dumps(report.to_dict(), sort_keys=True)
+    assert cache not in serialized
+    assert "authorization" not in serialized.lower()
+    assert "cookie" not in serialized.lower()
+    assert "temporary" not in serialized.lower()
+    assert "stable_input_identity" in serialized
 
 
 def test_ultra_sp3_candidates_include_current_primary_and_alternates():
@@ -538,6 +749,16 @@ def test_code_ultra_sp3_candidates_pin_primary_alternate_and_alias_urls():
         "COD0OPSULT_20261950000_02D_05M_ORB.SP3",
         "https://www.aiub.unibe.ch/download/CODE/COD0OPSULT.SP3",
     ]
+    alternate_identity = distribution._catalog_product_identity(candidates[1])
+    alias_identity = distribution._catalog_product_identity(candidates[2])
+    assert alternate_identity.span == "02D"
+    assert alternate_identity.official_filename.endswith("_02D_05M_ORB.SP3")
+    assert alias_identity.span == "01D"
+    assert alias_identity.official_filename.endswith("_01D_05M_ORB.SP3")
+    assert distribution._catalog_direct_location(candidates[2], alias_identity) == (
+        candidates[2].url,
+        "none",
+    )
 
 
 def test_aiub_download_follows_only_validated_object_store_redirect(monkeypatch):
@@ -571,13 +792,18 @@ def test_aiub_download_rejects_untrusted_redirect_target(monkeypatch):
 def test_ultra_sp3_primary_miss_uses_alternate(monkeypatch):
     calls = []
 
-    def fake_fetch(product, **_kwargs):
+    def fake_acquire(product, **_kwargs):
         calls.append(product.pattern)
         if product.pattern == "primary_02D_05M":
-            raise data.FileNotFoundOnArchive(product.archive_url())
-        return _core_sp3("COD0MGXFIN_20201770000_01D_05M_ORB.SP3")
+            raise distribution.ProductNotPublished(
+                404, product.archive_url(), "not published"
+            )
+        return distribution.AcquiredProduct(
+            _core_sp3("COD0MGXFIN_20201770000_01D_05M_ORB.SP3"),
+            _provenance_for_catalog_product(product),
+        )
 
-    monkeypatch.setattr(data, "fetch", fake_fetch)
+    monkeypatch.setattr(distribution, "_acquire_catalog_product", fake_acquire)
     result = data._fetch_center_sp3("esa_ult", dt.date(2026, 7, 13), None, {})
 
     assert result[0] == "ok"
@@ -588,11 +814,13 @@ def test_ultra_sp3_primary_miss_uses_alternate(monkeypatch):
 def test_ultra_sp3_all_variants_missing_records_absence(monkeypatch):
     calls = []
 
-    def fake_fetch(product, **_kwargs):
+    def fake_acquire(product, **_kwargs):
         calls.append(product.pattern)
-        raise data.FileNotFoundOnArchive(product.archive_url())
+        raise distribution.ProductNotPublished(
+            404, product.archive_url(), "not published"
+        )
 
-    monkeypatch.setattr(data, "fetch", fake_fetch)
+    monkeypatch.setattr(distribution, "_acquire_catalog_product", fake_acquire)
     result = data._fetch_center_sp3("esa_ult", dt.date(2026, 7, 13), None, {})
 
     assert result[0] == "absent"
@@ -612,7 +840,7 @@ def test_ultra_sp3_all_variants_missing_records_absence(monkeypatch):
 def test_fetch_merged_sp3_offline_records_absent_centers(tmp_path):
     cache = str(tmp_path)
     prod = data.mgex_sp3("cod", SP3_DATE)
-    _seed(cache, prod, _core_sp3("COD0MGXFIN_20201770000_01D_05M_ORB.SP3"))
+    _seed_exact_direct_sp3(cache, prod)
 
     # esa is requested but not cached: it must be reported absent, not abort.
     sp3, report = data.fetch_merged_sp3(
@@ -630,6 +858,20 @@ def test_fetch_merged_sp3_offline_empty_cache_raises_no_products(tmp_path):
     reasons = excinfo.value.reasons
     assert [r.center for r in reasons] == ["cod"]
     assert reasons[0].reason == "offline_miss"
+
+
+def test_fetch_merged_sp3_rejects_legacy_digest_only_cache(tmp_path):
+    product = data.mgex_sp3("cod", SP3_DATE)
+    _seed(
+        str(tmp_path),
+        product,
+        _core_sp3("COD0MGXFIN_20201770000_01D_05M_ORB.SP3"),
+    )
+
+    with pytest.raises(data.NoProducts) as excinfo:
+        data.fetch_merged_sp3(SP3_DATE, ["cod"], cache_dir=str(tmp_path), offline=True)
+
+    assert excinfo.value.reasons[0].reason == "offline_miss"
 
 
 def test_fetch_merged_sp3_unknown_center_raises(tmp_path):
@@ -652,7 +894,7 @@ def test_fetch_merged_sp3_file_offline_writes_single_contributor(tmp_path):
     cache = str(tmp_path / "cache")
     os.makedirs(cache)
     prod = data.mgex_sp3("cod", SP3_DATE)
-    _seed(cache, prod, _core_sp3("COD0MGXFIN_20201770000_01D_05M_ORB.SP3"))
+    _seed_exact_direct_sp3(cache, prod)
 
     out = str(tmp_path / "merged.sp3")
     written = data.fetch_merged_sp3_file(
@@ -663,6 +905,18 @@ def test_fetch_merged_sp3_file_offline_writes_single_contributor(tmp_path):
     # The written file is a standard SP3 the loader round-trips.
     reloaded = sidereon.load_sp3(out)
     assert isinstance(reloaded, sidereon.Sp3)
+
+    written_with_report, report = data.fetch_merged_sp3_file(
+        SP3_DATE,
+        ["cod"],
+        out,
+        offline=True,
+        cache_dir=cache,
+        return_report=True,
+    )
+    assert written_with_report == out
+    assert report.stable_input_identity is not None
+    assert report.contributors[0].artifact_identity is not None
 
 
 # --- cache behavior ------------------------------------------------------

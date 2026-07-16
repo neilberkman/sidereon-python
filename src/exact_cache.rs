@@ -42,7 +42,7 @@ fn cache_error(error: ExactCacheError) -> PyErr {
     }
 }
 
-fn source(value: &str) -> PyResult<DistributionSource> {
+pub(crate) fn source(value: &str) -> PyResult<DistributionSource> {
     match value {
         "direct" => Ok(DistributionSource::Direct),
         "nasa_cddis" => Ok(DistributionSource::NasaCddis),
@@ -52,7 +52,7 @@ fn source(value: &str) -> PyResult<DistributionSource> {
     }
 }
 
-fn identity(json: &str) -> PyResult<ProductIdentity> {
+pub(crate) fn identity(json: &str) -> PyResult<ProductIdentity> {
     let value: IdentityInput = serde_json::from_str(json).map_err(value_error)?;
     let mut date_parts = value.date.split('-');
     let year = date_parts
@@ -173,6 +173,11 @@ fn data_exact_cache_read<'py>(
     .map_err(cache_error)
 }
 
+#[pyfunction]
+fn data_validate_product_identity(identity_json: &str) -> PyResult<()> {
+    identity(identity_json).map(|_| ())
+}
+
 #[pymethods]
 impl PyExactProductCache {
     #[new]
@@ -244,6 +249,7 @@ impl PyExactProductCache {
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyExactProductCache>()?;
     m.add_function(wrap_pyfunction!(data_exact_cache_read, m)?)?;
+    m.add_function(wrap_pyfunction!(data_validate_product_identity, m)?)?;
     m.add(
         "_EXACT_CACHE_CONTROL_DIRECTORY",
         EXACT_CACHE_CONTROL_DIRECTORY,

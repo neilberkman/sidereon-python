@@ -179,6 +179,35 @@ class AbsentCenter:
     pattern: Optional[str] = ...
     url: Optional[str] = ...
     http_status: Optional[int] = ...
+    def to_dict(self) -> dict: ...
+
+@dataclass(frozen=True)
+class ArtifactIdentity:
+    requested_identity: ProductIdentity
+    resolved_identity: ProductIdentity
+    distribution_source: DistributionSource
+    official_filename: str
+    product_sha256: str
+    product_byte_length: int
+    archive_sha256: str
+    archive_byte_length: int
+    compression: str
+    def to_dict(self) -> dict: ...
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> ArtifactIdentity: ...
+
+@dataclass(frozen=True)
+class AcquisitionFacts:
+    retrieved_at: str
+    cache_hit: bool
+    original_url: Optional[str]
+    final_url: Optional[str]
+    etag: Optional[str]
+    last_modified: Optional[str]
+    attempts: tuple[SourceFailure, ...] = ...
+    def to_dict(self) -> dict: ...
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> AcquisitionFacts: ...
 
 @dataclass(frozen=True)
 class Contributor:
@@ -187,6 +216,9 @@ class Contributor:
     date: _dt.date
     issue: Optional[str]
     pattern: Optional[str] = ...
+    artifact_identity: Optional[ArtifactIdentity] = ...
+    acquisition_facts: Optional[AcquisitionFacts] = ...
+    def to_dict(self) -> dict: ...
 
 @dataclass
 class MergeReport:
@@ -196,6 +228,10 @@ class MergeReport:
     single_product: bool
     merged: bool
     merge_report: Optional[sidereon.Sp3MergeReport] = ...
+    stable_input_identity: Optional[str] = ...
+    input_identity_schema_version: Optional[int] = ...
+    merge_policy: Optional[dict] = ...
+    def to_dict(self) -> dict: ...
 
 @dataclass(frozen=True)
 class TerrainSourceEntry:
@@ -371,12 +407,17 @@ def fetch_merged_sp3(
     merge_options: Optional[sidereon.Sp3MergeOptions] = ...,
     **fetch_opts: object,
 ) -> tuple[sidereon.Sp3, MergeReport]: ...
+def sp3_merge_input_identity(
+    contributors: Sequence[ArtifactIdentity],
+    merge_options: Optional[sidereon.Sp3MergeOptions] = ...,
+) -> tuple[int, str]: ...
 def fetch_merged_sp3_file(
     target: Union[_dt.date, _dt.datetime],
     centers: Sequence[str],
     path: str,
     *,
     gzip: bool = ...,
+    return_report: bool = ...,
     cache_dir: Optional[str] = ...,
     offline: bool = ...,
     systems: Optional[Sequence[str]] = ...,
@@ -384,5 +425,5 @@ def fetch_merged_sp3_file(
     sample: Optional[str] = ...,
     merge_options: Optional[sidereon.Sp3MergeOptions] = ...,
     **fetch_opts: object,
-) -> str: ...
+) -> Union[str, tuple[str, MergeReport]]: ...
 def write_sp3(sp3: sidereon.Sp3, path: str, *, gzip: bool = ...) -> str: ...

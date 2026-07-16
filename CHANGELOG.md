@@ -25,8 +25,19 @@ All notable changes to the Sidereon Python interface are documented here.
   30 seconds.
 - Added the public `sidereon.exact_cache` module for native locked publication,
   locked and unlocked verified reads, and abandoned-entry cleanup.
+- Merged-SP3 reports now retain each contributor's exact artifact identity and
+  separate observational acquisition facts. Reports carry the core-backed,
+  versioned `stable_input_identity`; `fetch_merged_sp3_file(...,
+  return_report=True)` preserves the same report while writing the product.
+- Added `data.sp3_merge_input_identity` for deterministic, order-independent
+  identity of a complete verified artifact set and merge policy.
 
 ### Changed
+
+- Merged-SP3 acquisition now requires complete exact-cache provenance for every
+  contributor. A legacy path plus the older digest-only sidecar is no longer an
+  acceptable merged input; acquire it once through the exact path to populate
+  the transactional cache and the parsed SP3 format revision.
 
 - Updated `sidereon` and `sidereon-core` to 0.30.0. Full identity hashing now
   uses the same golden canonical key in all five interfaces.

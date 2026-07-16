@@ -54,7 +54,7 @@ import math as _math
 import os as _os
 import zlib as _zlib
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Iterable, Mapping, Optional, Sequence, Union
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -145,6 +145,17 @@ from sidereon._sidereon import (
 from sidereon._sidereon import (
     data_ultra_sp3_locations as _core_data_ultra_sp3_locations,
 )
+from sidereon._sidereon import (
+    sp3_merge_input_identity as _core_sp3_merge_input_identity,
+)
+
+if TYPE_CHECKING:
+    from sidereon.distribution import (
+        AcquisitionProvenance,
+        DistributionSource,
+        ProductIdentity,
+        SourceFailure,
+    )
 
 __all__ = [
     "DataError",
@@ -166,6 +177,8 @@ __all__ = [
     "NoProducts",
     "NoCoverage",
     "Product",
+    "ArtifactIdentity",
+    "AcquisitionFacts",
     "MergeReport",
     "TerrainSourceEntry",
     "SpaceWeatherSourceEntry",
@@ -208,6 +221,7 @@ __all__ = [
     "fetch_ionex",
     "fetch_merged_sp3",
     "fetch_merged_sp3_file",
+    "sp3_merge_input_identity",
     "write_sp3",
     "DistributionSource",
     "Distribution",
@@ -1878,6 +1892,170 @@ class AbsentCenter:
     url: Optional[str] = None
     http_status: Optional[int] = None
 
+    def to_dict(self) -> dict:
+        """Return the secret-free public absence record."""
+        return {
+            "center": self.center,
+            "filename": self.filename,
+            "reason": self.reason,
+            "pattern": self.pattern,
+            "url": self.url,
+            "http_status": self.http_status,
+        }
+
+
+@dataclass(frozen=True)
+class ArtifactIdentity:
+    """Stable identity of one exact, verified SP3 artifact.
+
+    Only reproducible fields belong here. Retrieval timestamps, HTTP metadata,
+    cache status, failures, credentials, and local paths are deliberately kept
+    in :class:`AcquisitionFacts` or omitted entirely.
+    """
+
+    requested_identity: "ProductIdentity"
+    resolved_identity: "ProductIdentity"
+    distribution_source: "DistributionSource"
+    official_filename: str
+    product_sha256: str
+    product_byte_length: int
+    archive_sha256: str
+    archive_byte_length: int
+    compression: str
+
+    @classmethod
+    def _from_provenance(
+        cls, provenance: "AcquisitionProvenance"
+    ) -> "ArtifactIdentity":
+        return cls(
+            requested_identity=provenance.requested_identity,
+            resolved_identity=provenance.resolved_identity,
+            distribution_source=provenance.distribution_source,
+            official_filename=provenance.official_filename,
+            product_sha256=provenance.sha256,
+            product_byte_length=provenance.byte_length,
+            archive_sha256=provenance.archive_sha256,
+            archive_byte_length=provenance.archive_byte_length,
+            compression=provenance.archive_compression,
+        )
+
+    def to_dict(self) -> dict:
+        """Return the complete, secret-free reproducible identity."""
+        return {
+            "schema_version": 1,
+            "requested_identity": self.requested_identity.to_dict(),
+            "resolved_identity": self.resolved_identity.to_dict(),
+            "distribution_source": self.distribution_source.value,
+            "official_filename": self.official_filename,
+            "product_sha256": self.product_sha256,
+            "product_byte_length": self.product_byte_length,
+            "archive_sha256": self.archive_sha256,
+            "archive_byte_length": self.archive_byte_length,
+            "compression": self.compression,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "ArtifactIdentity":
+        """Restore a persisted artifact identity for core verification."""
+        from sidereon import distribution
+
+        if int(str(value.get("schema_version", 0))) != 1:
+            raise ValueError("unsupported artifact identity schema version")
+        requested = value.get("requested_identity")
+        resolved = value.get("resolved_identity")
+        if not isinstance(requested, Mapping) or not isinstance(resolved, Mapping):
+            raise ValueError("artifact product identities must be mappings")
+        return cls(
+            requested_identity=distribution.ProductIdentity.from_dict(requested),
+            resolved_identity=distribution.ProductIdentity.from_dict(resolved),
+            distribution_source=distribution.DistributionSource(
+                str(value["distribution_source"])
+            ),
+            official_filename=str(value["official_filename"]),
+            product_sha256=str(value["product_sha256"]),
+            product_byte_length=int(str(value["product_byte_length"])),
+            archive_sha256=str(value["archive_sha256"]),
+            archive_byte_length=int(str(value["archive_byte_length"])),
+            compression=str(value["compression"]),
+        )
+
+
+@dataclass(frozen=True)
+class AcquisitionFacts:
+    """Secret-free observations about how one exact artifact was acquired."""
+
+    retrieved_at: str
+    cache_hit: bool
+    original_url: Optional[str]
+    final_url: Optional[str]
+    etag: Optional[str]
+    last_modified: Optional[str]
+    attempts: tuple["SourceFailure", ...] = ()
+
+    @classmethod
+    def _from_provenance(
+        cls, provenance: "AcquisitionProvenance"
+    ) -> "AcquisitionFacts":
+        return cls(
+            retrieved_at=provenance.retrieved_at,
+            cache_hit=provenance.cache_hit,
+            original_url=provenance.original_url,
+            final_url=provenance.final_url,
+            etag=provenance.etag,
+            last_modified=provenance.last_modified,
+            attempts=provenance.attempts,
+        )
+
+    def to_dict(self) -> dict:
+        """Return observations without credentials, cookies, or local paths."""
+        return {
+            "schema_version": 1,
+            "retrieved_at": self.retrieved_at,
+            "cache_hit": self.cache_hit,
+            "original_url": self.original_url,
+            "final_url": self.final_url,
+            "etag": self.etag,
+            "last_modified": self.last_modified,
+            "attempts": [attempt.to_dict() for attempt in self.attempts],
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "AcquisitionFacts":
+        """Restore persisted secret-free acquisition observations."""
+        from sidereon import distribution
+
+        if int(str(value.get("schema_version", 0))) != 1:
+            raise ValueError("unsupported acquisition facts schema version")
+        attempts = value.get("attempts", [])
+        if not isinstance(attempts, list):
+            raise ValueError("acquisition attempts must be a list")
+        if any(not isinstance(attempt, Mapping) for attempt in attempts):
+            raise ValueError("acquisition attempts must contain mappings")
+        cache_hit = value.get("cache_hit")
+        if not isinstance(cache_hit, bool):
+            raise ValueError("acquisition cache_hit must be a boolean")
+        return cls(
+            retrieved_at=str(value["retrieved_at"]),
+            cache_hit=cache_hit,
+            original_url=(
+                None
+                if value.get("original_url") is None
+                else str(value["original_url"])
+            ),
+            final_url=(
+                None if value.get("final_url") is None else str(value["final_url"])
+            ),
+            etag=None if value.get("etag") is None else str(value["etag"]),
+            last_modified=(
+                None
+                if value.get("last_modified") is None
+                else str(value["last_modified"])
+            ),
+            attempts=tuple(
+                distribution.SourceFailure.from_dict(attempt) for attempt in attempts
+            ),
+        )
+
 
 @dataclass(frozen=True)
 class Contributor:
@@ -1888,6 +2066,22 @@ class Contributor:
     date: _dt.date
     issue: Optional[str]
     pattern: Optional[str] = None
+    artifact_identity: Optional[ArtifactIdentity] = None
+    acquisition_facts: Optional[AcquisitionFacts] = None
+
+    def to_dict(self) -> dict:
+        """Return a complete, portable contributor record."""
+        if self.artifact_identity is None or self.acquisition_facts is None:
+            raise ValueError("SP3 contributor provenance is incomplete")
+        return {
+            "center": self.center,
+            "filename": self.filename,
+            "date": self.date.isoformat(),
+            "issue": self.issue,
+            "pattern": self.pattern,
+            "artifact_identity": self.artifact_identity.to_dict(),
+            "acquisition_facts": self.acquisition_facts.to_dict(),
+        }
 
 
 @dataclass
@@ -1905,6 +2099,48 @@ class MergeReport:
     single_product: bool
     merged: bool
     merge_report: Optional["sidereon.Sp3MergeReport"] = field(default=None)
+    stable_input_identity: Optional[str] = None
+    input_identity_schema_version: Optional[int] = None
+    merge_policy: Optional[dict] = None
+
+    def to_dict(self) -> dict:
+        """Return the public merge acquisition report as JSON-safe values."""
+        if (
+            self.stable_input_identity is None
+            or self.input_identity_schema_version is None
+            or self.merge_policy is None
+        ):
+            raise ValueError("merged-SP3 input identity is incomplete")
+        merge_summary = None
+        if self.merge_report is not None:
+            merge_summary = {
+                "frame_reconciliation_count": (
+                    self.merge_report.frame_reconciliation_count
+                ),
+                "quarantined_count": self.merge_report.quarantined_count,
+                "single_source_count": self.merge_report.single_source_count,
+                "position_outlier_count": self.merge_report.position_outlier_count,
+                "clock_outlier_count": self.merge_report.clock_outlier_count,
+                "agreement_count": self.merge_report.agreement_count,
+                "position_agreement_rms_m": self.merge_report.position_agreement_rms_m,
+                "position_agreement_max_m": self.merge_report.position_agreement_max_m,
+                "clock_agreement_rms_s": self.merge_report.clock_agreement_rms_s,
+                "clock_agreement_max_s": self.merge_report.clock_agreement_max_s,
+            }
+        return {
+            "schema_version": 1,
+            "contributors": [
+                contributor.to_dict() for contributor in self.contributors
+            ],
+            "absent": [center.to_dict() for center in self.absent],
+            "source_count": self.source_count,
+            "single_product": self.single_product,
+            "merged": self.merged,
+            "stable_input_identity": self.stable_input_identity,
+            "input_identity_schema_version": self.input_identity_schema_version,
+            "merge_policy": self.merge_policy,
+            "merge_report": merge_summary,
+        }
 
 
 def _ultra_center(center: str) -> bool:
@@ -1991,6 +2227,8 @@ def _fetch_center_sp3(
     sample: Optional[str],
     fetch_kwargs: dict,
 ):
+    from sidereon import distribution
+
     try:
         candidates = _sp3_candidates(center, target, sample)
     except UnsupportedProduct as exc:
@@ -2002,18 +2240,26 @@ def _fetch_center_sp3(
     for prod in candidates:
         filename = prod.canonical_filename()
         try:
-            path = fetch(prod, **fetch_kwargs)
-        except (FileNotFoundOnArchive, OfflineCacheMiss) as exc:
+            acquired = distribution._acquire_catalog_product(prod, **fetch_kwargs)
+        except (distribution.ProductNotPublished, OfflineCacheMiss) as exc:
             # Expected absence for this candidate; try the next. Integrity,
             # cache, and transport failures are real and propagate instead of
             # being silently recorded as an absent center.
             last = (prod, filename, exc)
             continue
-        sp3 = sidereon.load_sp3(path)
+        sp3 = sidereon.load_sp3(acquired.path)
+        artifact_identity = ArtifactIdentity._from_provenance(acquired.provenance)
+        acquisition_facts = AcquisitionFacts._from_provenance(acquired.provenance)
         return (
             "ok",
             Contributor(
-                center, filename, prod.date, prod.issue, prod.pattern or "canonical"
+                center,
+                filename,
+                prod.date,
+                prod.issue,
+                prod.pattern or "canonical",
+                artifact_identity,
+                acquisition_facts,
             ),
             sp3,
         )
@@ -2035,13 +2281,73 @@ def _fetch_center_sp3(
 def _reason_str(exc: DataError) -> str:
     if isinstance(exc, OfflineCacheMiss):
         return "offline_miss"
-    if isinstance(exc, FileNotFoundOnArchive):
+    if isinstance(exc, FileNotFoundOnArchive) or getattr(exc, "code", None) == (
+        "product_not_published"
+    ):
         return "candidate_not_found"
     if isinstance(exc, ChecksumMismatch):
         return "checksum"
     if isinstance(exc, HttpStatusError):
         return f"http_status:{exc.status}"
     return type(exc).__name__
+
+
+def sp3_merge_input_identity(
+    contributors: Sequence[ArtifactIdentity],
+    merge_options: Optional["sidereon.Sp3MergeOptions"] = None,
+) -> tuple[int, str]:
+    """Return ``(schema_version, stable_id)`` for exact inputs and merge policy.
+
+    Contributor order and mapping insertion order do not affect the result.
+    Observational acquisition facts are not accepted and therefore cannot
+    perturb the identity. The shared Rust core validates every complete
+    artifact record and fails closed on malformed or inconsistent provenance.
+    """
+    artifacts = list(contributors)
+    if not all(isinstance(item, ArtifactIdentity) for item in artifacts):
+        raise TypeError("contributors must contain ArtifactIdentity values")
+    encoded = [
+        _json.dumps(
+            item.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        for item in artifacts
+    ]
+    return _core_sp3_merge_input_identity(encoded, merge_options)
+
+
+def _merge_policy_to_dict(
+    merge_options: Optional["sidereon.Sp3MergeOptions"],
+    artifacts: Sequence[ArtifactIdentity],
+) -> dict:
+    options = merge_options or sidereon.Sp3MergeOptions()
+    outlier = options.outlier_reject
+    combine = options.combine.label
+    return {
+        "schema_version": 1,
+        "position_tolerance_m": options.position_tolerance_m,
+        "clock_tolerance_s": options.clock_tolerance_s,
+        "min_agree": options.min_agree,
+        "clock_min_common": options.clock_min_common,
+        "combine": combine,
+        "precedence_scope": options.precedence_scope.label,
+        "outlier_reject": (
+            None
+            if outlier is None
+            else {
+                "position_tolerance_m": outlier.position_tolerance_m,
+                "clock_tolerance_s": outlier.clock_tolerance_s,
+            }
+        ),
+        "target_epoch_interval_s": options.target_epoch_interval_s,
+        "systems": options.systems,
+        "asserted_frame_label_sets": options.asserted_frame_label_sets,
+        "helmert": options.helmert,
+        "precedence_artifact_sha256": (
+            [artifact.product_sha256 for artifact in artifacts]
+            if combine == "precedence"
+            else []
+        ),
+    }
 
 
 def fetch_merged_sp3(
@@ -2076,6 +2382,10 @@ def fetch_merged_sp3(
         _center_def(center)
 
     fetch_kwargs = dict(cache_dir=cache_dir, offline=offline, **fetch_opts)
+    if "max_compressed_bytes" in fetch_kwargs:
+        fetch_kwargs["max_archive_bytes"] = fetch_kwargs.pop("max_compressed_bytes")
+    if "max_decompressed_bytes" in fetch_kwargs:
+        fetch_kwargs["max_product_bytes"] = fetch_kwargs.pop("max_decompressed_bytes")
     results = [
         _fetch_center_sp3(center, target, sample, fetch_kwargs) for center in centers
     ]
@@ -2099,6 +2409,15 @@ def fetch_merged_sp3(
     except sidereon.SidereonError as exc:
         raise IncompatibleSources([c[1].center for c in contributors], exc) from exc
 
+    artifact_identities = []
+    for contributor in contributors:
+        artifact_identity = contributor[1].artifact_identity
+        if artifact_identity is None:  # pragma: no cover - internal invariant
+            raise UnsupportedProduct("SP3 contributor provenance is incomplete")
+        artifact_identities.append(artifact_identity)
+    input_identity_schema_version, stable_input_identity = sp3_merge_input_identity(
+        artifact_identities, options
+    )
     report = MergeReport(
         contributors=[c[1] for c in contributors],
         absent=absent,
@@ -2106,6 +2425,9 @@ def fetch_merged_sp3(
         single_product=len(contributors) == 1,
         merged=True,
         merge_report=merge_report,
+        stable_input_identity=stable_input_identity,
+        input_identity_schema_version=input_identity_schema_version,
+        merge_policy=_merge_policy_to_dict(options, artifact_identities),
     )
     return merged, report
 
@@ -2149,6 +2471,7 @@ def fetch_merged_sp3_file(
     path: str,
     *,
     gzip: bool = False,
+    return_report: bool = False,
     cache_dir: Optional[str] = None,
     offline: bool = False,
     systems: Optional[Sequence[str]] = None,
@@ -2156,13 +2479,15 @@ def fetch_merged_sp3_file(
     sample: Optional[str] = None,
     merge_options: Optional["sidereon.Sp3MergeOptions"] = None,
     **fetch_opts,
-) -> str:
+) -> Union[str, tuple[str, MergeReport]]:
     """Fetch the merged SP3 from several centers and persist it to ``path``.
 
     Composes :func:`fetch_merged_sp3` with :func:`write_sp3`. Returns the written
-    path. Nothing is written if the fetch/merge step raises.
+    path by default. Pass ``return_report=True`` to receive ``(path, report)``
+    and retain the exact contributor provenance and stable input identity.
+    Nothing is written if the fetch/merge step raises.
     """
-    merged, _report = fetch_merged_sp3(
+    merged, report = fetch_merged_sp3(
         target,
         centers,
         cache_dir=cache_dir,
@@ -2173,7 +2498,10 @@ def fetch_merged_sp3_file(
         merge_options=merge_options,
         **fetch_opts,
     )
-    return write_sp3(merged, path, gzip=gzip)
+    written = write_sp3(merged, path, gzip=gzip)
+    if return_report:
+        return written, report
+    return written
 
 
 def __getattr__(name: str):

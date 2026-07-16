@@ -606,6 +606,52 @@ def acquire(
     http_client: Optional[httpx.Client] = None,
 ) -> AcquiredProduct:
     """Acquire the exact product from only the ordered allowed distributors."""
+    return _acquire_impl(
+        exact_request,
+        cache_dir=cache_dir,
+        offline=offline,
+        earthdata_auth=earthdata_auth,
+        sha256=sha256,
+        timeout_s=timeout_s,
+        cache_lock_timeout_s=cache_lock_timeout_s,
+        retries=retries,
+        backoff_s=backoff_s,
+        max_archive_bytes=max_archive_bytes,
+        max_product_bytes=max_product_bytes,
+        http_client=http_client,
+        direct_location=None,
+    )
+
+
+def _acquire_catalog_product(
+    product: "_data.Product", **options: object
+) -> AcquiredProduct:
+    """Acquire one core-catalog candidate while retaining exact provenance."""
+    product_identity = _catalog_product_identity(product)
+    location = _catalog_direct_location(product, product_identity)
+    return _acquire_impl(
+        ProductRequest(product_identity, (Distribution.direct(),)),
+        direct_location=location,
+        **options,
+    )
+
+
+def _acquire_impl(
+    exact_request: ProductRequest,
+    *,
+    cache_dir: Optional[Union[str, os.PathLike[str]]] = None,
+    offline: bool = False,
+    earthdata_auth: Optional[EarthdataAuth] = None,
+    sha256: Optional[str] = None,
+    timeout_s: float = 30.0,
+    cache_lock_timeout_s: float = 30.0,
+    retries: int = 3,
+    backoff_s: float = 0.5,
+    max_archive_bytes: int = _DEFAULT_MAX_ARCHIVE_BYTES,
+    max_product_bytes: int = _DEFAULT_MAX_PRODUCT_BYTES,
+    http_client: Optional[httpx.Client] = None,
+    direct_location: Optional[tuple[str, str]],
+) -> AcquiredProduct:
     _validate_requested_identity(exact_request.identity)
     if retries < 1:
         raise ValueError("retries must be at least one")
@@ -671,6 +717,7 @@ def acquire(
                             http_client,
                             attempts,
                             exact_cache,
+                            direct_location,
                         )
                     except (_data.DataError, OSError) as caught:
                         error = _normalize_error(caught)
@@ -717,12 +764,16 @@ def _acquire_one(
     http_client: Optional[httpx.Client],
     attempts: Sequence[SourceFailure],
     exact_cache: _exact_cache.ExactCache,
+    direct_location: Optional[tuple[str, str]],
 ) -> AcquiredProduct:
     source = distributor.source
     if source is DistributionSource.DIRECT:
-        product = _product_from_identity(requested)
-        original_url = product.archive_url()
-        compression = product.archive_compression()
+        if direct_location is None:
+            product = _product_from_identity(requested)
+            original_url = product.archive_url()
+            compression = product.archive_compression()
+        else:
+            original_url, compression = direct_location
         download = _download_http(
             original_url,
             source,
@@ -811,8 +862,55 @@ def _product_from_identity(value: ProductIdentity) -> _data.Product:
         value.date,
         value.sample,
         issue=issue,
+        span=value.span,
         filename=value.official_filename,
     )
+
+
+def _catalog_product_identity(product: _data.Product) -> ProductIdentity:
+    try:
+        return identity(product)
+    except _data.DataError:
+        if not (product.pattern or "").startswith("alias_"):
+            raise ProductValidationFailure("invalid catalog product identity") from None
+        canonical = replace(
+            product,
+            filename=None,
+            cache_filename=None,
+            url=None,
+            compression=None,
+            span=None,
+            pattern=None,
+        )
+        return identity(canonical)
+
+
+def _catalog_direct_location(
+    product: _data.Product, product_identity: ProductIdentity
+) -> tuple[str, str]:
+    if product.url is None:
+        standard = _product_from_identity(product_identity)
+        return standard.archive_url(), standard.archive_compression()
+    if product.content != "sp3" or product.issue is None:
+        raise ProductValidationFailure("invalid catalog distribution location")
+    rows = _data._core_data_ultra_sp3_locations(
+        product.center,
+        product.date.year,
+        product.date.month,
+        product.date.day,
+        product.issue,
+    )
+    expected = (
+        product.pattern,
+        product.span,
+        product.sample,
+        product.filename,
+        product.url,
+        product.compression,
+    )
+    if expected not in rows:
+        raise ProductValidationFailure("invalid catalog distribution location")
+    return product.url, str(product.compression)
 
 
 def _validate_requested_identity(value: ProductIdentity) -> None:
@@ -820,6 +918,7 @@ def _validate_requested_identity(value: ProductIdentity) -> None:
     if not isinstance(value, ProductIdentity):
         raise ProductValidationFailure("invalid requested product identity")
     try:
+        _exact_cache.validate_identity(value)
         issue = value.issue if value.solution_class == "ultra_rapid" else None
         expected = identity(
             _data.Product(
@@ -828,6 +927,8 @@ def _validate_requested_identity(value: ProductIdentity) -> None:
                 value.date,
                 value.sample,
                 issue=issue,
+                span=value.span,
+                filename=value.official_filename,
             )
         )
     except (ValueError, TypeError, _data.DataError):

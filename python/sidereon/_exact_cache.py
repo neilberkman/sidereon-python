@@ -39,6 +39,11 @@ def _identity_json(identity) -> str:
     return json.dumps(identity.to_dict(), sort_keys=True, separators=(",", ":"))
 
 
+def validate_identity(identity) -> None:
+    """Validate a complete product identity with the shared Rust catalog."""
+    _sidereon.data_validate_product_identity(_identity_json(identity))
+
+
 def _files(value) -> CacheFiles:
     (
         product,

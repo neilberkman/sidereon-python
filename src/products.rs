@@ -11,19 +11,60 @@ use numpy::PyArray1;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyByteArray, PyBytes, PyModule};
+use serde::Deserialize;
 
 use sidereon_core::antex::{Antenna, AntennaKind, Antex, AntexDateTime};
 use sidereon_core::astro::time::civil::seconds_between_splits;
 use sidereon_core::astro::time::{Instant, InstantRepr};
 use sidereon_core::constants::J2000_JD;
+use sidereon_core::data::ArchiveCompression;
 use sidereon_core::ephemeris::{
     merge, MergeCombine, MergeFlag, MergeOptions, MergePrecedenceScope, MergeReport,
-    OutlierRejectOptions, Sp3FrameLabelSet, Sp3FrameReconciliation, Sp3FrameReconciliationOptions,
+    OutlierRejectOptions, Sp3ArtifactIdentity, Sp3FrameLabelSet, Sp3FrameReconciliation,
+    Sp3FrameReconciliationOptions, Sp3MergeInputIdentity,
 };
 use sidereon_core::GnssSystem;
 
 use crate::marshal::option_py_or_default;
 use crate::{np_array, to_antex_err, PySp3};
+
+#[derive(Deserialize)]
+struct Sp3ArtifactIdentityInput {
+    requested_identity: serde_json::Value,
+    resolved_identity: serde_json::Value,
+    distribution_source: String,
+    official_filename: String,
+    product_sha256: String,
+    product_byte_length: u64,
+    archive_sha256: String,
+    archive_byte_length: u64,
+    compression: String,
+}
+
+fn artifact_identity(json: &str) -> PyResult<Sp3ArtifactIdentity> {
+    let input: Sp3ArtifactIdentityInput =
+        serde_json::from_str(json).map_err(|error| PyValueError::new_err(error.to_string()))?;
+    let requested_json = serde_json::to_string(&input.requested_identity)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    let resolved_json = serde_json::to_string(&input.resolved_identity)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    let compression = match input.compression.as_str() {
+        "gzip" => ArchiveCompression::Gzip,
+        "none" => ArchiveCompression::None,
+        _ => return Err(PyValueError::new_err("unknown archive compression")),
+    };
+    Ok(Sp3ArtifactIdentity {
+        requested_identity: crate::exact_cache::identity(&requested_json)?,
+        resolved_identity: crate::exact_cache::identity(&resolved_json)?,
+        distribution_source: crate::exact_cache::source(&input.distribution_source)?,
+        official_filename: input.official_filename,
+        product_sha256: input.product_sha256,
+        product_byte_length: input.product_byte_length,
+        archive_sha256: input.archive_sha256,
+        archive_byte_length: input.archive_byte_length,
+        compression,
+    })
+}
 
 /// Receiver or satellite antenna block role.
 #[pyclass(module = "sidereon._sidereon", name = "AntennaKind", eq, eq_int)]
@@ -573,8 +614,8 @@ impl PySp3MergeOptions {
         asserted_frame_label_sets: Option<Vec<Vec<String>>>,
         helmert: bool,
     ) -> PyResult<Self> {
-        require_positive_finite("position_tolerance_m", position_tolerance_m)?;
-        require_positive_finite("clock_tolerance_s", clock_tolerance_s)?;
+        require_nonnegative_finite("position_tolerance_m", position_tolerance_m)?;
+        require_nonnegative_finite("clock_tolerance_s", clock_tolerance_s)?;
         if min_agree == 0 {
             return Err(PyValueError::new_err("min_agree must be at least 1"));
         }
@@ -1183,6 +1224,32 @@ fn merge_sp3(
     Ok((PySp3 { inner: merged }, report.into()))
 }
 
+/// Build the canonical identity of exact SP3 artifacts and merge controls.
+///
+/// Artifact JSON is an internal bridge format assembled by the typed Python
+/// data API. Validation and canonicalization are performed by the shared core.
+#[pyfunction]
+#[pyo3(signature = (artifacts_json, options=None))]
+fn sp3_merge_input_identity(
+    py: Python<'_>,
+    artifacts_json: Vec<String>,
+    options: Option<Py<PySp3MergeOptions>>,
+) -> PyResult<(u8, String)> {
+    let artifacts = artifacts_json
+        .iter()
+        .map(|value| artifact_identity(value))
+        .collect::<PyResult<Vec<_>>>()?;
+    let opts = option_py_or_default(
+        py,
+        options.as_ref(),
+        PySp3MergeOptions::to_core,
+        MergeOptions::default,
+    );
+    let identity = Sp3MergeInputIdentity::new(&artifacts, &opts)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    Ok((identity.schema_version, identity.stable_id))
+}
+
 fn require_finite(name: &str, value: f64) -> PyResult<()> {
     if value.is_finite() {
         Ok(())
@@ -1292,5 +1359,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySp3MergeReport>()?;
     m.add_function(wrap_pyfunction!(load_antex, m)?)?;
     m.add_function(wrap_pyfunction!(merge_sp3, m)?)?;
+    m.add_function(wrap_pyfunction!(sp3_merge_input_identity, m)?)?;
     Ok(())
 }
