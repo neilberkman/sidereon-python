@@ -15,6 +15,7 @@ import functools
 import gzip
 import hashlib
 import json
+import math
 import os
 import shutil
 from dataclasses import replace
@@ -956,6 +957,15 @@ def test_verify_merged_sp3_report_rejects_every_nested_schema_escape(tmp_path):
             "password", "secret"
         ),
         lambda value: value["merge_report"].__setitem__("secret", "value"),
+        lambda value: value["merge_report"]["agreement"].__setitem__(
+            "cookie", "secret"
+        ),
+        lambda value: value["merge_report"]["agreement"]["cells"][0].__setitem__(
+            "temporary_path", "/tmp/x"
+        ),
+        lambda value: value["merge_report"]["agreement"]["epochs"][0].__setitem__(
+            "authorization", "secret"
+        ),
         lambda value: value["absent"].append(
             {
                 "center": "gfz",
@@ -1000,7 +1010,12 @@ def test_verify_merged_sp3_report_rejects_every_nested_schema_escape(tmp_path):
         ),
         lambda value: value["merge_policy"].__setitem__("position_tolerance_m", 0),
         lambda value: value["merge_policy"].__setitem__("min_agree", 2.0),
-        lambda value: value["merge_report"].__setitem__("agreement_count", True),
+        lambda value: value["merge_report"]["agreement"]["cells"][0].__setitem__(
+            "position_members", 2.0
+        ),
+        lambda value: value["merge_report"]["agreement"]["epochs"][0].__setitem__(
+            "satellites", True
+        ),
         lambda value: value.__setitem__("input_identity_schema_version", "1"),
     ]
     for mutation in coercions:
@@ -1031,11 +1046,18 @@ def test_verify_merged_sp3_report_rejects_every_nested_schema_escape(tmp_path):
         lambda value: value["merge_policy"]["precedence_artifact_sha256"].__setitem__(
             0, "00" * 32
         ),
-        lambda value: value["merge_report"].__setitem__(
-            "position_agreement_rms_m", 2.0
+        lambda value: value["merge_report"]["agreement"].__setitem__(
+            "position_rms_m", 2.0
         ),
-        lambda value: value["merge_report"].__setitem__(
-            "position_agreement_max_m", -1.0
+        lambda value: value["merge_report"]["agreement"]["epochs"][0].__setitem__(
+            "position_max_m", -1.0
+        ),
+        lambda value: value["merge_report"]["agreement"]["cells"].reverse(),
+        lambda value: value["merge_report"]["agreement"]["cells"][0].__setitem__(
+            "satellite", "G33"
+        ),
+        lambda value: value["merge_report"]["agreement"]["cells"][0].__setitem__(
+            "jd_fraction", 1.000_001
         ),
         lambda value: value["contributors"][0]["acquisition_facts"].__setitem__(
             "original_url",
@@ -1045,6 +1067,470 @@ def test_verify_merged_sp3_report_rejects_every_nested_schema_escape(tmp_path):
     ]
     for mutation in inconsistencies:
         assert not data.verify_merge_report(changed(mutation))
+
+
+def test_verify_merged_sp3_report_rejects_unverifiable_summary_and_impossible_counts(
+    tmp_path,
+):
+    product = data.mgex_sp3("cod", SP3_DATE)
+    _seed_exact_direct_sp3(str(tmp_path), product)
+    _, report = data.fetch_merged_sp3(
+        SP3_DATE, ["cod"], cache_dir=str(tmp_path), offline=True
+    )
+    persisted = report.to_dict()
+    assert data.verify_merge_report(persisted)
+    assert data.verify_merge_report(json.loads(json.dumps(persisted)))
+
+    old_summary = copy.deepcopy(persisted)
+    old_summary["merge_report"] = {
+        "schema_version": 1,
+        "frame_reconciliation_count": 10**30,
+        "quarantined_count": 10**30,
+        "single_source_count": 10**30,
+        "position_outlier_count": 10**30,
+        "clock_outlier_count": 10**30,
+        "agreement_count": 10**30,
+        "position_agreement_rms_m": 0.0,
+        "position_agreement_max_m": 0.0,
+        "clock_agreement_rms_s": 0.0,
+        "clock_agreement_max_s": 0.0,
+    }
+    assert not data.verify_merge_report(old_summary)
+
+    impossible_outliers = copy.deepcopy(persisted)
+    impossible_outliers["merge_report"]["position_outliers"] = [
+        copy.deepcopy(impossible_outliers["merge_report"]["single_source"][0])
+    ]
+    impossible_outliers["merge_report"]["clock_outliers"] = [
+        copy.deepcopy(impossible_outliers["merge_report"]["single_source"][1])
+    ]
+    assert not data.verify_merge_report(impossible_outliers)
+
+    fabricated_dispersion = copy.deepcopy(persisted)
+    fabricated_dispersion["merge_report"]["agreement"]["position_rms_m"] = 1.0
+    fabricated_dispersion["merge_report"]["agreement"]["position_max_m"] = 1.0
+    assert not data.verify_merge_report(fabricated_dispersion)
+
+    missing_single_source_audit = copy.deepcopy(persisted)
+    missing_single_source_audit["merge_report"]["single_source"] = []
+    assert not data.verify_merge_report(missing_single_source_audit)
+
+
+def _persisted_artifacts(record):
+    return [
+        data.ArtifactIdentity.from_dict(contributor["artifact_identity"])
+        for contributor in record["contributors"]
+    ]
+
+
+def _rebind_persisted_merge_policy(record, options):
+    artifacts = _persisted_artifacts(record)
+    identity = data.sp3_merge_input_identity(artifacts, options)
+    record["merge_policy"] = data._merge_policy_to_dict(options, artifacts)
+    record["input_identity_schema_version"] = identity.schema_version
+    record["stable_input_identity"] = identity.stable_id
+
+
+def _single_source_merge_result(entries):
+    flags = []
+    cells = []
+    epochs = []
+    for satellite, jd_whole, jd_fraction in entries:
+        flags.append(
+            {
+                "satellite": satellite,
+                "jd_whole": jd_whole,
+                "jd_fraction": jd_fraction,
+                "sources": [0],
+            }
+        )
+        cells.append(
+            {
+                "satellite": satellite,
+                "jd_whole": jd_whole,
+                "jd_fraction": jd_fraction,
+                "position_members": 1,
+                "position_rms_m": 0.0,
+                "position_max_m": 0.0,
+                "clock_members": 1,
+                "clock_rms_s": 0.0,
+                "clock_max_s": 0.0,
+            }
+        )
+        epoch = {
+            "jd_whole": jd_whole,
+            "jd_fraction": jd_fraction,
+            "satellites": 0,
+            "position_rms_m": 0.0,
+            "position_max_m": 0.0,
+            "clock_rms_s": None,
+            "clock_max_s": None,
+        }
+        if not epochs or (jd_whole, jd_fraction) != (
+            epochs[-1]["jd_whole"],
+            epochs[-1]["jd_fraction"],
+        ):
+            epochs.append(epoch)
+    return {
+        "frame_reconciliations": [],
+        "quarantined": [],
+        "single_source": flags,
+        "position_outliers": [],
+        "clock_outliers": [],
+        "agreement": {
+            "position_rms_m": None,
+            "position_max_m": 0.0,
+            "clock_rms_s": None,
+            "clock_max_s": 0.0,
+            "cells": cells,
+            "epochs": epochs,
+        },
+    }
+
+
+def _two_source_merge_result(frame_reconciliations=None):
+    return {
+        "frame_reconciliations": frame_reconciliations or [],
+        "quarantined": [],
+        "single_source": [],
+        "position_outliers": [],
+        "clock_outliers": [],
+        "agreement": {
+            "position_rms_m": 0.0,
+            "position_max_m": 0.0,
+            "clock_rms_s": 0.0,
+            "clock_max_s": 0.0,
+            "cells": [
+                {
+                    "satellite": "G01",
+                    "jd_whole": 2_460_000.5,
+                    "jd_fraction": 0.5,
+                    "position_members": 2,
+                    "position_rms_m": 0.0,
+                    "position_max_m": 0.0,
+                    "clock_members": 2,
+                    "clock_rms_s": 0.0,
+                    "clock_max_s": 0.0,
+                }
+            ],
+            "epochs": [
+                {
+                    "jd_whole": 2_460_000.5,
+                    "jd_fraction": 0.5,
+                    "satellites": 1,
+                    "position_rms_m": 0.0,
+                    "position_max_m": 0.0,
+                    "clock_rms_s": 0.0,
+                    "clock_max_s": 0.0,
+                }
+            ],
+        },
+    }
+
+
+def test_verify_merged_sp3_report_checks_satellite_leap_and_epoch_grid_domains(
+    tmp_path,
+):
+    product = data.mgex_sp3("cod", SP3_DATE)
+    _seed_exact_direct_sp3(str(tmp_path), product)
+    _, report = data.fetch_merged_sp3(
+        SP3_DATE, ["cod"], cache_dir=str(tmp_path), offline=True
+    )
+    persisted = report.to_dict()
+
+    for satellite in ("G32", "R27", "E36", "C63", "J09", "I14", "S20", "S58"):
+        boundary = copy.deepcopy(persisted)
+        boundary["merge_report"] = _single_source_merge_result(
+            [(satellite, 2_457_753.5, 1.0)]
+        )
+        assert data.verify_merge_report(boundary)
+        assert data.verify_merge_report(json.loads(json.dumps(boundary)))
+
+    for satellite in (
+        "G00",
+        "G33",
+        "R28",
+        "E37",
+        "C64",
+        "J10",
+        "I15",
+        "S19",
+        "S59",
+        "G999",
+    ):
+        invalid = copy.deepcopy(persisted)
+        invalid["merge_report"] = _single_source_merge_result(
+            [(satellite, 2_460_000.5, 0.5)]
+        )
+        assert not data.verify_merge_report(invalid)
+
+    for jd_whole, jd_fraction in (
+        (2_460_000.5, 1.0),
+        (1_721_058.5, 0.5),
+        (5_373_484.5, 0.5),
+    ):
+        invalid = copy.deepcopy(persisted)
+        invalid["merge_report"] = _single_source_merge_result(
+            [("G01", jd_whole, jd_fraction)]
+        )
+        assert not data.verify_merge_report(invalid)
+
+    for jd_whole in (1_721_059.5, 5_373_483.5):
+        boundary = copy.deepcopy(persisted)
+        boundary["merge_report"] = _single_source_merge_result([("G01", jd_whole, 0.5)])
+        assert data.verify_merge_report(boundary)
+
+    aliased = copy.deepcopy(persisted)
+    aliased["merge_report"] = _single_source_merge_result(
+        [
+            ("G01", 2_457_753.5, 1.0),
+            ("G01", 2_457_754.5, 0.0),
+        ]
+    )
+    assert not data.verify_merge_report(aliased)
+
+    gridded = copy.deepcopy(persisted)
+    _rebind_persisted_merge_policy(
+        gridded, sidereon.Sp3MergeOptions(target_epoch_interval_s=300.0)
+    )
+    gridded["merge_report"] = _single_source_merge_result(
+        [("G01", 2_460_000.5, second / 86_400.0) for second in (11, 311, 611)]
+    )
+    assert data.verify_merge_report(gridded)
+
+    off_grid = copy.deepcopy(gridded)
+    off_grid["merge_report"] = _single_source_merge_result(
+        [("G01", 2_460_000.5, second / 86_400.0) for second in (11, 312, 611)]
+    )
+    assert not data.verify_merge_report(off_grid)
+
+
+def test_verify_merged_sp3_report_checks_frames_systems_and_precedence(tmp_path):
+    products = [data.mgex_sp3("cod", SP3_DATE), data.mgex_sp3("esa", SP3_DATE)]
+    payload = _sp3_payload()
+    archives = {
+        product.archive_url(): _archive_for_catalog_product(product, payload)
+        for product in products
+    }
+
+    def handler(request):
+        return httpx.Response(200, request=request, content=archives[str(request.url)])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        _, report = data.fetch_merged_sp3(
+            SP3_DATE,
+            ["cod", "esa"],
+            cache_dir=str(tmp_path),
+            http_client=client,
+        )
+    persisted = report.to_dict()
+
+    filtered = copy.deepcopy(persisted)
+    _rebind_persisted_merge_policy(filtered, sidereon.Sp3MergeOptions(systems=["G"]))
+    filtered["merge_report"] = _two_source_merge_result()
+    assert data.verify_merge_report(filtered)
+    filtered["merge_report"]["agreement"]["cells"][0]["satellite"] = "E01"
+    assert not data.verify_merge_report(filtered)
+
+    precedence = copy.deepcopy(persisted)
+    _rebind_persisted_merge_policy(
+        precedence,
+        sidereon.Sp3MergeOptions(combine="precedence", min_agree=1),
+    )
+    precedence["merge_report"] = _two_source_merge_result()
+    precedence["merge_report"]["agreement"]["cells"][0]["position_members"] = 1
+    precedence["merge_report"]["agreement"]["position_rms_m"] = None
+    precedence["merge_report"]["agreement"]["epochs"][0]["satellites"] = 0
+    precedence["merge_report"]["agreement"]["epochs"][0]["position_rms_m"] = 0.0
+    precedence["merge_report"]["position_outliers"] = [
+        {
+            "satellite": "G01",
+            "jd_whole": 2_460_000.5,
+            "jd_fraction": 0.5,
+            "sources": [1],
+        }
+    ]
+    assert data.verify_merge_report(precedence)
+    precedence["merge_report"]["position_outliers"][0]["sources"] = [0]
+    assert not data.verify_merge_report(precedence)
+
+    asserted = copy.deepcopy(persisted)
+    _rebind_persisted_merge_policy(
+        asserted,
+        sidereon.Sp3MergeOptions(asserted_frame_label_sets=[["IGS14", "ITRF2"]]),
+    )
+    asserted_frame = {
+        "source_index": 1,
+        "source_label": "ITRF2",
+        "target_label": "IGS14",
+        "method": "asserted_equivalence",
+        "asserted_label_set": ["IGS14", "ITRF2"],
+        "source_frame": None,
+        "target_frame": None,
+        "catalog_source_frame": None,
+        "catalog_target_frame": None,
+        "catalog_inverse": False,
+        "reference_epoch_year": None,
+        "parameters": None,
+        "rates": None,
+        "provenance": None,
+        "epoch_year_span": None,
+        "records_affected": 1,
+        "identity": True,
+    }
+    asserted["merge_report"] = _two_source_merge_result([asserted_frame])
+    assert data.verify_merge_report(asserted)
+    bad_assertion = copy.deepcopy(asserted)
+    bad_assertion["merge_report"]["frame_reconciliations"][0]["catalog_inverse"] = True
+    assert not data.verify_merge_report(bad_assertion)
+
+    catalog = sidereon.frame_catalog_entry("ITRF2014", "ITRF2008")
+    helmert = copy.deepcopy(persisted)
+    _rebind_persisted_merge_policy(helmert, sidereon.Sp3MergeOptions(helmert=True))
+    helmert_frame = {
+        "source_index": 1,
+        "source_label": "ITRF2008",
+        "target_label": "ITRF2014",
+        "method": "helmert",
+        "asserted_label_set": None,
+        "source_frame": "ITRF2008",
+        "target_frame": "ITRF2014",
+        "catalog_source_frame": "ITRF2014",
+        "catalog_target_frame": "ITRF2008",
+        "catalog_inverse": True,
+        "reference_epoch_year": catalog.reference_epoch_year,
+        "parameters": {
+            "translation_mm": catalog.parameters.translation_mm.tolist(),
+            "scale_ppb": catalog.parameters.scale_ppb,
+            "rotation_mas": catalog.parameters.rotation_mas.tolist(),
+        },
+        "rates": {
+            "translation_mm_per_year": catalog.rates.translation_mm_per_year.tolist(),
+            "scale_ppb_per_year": catalog.rates.scale_ppb_per_year,
+            "rotation_mas_per_year": catalog.rates.rotation_mas_per_year.tolist(),
+        },
+        "provenance": catalog.provenance,
+        "epoch_year_span": [2020.0, 2020.0],
+        "records_affected": 1,
+        "identity": False,
+    }
+    helmert["merge_report"] = _two_source_merge_result([helmert_frame])
+    assert data.verify_merge_report(helmert)
+    assert data.verify_merge_report(json.loads(json.dumps(helmert)))
+    invalid_helmert = []
+    for span in ([-1.0, 2020.0], [2020.0, 10_000.0]):
+        invalid = copy.deepcopy(helmert)
+        invalid["merge_report"]["frame_reconciliations"][0]["epoch_year_span"] = span
+        invalid_helmert.append(invalid)
+    bad_catalog = copy.deepcopy(helmert)
+    bad_catalog["merge_report"]["frame_reconciliations"][0]["parameters"][
+        "scale_ppb"
+    ] += 1.0
+    invalid_helmert.append(bad_catalog)
+    assert all(not data.verify_merge_report(value) for value in invalid_helmert)
+
+
+def test_verify_merged_sp3_report_checks_dispersion_numeric_invariants(tmp_path):
+    products = [
+        data.mgex_sp3(center, SP3_DATE, sample="05M")
+        for center in ("cod", "esa", "gfz")
+    ]
+    payload = _sp3_payload()
+    archives = {
+        product.archive_url(): _archive_for_catalog_product(product, payload)
+        for product in products
+    }
+
+    def handler(request):
+        return httpx.Response(200, request=request, content=archives[str(request.url)])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        _, report = data.fetch_merged_sp3(
+            SP3_DATE,
+            ["cod", "esa", "gfz"],
+            sample="05M",
+            cache_dir=str(tmp_path),
+            http_client=client,
+        )
+    persisted = report.to_dict()
+
+    def with_position_metric(members, rms, maximum):
+        value = copy.deepcopy(persisted)
+        result = _two_source_merge_result()
+        cell = result["agreement"]["cells"][0]
+        epoch = result["agreement"]["epochs"][0]
+        cell["position_members"] = members
+        cell["position_rms_m"] = rms
+        cell["position_max_m"] = maximum
+        result["agreement"]["position_rms_m"] = rms
+        result["agreement"]["position_max_m"] = maximum
+        epoch["position_rms_m"] = rms
+        epoch["position_max_m"] = maximum
+        value["merge_report"] = result
+        return value
+
+    impossible = with_position_metric(2, 0.0, 0.2)
+    assert not data.verify_merge_report(impossible)
+
+    underflow = with_position_metric(2, 0.0, 1.0e-300)
+    assert data.verify_merge_report(underflow)
+
+    square = 0.3 * 0.3
+    equal_distance_rms = math.sqrt((square + square + square) / 3)
+    assert equal_distance_rms > 0.3
+    rounded = with_position_metric(3, equal_distance_rms, 0.3)
+    assert data.verify_merge_report(rounded)
+
+    precedence = with_position_metric(2, 0.8, 0.8)
+    _rebind_persisted_merge_policy(
+        precedence,
+        sidereon.Sp3MergeOptions(
+            combine="precedence",
+            position_tolerance_m=1.0,
+            clock_tolerance_s=1.0,
+        ),
+    )
+    assert not data.verify_merge_report(precedence)
+
+    odd_median_clock = with_position_metric(3, 0.0, 0.0)
+    clock_cell = odd_median_clock["merge_report"]["agreement"]["cells"][0]
+    clock_epoch = odd_median_clock["merge_report"]["agreement"]["epochs"][0]
+    clock_cell["clock_members"] = 3
+    clock_cell["clock_rms_s"] = 0.8
+    clock_cell["clock_max_s"] = 0.8
+    odd_median_clock["merge_report"]["agreement"]["clock_rms_s"] = 0.8
+    odd_median_clock["merge_report"]["agreement"]["clock_max_s"] = 0.8
+    clock_epoch["clock_rms_s"] = 0.8
+    clock_epoch["clock_max_s"] = 0.8
+    _rebind_persisted_merge_policy(
+        odd_median_clock,
+        sidereon.Sp3MergeOptions(
+            combine="median",
+            position_tolerance_m=1.0,
+            clock_tolerance_s=1.0,
+        ),
+    )
+    assert not data.verify_merge_report(odd_median_clock)
+
+    huge_tolerance = with_position_metric(3, 0.0, 0.0)
+    _rebind_persisted_merge_policy(
+        huge_tolerance,
+        sidereon.Sp3MergeOptions(
+            combine="median",
+            position_tolerance_m=1.0e308,
+            clock_tolerance_s=1.0e308,
+        ),
+    )
+    assert data.verify_merge_report(huge_tolerance)
+
+    large = 9.0e153
+    overflow = with_position_metric(2, large, large)
+    first_cell = overflow["merge_report"]["agreement"]["cells"][0]
+    second_cell = copy.deepcopy(first_cell)
+    second_cell["satellite"] = "G02"
+    overflow["merge_report"]["agreement"]["cells"].append(second_cell)
+    overflow["merge_report"]["agreement"]["epochs"][0]["satellites"] = 2
+    assert not data.verify_merge_report(overflow)
 
 
 def test_verify_merged_sp3_report_accepts_exact_absent_center_partition(tmp_path):

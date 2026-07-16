@@ -19,9 +19,9 @@ use sidereon_core::astro::time::{Instant, InstantRepr};
 use sidereon_core::constants::J2000_JD;
 use sidereon_core::data::ArchiveCompression;
 use sidereon_core::ephemeris::{
-    merge, MergeCombine, MergeFlag, MergeOptions, MergePrecedenceScope, MergeReport,
-    OutlierRejectOptions, Sp3ArtifactIdentity, Sp3FrameLabelSet, Sp3FrameReconciliation,
-    Sp3FrameReconciliationOptions, Sp3MergeInputIdentity,
+    merge, AgreementMetric, EpochAgreement, MergeCombine, MergeFlag, MergeOptions,
+    MergePrecedenceScope, MergeReport, OutlierRejectOptions, Sp3ArtifactIdentity, Sp3FrameLabelSet,
+    Sp3FrameReconciliation, Sp3FrameReconciliationOptions, Sp3MergeInputIdentity,
 };
 use sidereon_core::GnssSystem;
 
@@ -776,6 +776,8 @@ impl PySp3MergeOptions {
 #[derive(Clone)]
 pub struct PySp3MergeFlag {
     epoch_j2000_seconds: f64,
+    jd_whole: f64,
+    jd_fraction: f64,
     satellite: String,
     sources: Vec<usize>,
 }
@@ -786,6 +788,18 @@ impl PySp3MergeFlag {
     #[getter]
     fn epoch_j2000_seconds(&self) -> f64 {
         self.epoch_j2000_seconds
+    }
+
+    /// Canonical half-integer Julian day containing the flagged epoch.
+    #[getter]
+    fn jd_whole(&self) -> f64 {
+        self.jd_whole
+    }
+
+    /// Fraction within `jd_whole`, retaining the leap-second boundary value 1.0.
+    #[getter]
+    fn jd_fraction(&self) -> f64 {
+        self.jd_fraction
     }
 
     /// Satellite token, for example `G01`.
@@ -808,9 +822,145 @@ impl PySp3MergeFlag {
     }
 }
 
-/// One per-epoch agreement aggregate as a flat tuple:
-/// `(epoch_j2000_seconds, multi_source_satellites, position_rms_m,
-/// position_max_m, clock_rms_s, clock_max_s)`.
+/// Per-(epoch, satellite) agreement statistics for one accepted merge cell.
+#[pyclass(module = "sidereon._sidereon", name = "Sp3AgreementMetric")]
+#[derive(Clone)]
+pub struct PySp3AgreementMetric {
+    jd_whole: f64,
+    jd_fraction: f64,
+    satellite: String,
+    position_members: usize,
+    position_rms_m: f64,
+    position_max_m: f64,
+    clock_members: usize,
+    clock_rms_s: Option<f64>,
+    clock_max_s: Option<f64>,
+}
+
+#[pymethods]
+impl PySp3AgreementMetric {
+    #[getter]
+    fn jd_whole(&self) -> f64 {
+        self.jd_whole
+    }
+
+    #[getter]
+    fn jd_fraction(&self) -> f64 {
+        self.jd_fraction
+    }
+
+    #[getter]
+    fn satellite(&self) -> String {
+        self.satellite.clone()
+    }
+
+    #[getter]
+    fn position_members(&self) -> usize {
+        self.position_members
+    }
+
+    #[getter]
+    fn position_rms_m(&self) -> f64 {
+        self.position_rms_m
+    }
+
+    #[getter]
+    fn position_max_m(&self) -> f64 {
+        self.position_max_m
+    }
+
+    #[getter]
+    fn clock_members(&self) -> usize {
+        self.clock_members
+    }
+
+    #[getter]
+    fn clock_rms_s(&self) -> Option<f64> {
+        self.clock_rms_s
+    }
+
+    #[getter]
+    fn clock_max_s(&self) -> Option<f64> {
+        self.clock_max_s
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Sp3AgreementMetric(satellite={:?}, jd_whole={}, jd_fraction={}, position_members={}, clock_members={})",
+            self.satellite,
+            self.jd_whole,
+            self.jd_fraction,
+            self.position_members,
+            self.clock_members,
+        )
+    }
+}
+
+/// Per-epoch aggregate of accepted multi-source agreement metrics.
+#[pyclass(module = "sidereon._sidereon", name = "Sp3EpochAgreement")]
+#[derive(Clone)]
+pub struct PySp3EpochAgreement {
+    epoch_j2000_seconds: f64,
+    jd_whole: f64,
+    jd_fraction: f64,
+    satellites: usize,
+    position_rms_m: f64,
+    position_max_m: f64,
+    clock_rms_s: Option<f64>,
+    clock_max_s: Option<f64>,
+}
+
+#[pymethods]
+impl PySp3EpochAgreement {
+    #[getter]
+    fn epoch_j2000_seconds(&self) -> f64 {
+        self.epoch_j2000_seconds
+    }
+
+    #[getter]
+    fn jd_whole(&self) -> f64 {
+        self.jd_whole
+    }
+
+    #[getter]
+    fn jd_fraction(&self) -> f64 {
+        self.jd_fraction
+    }
+
+    #[getter]
+    fn satellites(&self) -> usize {
+        self.satellites
+    }
+
+    #[getter]
+    fn position_rms_m(&self) -> f64 {
+        self.position_rms_m
+    }
+
+    #[getter]
+    fn position_max_m(&self) -> f64 {
+        self.position_max_m
+    }
+
+    #[getter]
+    fn clock_rms_s(&self) -> Option<f64> {
+        self.clock_rms_s
+    }
+
+    #[getter]
+    fn clock_max_s(&self) -> Option<f64> {
+        self.clock_max_s
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Sp3EpochAgreement(jd_whole={}, jd_fraction={}, satellites={})",
+            self.jd_whole, self.jd_fraction, self.satellites,
+        )
+    }
+}
+
+/// Backward-compatible flat per-epoch aggregate tuple.
 type EpochAgreementTuple = (f64, usize, f64, f64, Option<f64>, Option<f64>);
 
 /// Published Helmert parameters as `(translation_mm, scale_ppb, rotation_mas)`.
@@ -971,12 +1121,12 @@ pub struct PySp3MergeReport {
     single_source: Vec<PySp3MergeFlag>,
     position_outliers: Vec<PySp3MergeFlag>,
     clock_outliers: Vec<PySp3MergeFlag>,
-    agreement_count: usize,
+    agreement: Vec<PySp3AgreementMetric>,
     position_agreement_rms_m: Option<f64>,
     position_agreement_max_m: Option<f64>,
     clock_agreement_rms_s: Option<f64>,
     clock_agreement_max_s: Option<f64>,
-    per_epoch_agreement: Vec<EpochAgreementTuple>,
+    agreement_epochs: Vec<PySp3EpochAgreement>,
 }
 
 #[pymethods]
@@ -1041,7 +1191,13 @@ impl PySp3MergeReport {
     /// (epoch, satellite) written to the merged product).
     #[getter]
     fn agreement_count(&self) -> usize {
-        self.agreement_count
+        self.agreement.len()
+    }
+
+    /// Per-cell agreement records in canonical output (epoch, satellite) order.
+    #[getter]
+    fn agreement(&self) -> Vec<PySp3AgreementMetric> {
+        self.agreement.clone()
     }
 
     /// Member-count-weighted pooled RMS of the per-cell position dispersion over
@@ -1076,7 +1232,25 @@ impl PySp3MergeReport {
     /// position_max_m, clock_rms_s, clock_max_s)`.
     #[getter]
     fn per_epoch_agreement(&self) -> Vec<EpochAgreementTuple> {
-        self.per_epoch_agreement.clone()
+        self.agreement_epochs
+            .iter()
+            .map(|epoch| {
+                (
+                    epoch.epoch_j2000_seconds,
+                    epoch.satellites,
+                    epoch.position_rms_m,
+                    epoch.position_max_m,
+                    epoch.clock_rms_s,
+                    epoch.clock_max_s,
+                )
+            })
+            .collect()
+    }
+
+    /// Per-epoch aggregates with an exact split Julian-date epoch.
+    #[getter]
+    fn agreement_epochs(&self) -> Vec<PySp3EpochAgreement> {
+        self.agreement_epochs.clone()
     }
 
     fn __repr__(&self) -> String {
@@ -1088,7 +1262,7 @@ impl PySp3MergeReport {
             self.single_source.len(),
             self.position_outliers.len(),
             self.clock_outliers.len(),
-            self.agreement_count,
+            self.agreement.len(),
         )
     }
 }
@@ -1099,19 +1273,10 @@ impl From<MergeReport> for PySp3MergeReport {
         let position_agreement_max_m = value.position_agreement_max_m();
         let clock_agreement_rms_s = value.clock_agreement_rms_s();
         let clock_agreement_max_s = value.clock_agreement_max_s();
-        let per_epoch_agreement = value
+        let agreement_epochs = value
             .per_epoch_agreement()
             .into_iter()
-            .map(|e| {
-                (
-                    instant_to_j2000_seconds(&e.epoch).unwrap_or(f64::NAN),
-                    e.satellites,
-                    e.position_rms_m,
-                    e.position_max_m,
-                    e.clock_rms_s,
-                    e.clock_max_s,
-                )
-            })
+            .map(PySp3EpochAgreement::from)
             .collect();
         Self {
             frame_reconciliations: value
@@ -1139,12 +1304,16 @@ impl From<MergeReport> for PySp3MergeReport {
                 .into_iter()
                 .map(PySp3MergeFlag::from)
                 .collect(),
-            agreement_count: value.agreement.len(),
+            agreement: value
+                .agreement
+                .into_iter()
+                .map(PySp3AgreementMetric::from)
+                .collect(),
             position_agreement_rms_m,
             position_agreement_max_m,
             clock_agreement_rms_s,
             clock_agreement_max_s,
-            per_epoch_agreement,
+            agreement_epochs,
         }
     }
 }
@@ -1194,10 +1363,46 @@ impl From<Sp3FrameReconciliation> for PySp3FrameReconciliation {
 
 impl From<MergeFlag> for PySp3MergeFlag {
     fn from(value: MergeFlag) -> Self {
+        let (jd_whole, jd_fraction) = instant_split(&value.epoch);
         Self {
             epoch_j2000_seconds: instant_to_j2000_seconds(&value.epoch).unwrap_or(f64::NAN),
+            jd_whole,
+            jd_fraction,
             satellite: value.satellite.to_string(),
             sources: value.sources,
+        }
+    }
+}
+
+impl From<AgreementMetric> for PySp3AgreementMetric {
+    fn from(value: AgreementMetric) -> Self {
+        let (jd_whole, jd_fraction) = instant_split(&value.epoch);
+        Self {
+            jd_whole,
+            jd_fraction,
+            satellite: value.satellite.to_string(),
+            position_members: value.position_members,
+            position_rms_m: value.position_rms_m,
+            position_max_m: value.position_max_m,
+            clock_members: value.clock_members,
+            clock_rms_s: value.clock_rms_s,
+            clock_max_s: value.clock_max_s,
+        }
+    }
+}
+
+impl From<EpochAgreement> for PySp3EpochAgreement {
+    fn from(value: EpochAgreement) -> Self {
+        let (jd_whole, jd_fraction) = instant_split(&value.epoch);
+        Self {
+            epoch_j2000_seconds: instant_to_j2000_seconds(&value.epoch).unwrap_or(f64::NAN),
+            jd_whole,
+            jd_fraction,
+            satellites: value.satellites,
+            position_rms_m: value.position_rms_m,
+            position_max_m: value.position_max_m,
+            clock_rms_s: value.clock_rms_s,
+            clock_max_s: value.clock_max_s,
         }
     }
 }
@@ -1385,6 +1590,13 @@ fn instant_to_j2000_seconds(epoch: &Instant) -> Option<f64> {
     }
 }
 
+fn instant_split(epoch: &Instant) -> (f64, f64) {
+    match epoch.repr {
+        InstantRepr::JulianDate(jd) => (jd.jd_whole, jd.fraction),
+        InstantRepr::Nanos(_) => (f64::NAN, f64::NAN),
+    }
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAntennaKind>()?;
     m.add_class::<PyAntexDateTime>()?;
@@ -1395,6 +1607,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySp3OutlierRejectOptions>()?;
     m.add_class::<PySp3MergeOptions>()?;
     m.add_class::<PySp3MergeFlag>()?;
+    m.add_class::<PySp3AgreementMetric>()?;
+    m.add_class::<PySp3EpochAgreement>()?;
     m.add_class::<PySp3FrameReconciliation>()?;
     m.add_class::<PySp3MergeReport>()?;
     m.add_function(wrap_pyfunction!(load_antex, m)?)?;

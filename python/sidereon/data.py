@@ -2252,6 +2252,111 @@ class Contributor:
         }
 
 
+def _merge_flag_to_dict(flag: "sidereon.Sp3MergeFlag") -> dict:
+    return {
+        "satellite": flag.satellite,
+        "jd_whole": flag.jd_whole,
+        "jd_fraction": flag.jd_fraction,
+        "sources": flag.sources,
+    }
+
+
+def _transform_to_dict(
+    transform: Optional[tuple[list[float], float, list[float]]],
+    *,
+    rates: bool,
+) -> Optional[dict]:
+    if transform is None:
+        return None
+    translation, scale, rotation = transform
+    if rates:
+        return {
+            "translation_mm_per_year": translation,
+            "scale_ppb_per_year": scale,
+            "rotation_mas_per_year": rotation,
+        }
+    return {
+        "translation_mm": translation,
+        "scale_ppb": scale,
+        "rotation_mas": rotation,
+    }
+
+
+def _frame_reconciliation_to_dict(
+    reconciliation: "sidereon.Sp3FrameReconciliation",
+) -> dict:
+    span = reconciliation.epoch_year_span
+    return {
+        "source_index": reconciliation.source_index,
+        "source_label": reconciliation.source_label,
+        "target_label": reconciliation.target_label,
+        "method": reconciliation.method,
+        "asserted_label_set": reconciliation.asserted_label_set,
+        "source_frame": reconciliation.source_frame,
+        "target_frame": reconciliation.target_frame,
+        "catalog_source_frame": reconciliation.catalog_source_frame,
+        "catalog_target_frame": reconciliation.catalog_target_frame,
+        "catalog_inverse": reconciliation.catalog_inverse,
+        "reference_epoch_year": reconciliation.reference_epoch_year,
+        "parameters": _transform_to_dict(reconciliation.parameters, rates=False),
+        "rates": _transform_to_dict(reconciliation.rates, rates=True),
+        "provenance": reconciliation.provenance,
+        "epoch_year_span": None if span is None else list(span),
+        "records_affected": reconciliation.records_affected,
+        "identity": reconciliation.identity,
+    }
+
+
+def _agreement_cell_to_dict(metric: "sidereon.Sp3AgreementMetric") -> dict:
+    return {
+        "satellite": metric.satellite,
+        "jd_whole": metric.jd_whole,
+        "jd_fraction": metric.jd_fraction,
+        "position_members": metric.position_members,
+        "position_rms_m": metric.position_rms_m,
+        "position_max_m": metric.position_max_m,
+        "clock_members": metric.clock_members,
+        "clock_rms_s": metric.clock_rms_s,
+        "clock_max_s": metric.clock_max_s,
+    }
+
+
+def _agreement_epoch_to_dict(epoch: "sidereon.Sp3EpochAgreement") -> dict:
+    return {
+        "jd_whole": epoch.jd_whole,
+        "jd_fraction": epoch.jd_fraction,
+        "satellites": epoch.satellites,
+        "position_rms_m": epoch.position_rms_m,
+        "position_max_m": epoch.position_max_m,
+        "clock_rms_s": epoch.clock_rms_s,
+        "clock_max_s": epoch.clock_max_s,
+    }
+
+
+def _merge_result_to_dict(report: "sidereon.Sp3MergeReport") -> dict:
+    return {
+        "frame_reconciliations": [
+            _frame_reconciliation_to_dict(item) for item in report.frame_reconciliations
+        ],
+        "quarantined": [_merge_flag_to_dict(item) for item in report.quarantined],
+        "single_source": [_merge_flag_to_dict(item) for item in report.single_source],
+        "position_outliers": [
+            _merge_flag_to_dict(item) for item in report.position_outliers
+        ],
+        "clock_outliers": [_merge_flag_to_dict(item) for item in report.clock_outliers],
+        "agreement": {
+            "position_rms_m": report.position_agreement_rms_m,
+            "position_max_m": report.position_agreement_max_m,
+            "clock_rms_s": report.clock_agreement_rms_s,
+            "clock_max_s": report.clock_agreement_max_s,
+            "cells": [_agreement_cell_to_dict(item) for item in report.agreement],
+            "epochs": [
+                _agreement_epoch_to_dict(item) for item in report.agreement_epochs
+            ],
+        },
+    }
+
+
 @dataclass
 class MergeReport:
     """Audit report for a merged SP3 fetch.
@@ -2280,23 +2385,8 @@ class MergeReport:
             or self.merge_policy is None
         ):
             raise ValueError("merged-SP3 input identity is incomplete")
-        merge_summary = None
-        if self.merge_report is not None:
-            merge_summary = {
-                "schema_version": 1,
-                "frame_reconciliation_count": (
-                    self.merge_report.frame_reconciliation_count
-                ),
-                "quarantined_count": self.merge_report.quarantined_count,
-                "single_source_count": self.merge_report.single_source_count,
-                "position_outlier_count": self.merge_report.position_outlier_count,
-                "clock_outlier_count": self.merge_report.clock_outlier_count,
-                "agreement_count": self.merge_report.agreement_count,
-                "position_agreement_rms_m": self.merge_report.position_agreement_rms_m,
-                "position_agreement_max_m": self.merge_report.position_agreement_max_m,
-                "clock_agreement_rms_s": self.merge_report.clock_agreement_rms_s,
-                "clock_agreement_max_s": self.merge_report.clock_agreement_max_s,
-            }
+        if self.merge_report is None:
+            raise ValueError("merged-SP3 result audit is incomplete")
         return {
             "schema_version": 1,
             "contributors": [
@@ -2310,7 +2400,7 @@ class MergeReport:
             "stable_input_identity": self.stable_input_identity,
             "input_identity_schema_version": self.input_identity_schema_version,
             "merge_policy": self.merge_policy,
-            "merge_report": merge_summary,
+            "merge_report": _merge_result_to_dict(self.merge_report),
         }
 
 
@@ -2590,7 +2680,10 @@ def _merge_options_from_policy(value: Mapping[str, object]):
     if systems is not None:
         if type(systems) is not list or not systems:
             raise ValueError("invalid merged-SP3 systems policy")
-        if any(type(system) is not str or not system for system in systems):
+        if any(
+            type(system) is not str or system not in {"G", "R", "E", "C", "J", "I", "S"}
+            for system in systems
+        ):
             raise ValueError("invalid merged-SP3 systems policy")
         if systems != sorted(set(systems)):
             raise ValueError("merged-SP3 systems policy is not canonical")
@@ -2665,19 +2758,79 @@ _ABSENT_CENTER_FIELDS = {
     "url",
     "http_status",
 }
-_MERGE_SUMMARY_FIELDS = {
-    "schema_version",
-    "frame_reconciliation_count",
-    "quarantined_count",
-    "single_source_count",
-    "position_outlier_count",
-    "clock_outlier_count",
-    "agreement_count",
-    "position_agreement_rms_m",
-    "position_agreement_max_m",
-    "clock_agreement_rms_s",
-    "clock_agreement_max_s",
+_MERGE_RESULT_FIELDS = {
+    "frame_reconciliations",
+    "quarantined",
+    "single_source",
+    "position_outliers",
+    "clock_outliers",
+    "agreement",
 }
+_MERGE_FLAG_FIELDS = {"satellite", "jd_whole", "jd_fraction", "sources"}
+_AGREEMENT_FIELDS = {
+    "position_rms_m",
+    "position_max_m",
+    "clock_rms_s",
+    "clock_max_s",
+    "cells",
+    "epochs",
+}
+_AGREEMENT_CELL_FIELDS = {
+    "satellite",
+    "jd_whole",
+    "jd_fraction",
+    "position_members",
+    "position_rms_m",
+    "position_max_m",
+    "clock_members",
+    "clock_rms_s",
+    "clock_max_s",
+}
+_AGREEMENT_EPOCH_FIELDS = {
+    "jd_whole",
+    "jd_fraction",
+    "satellites",
+    "position_rms_m",
+    "position_max_m",
+    "clock_rms_s",
+    "clock_max_s",
+}
+_FRAME_RECONCILIATION_FIELDS = {
+    "source_index",
+    "source_label",
+    "target_label",
+    "method",
+    "asserted_label_set",
+    "source_frame",
+    "target_frame",
+    "catalog_source_frame",
+    "catalog_target_frame",
+    "catalog_inverse",
+    "reference_epoch_year",
+    "parameters",
+    "rates",
+    "provenance",
+    "epoch_year_span",
+    "records_affected",
+    "identity",
+}
+_HELMERT_PARAMETER_FIELDS = {"translation_mm", "scale_ppb", "rotation_mas"}
+_HELMERT_RATE_FIELDS = {
+    "translation_mm_per_year",
+    "scale_ppb_per_year",
+    "rotation_mas_per_year",
+}
+_SYSTEM_ORDER = {"G": 0, "R": 1, "E": 2, "C": 3, "J": 4, "I": 5, "S": 6}
+_SATELLITE_PRN_RANGES = {
+    "G": (1, 32),
+    "R": (1, 27),
+    "E": (1, 36),
+    "C": (1, 63),
+    "J": (1, 9),
+    "I": (1, 14),
+    "S": (20, 58),
+}
+_TERRESTRIAL_FRAMES = {"ITRF2020", "ITRF2014", "ITRF2008"}
 
 
 def _contributor_matches_catalog(
@@ -2748,42 +2901,860 @@ def _validate_absent_center(value: object) -> str:
     return center
 
 
-def _validate_merge_summary(value: object) -> None:
-    fields = _exact_fields(value, _MERGE_SUMMARY_FIELDS, "SP3 merge summary")
-    _exact_schema_version(fields["schema_version"], "SP3 merge summary")
-    for name in (
-        "frame_reconciliation_count",
-        "quarantined_count",
-        "single_source_count",
-        "position_outlier_count",
-        "clock_outlier_count",
-        "agreement_count",
+def _optional_nonnegative_float(value: object, description: str) -> Optional[float]:
+    if value is None:
+        return None
+    return _exact_float(value, description, nonnegative=True)
+
+
+def _satellite_key(value: object) -> tuple[int, int]:
+    satellite = _exact_str(value, "SP3 merge satellite")
+    if (
+        len(satellite) != 3
+        or satellite[0] not in _SATELLITE_PRN_RANGES
+        or not satellite[1:].isdigit()
     ):
-        _exact_int(fields[name], f"SP3 merge summary {name}")
-    for rms_name, max_name in (
-        ("position_agreement_rms_m", "position_agreement_max_m"),
-        ("clock_agreement_rms_s", "clock_agreement_max_s"),
+        raise ValueError("invalid SP3 merge satellite")
+    prn = int(satellite[1:])
+    minimum, maximum = _SATELLITE_PRN_RANGES[satellite[0]]
+    if not minimum <= prn <= maximum:
+        raise ValueError("invalid SP3 merge satellite")
+    return (_SYSTEM_ORDER[satellite[0]], prn)
+
+
+def _epoch_key(value: Mapping[str, object]) -> tuple[float, float]:
+    return (value["jd_whole"], value["jd_fraction"])
+
+
+def _cell_key(value: Mapping[str, object]) -> tuple[float, float, int, int]:
+    system, prn = _satellite_key(value["satellite"])
+    return (value["jd_whole"], value["jd_fraction"], system, prn)
+
+
+def _strictly_ascending(values: Sequence[object]) -> bool:
+    return all(first < second for first, second in zip(values, values[1:]))
+
+
+def _validate_epoch(fields: Mapping[str, object], description: str) -> None:
+    jd_whole = _exact_float(fields["jd_whole"], f"{description} jd_whole")
+    fraction = _exact_float(fields["jd_fraction"], f"{description} jd_fraction")
+    if (
+        not 1_721_059.5 <= jd_whole <= 5_373_483.5
+        or jd_whole - _math.floor(jd_whole) != 0.5
     ):
-        rms_value = fields[rms_name]
-        max_value = fields[max_name]
-        if rms_value is None:
-            if (
-                max_value is not None
-                and _exact_float(
-                    max_value, f"SP3 merge summary {max_name}", nonnegative=True
+        raise ValueError(f"{description} jd_whole is not canonical")
+    if not 0.0 <= fraction <= 1.0:
+        raise ValueError(f"{description} jd_fraction is not canonical")
+    if fraction == 1.0:
+        try:
+            before = sidereon.timescale_offset_at(
+                sidereon.TimeScale.UTC, sidereon.TimeScale.TAI, jd_whole
+            )
+            after = sidereon.timescale_offset_at(
+                sidereon.TimeScale.UTC, sidereon.TimeScale.TAI, jd_whole + 1.0
+            )
+        except (TypeError, ValueError):
+            raise ValueError(f"{description} jd_fraction is not canonical") from None
+        if after - before != 1.0:
+            raise ValueError(f"{description} jd_fraction is not canonical")
+
+
+def _validate_source_indices(
+    value: object, source_count: int, description: str
+) -> list[int]:
+    if type(value) is not list or not value:
+        raise ValueError(f"{description} must be a non-empty list")
+    for source in value:
+        _exact_int(source, description)
+        if source >= source_count:
+            raise ValueError(f"{description} contains an unknown source")
+    if not _strictly_ascending(value):
+        raise ValueError(f"{description} is not strictly ascending")
+    return value
+
+
+def _validate_flags(
+    value: object, source_count: int, description: str
+) -> list[Mapping[str, object]]:
+    if type(value) is not list:
+        raise ValueError(f"{description} must be a list")
+    flags = []
+    for index, item in enumerate(value):
+        fields = _exact_fields(item, _MERGE_FLAG_FIELDS, f"{description} flag")
+        _satellite_key(fields["satellite"])
+        _validate_epoch(fields, f"{description} flag {index}")
+        _validate_source_indices(
+            fields["sources"], source_count, f"{description} flag sources"
+        )
+        flags.append(fields)
+    if not _strictly_ascending([_cell_key(flag) for flag in flags]):
+        raise ValueError(f"{description} flags are not ordered and unique")
+    return flags
+
+
+def _validate_metric_pair(
+    rms_value: object, max_value: object, description: str
+) -> tuple[float, float]:
+    rms = _exact_float(rms_value, f"{description} RMS", nonnegative=True)
+    maximum = _exact_float(max_value, f"{description} maximum", nonnegative=True)
+    return rms, maximum
+
+
+def _validate_optional_metric_pair(
+    rms_value: object, max_value: object, description: str
+) -> tuple[Optional[float], Optional[float]]:
+    if rms_value is None and max_value is None:
+        return None, None
+    if rms_value is None or max_value is None:
+        raise ValueError(f"{description} metrics must both be present or absent")
+    return _validate_metric_pair(rms_value, max_value, description)
+
+
+def _validate_member_metric_bound(
+    rms: Optional[float],
+    maximum: Optional[float],
+    members: int,
+    description: str,
+    *,
+    upper_terms: Optional[int] = None,
+) -> None:
+    if rms is None and maximum is None and members == 0:
+        return
+    if (
+        rms is None
+        or maximum is None
+        or members <= 0
+        or (upper_terms is not None and not 0 <= upper_terms <= members)
+    ):
+        raise ValueError(f"invalid {description}")
+    terms = members if upper_terms is None else upper_terms
+    square = maximum * maximum
+    upper_sum = 0.0
+    for _ in range(terms):
+        upper_sum += square
+    lower_rms = _math.sqrt(square / members)
+    upper_rms = _math.sqrt(upper_sum / members)
+    if (
+        not _math.isfinite(lower_rms)
+        or not _math.isfinite(upper_rms)
+        or rms < lower_rms
+        or rms > upper_rms
+    ):
+        raise ValueError(f"invalid {description}")
+
+
+def _validate_agreement_cells(
+    value: object, source_count: int
+) -> list[Mapping[str, object]]:
+    if type(value) is not list:
+        raise ValueError("SP3 agreement cells must be a list")
+    cells = []
+    for index, item in enumerate(value):
+        fields = _exact_fields(item, _AGREEMENT_CELL_FIELDS, "SP3 agreement cell")
+        _satellite_key(fields["satellite"])
+        _validate_epoch(fields, f"SP3 agreement cell {index}")
+        position_members = _exact_int(
+            fields["position_members"], "SP3 position member count", minimum=1
+        )
+        clock_members = _exact_int(fields["clock_members"], "SP3 clock member count")
+        if position_members > source_count or clock_members > source_count:
+            raise ValueError("SP3 agreement member count exceeds source count")
+        position_rms, position_max = _validate_metric_pair(
+            fields["position_rms_m"],
+            fields["position_max_m"],
+            "SP3 position agreement",
+        )
+        clock_rms, clock_max = _validate_optional_metric_pair(
+            fields["clock_rms_s"],
+            fields["clock_max_s"],
+            "SP3 clock agreement",
+        )
+        _validate_member_metric_bound(
+            position_rms,
+            position_max,
+            position_members,
+            "SP3 position dispersion",
+        )
+        _validate_member_metric_bound(
+            clock_rms,
+            clock_max,
+            clock_members,
+            "SP3 clock dispersion",
+        )
+        if clock_members == 0 and (clock_rms is not None or clock_max is not None):
+            raise ValueError("clockless SP3 agreement cell has clock metrics")
+        if clock_members > 0 and (clock_rms is None or clock_max is None):
+            raise ValueError("clocked SP3 agreement cell lacks clock metrics")
+        if position_members == 1 and (position_rms != 0.0 or position_max != 0.0):
+            raise ValueError("single-source SP3 position dispersion is nonzero")
+        if clock_members == 1 and (clock_rms != 0.0 or clock_max != 0.0):
+            raise ValueError("single-source SP3 clock dispersion is nonzero")
+        cells.append(fields)
+    if not _strictly_ascending([_cell_key(cell) for cell in cells]):
+        raise ValueError("SP3 agreement cells are not ordered and unique")
+    return cells
+
+
+def _validate_agreement_epochs(value: object) -> list[Mapping[str, object]]:
+    if type(value) is not list:
+        raise ValueError("SP3 agreement epochs must be a list")
+    epochs = []
+    for index, item in enumerate(value):
+        fields = _exact_fields(item, _AGREEMENT_EPOCH_FIELDS, "SP3 agreement epoch")
+        _validate_epoch(fields, f"SP3 agreement epoch {index}")
+        _exact_int(fields["satellites"], "SP3 agreement epoch satellite count")
+        _validate_metric_pair(
+            fields["position_rms_m"],
+            fields["position_max_m"],
+            "SP3 epoch position agreement",
+        )
+        _validate_optional_metric_pair(
+            fields["clock_rms_s"],
+            fields["clock_max_s"],
+            "SP3 epoch clock agreement",
+        )
+        epochs.append(fields)
+    if not _strictly_ascending([_epoch_key(epoch) for epoch in epochs]):
+        raise ValueError("SP3 agreement epochs are not ordered and unique")
+    return epochs
+
+
+def _pooled_rms(metrics: Iterable[tuple[float, int]]) -> Optional[float]:
+    sum_squares = 0.0
+    members = 0
+    for rms, count in metrics:
+        # Keep the same simple ordered accumulation used by the Rust core.
+        sum_squares += rms * rms * count
+        if not _math.isfinite(sum_squares):
+            raise ValueError("SP3 agreement arithmetic is not finite")
+        members += count
+    if members == 0:
+        return None
+    result = _math.sqrt(sum_squares / members)
+    if not _math.isfinite(result):
+        raise ValueError("SP3 agreement arithmetic is not finite")
+    return result
+
+
+def _agreement_aggregate(cells: Sequence[Mapping[str, object]]) -> dict:
+    position_max = None
+    clock_max = None
+    for cell in cells:
+        value = cell["position_max_m"]
+        position_max = value if position_max is None else max(position_max, value)
+        if cell["clock_members"] > 0:
+            value = cell["clock_max_s"]
+            clock_max = value if clock_max is None else max(clock_max, value)
+    return {
+        "position_rms_m": _pooled_rms(
+            (cell["position_rms_m"], cell["position_members"])
+            for cell in cells
+            if cell["position_members"] >= 2
+        ),
+        "position_max_m": position_max,
+        "clock_rms_s": _pooled_rms(
+            (cell["clock_rms_s"], cell["clock_members"])
+            for cell in cells
+            if cell["clock_members"] >= 2
+        ),
+        "clock_max_s": clock_max,
+    }
+
+
+def _agreement_epoch_aggregates(
+    cells: Sequence[Mapping[str, object]],
+) -> list[dict]:
+    groups: list[list[Mapping[str, object]]] = []
+    for cell in cells:
+        if not groups or _epoch_key(groups[-1][0]) != _epoch_key(cell):
+            groups.append([])
+        groups[-1].append(cell)
+    out = []
+    for group in groups:
+        multi_position = [cell for cell in group if cell["position_members"] >= 2]
+        multi_clock = [cell for cell in group if cell["clock_members"] >= 2]
+        first = group[0]
+        clock_max = None
+        for cell in multi_clock:
+            value = cell["clock_max_s"]
+            clock_max = value if clock_max is None else max(clock_max, value)
+        out.append(
+            {
+                "jd_whole": first["jd_whole"],
+                "jd_fraction": first["jd_fraction"],
+                "satellites": len(multi_position),
+                "position_rms_m": _pooled_rms(
+                    (cell["position_rms_m"], cell["position_members"])
+                    for cell in multi_position
                 )
-                != 0.0
+                or 0.0,
+                "position_max_m": max(cell["position_max_m"] for cell in group),
+                "clock_rms_s": _pooled_rms(
+                    (cell["clock_rms_s"], cell["clock_members"]) for cell in multi_clock
+                ),
+                "clock_max_s": clock_max,
+            }
+        )
+    return out
+
+
+def _validate_agreement(
+    value: object, source_count: int
+) -> tuple[
+    Mapping[str, object], list[Mapping[str, object]], list[Mapping[str, object]]
+]:
+    fields = _exact_fields(value, _AGREEMENT_FIELDS, "SP3 agreement")
+    for name in (
+        "position_rms_m",
+        "position_max_m",
+        "clock_rms_s",
+        "clock_max_s",
+    ):
+        _optional_nonnegative_float(fields[name], f"SP3 agreement {name}")
+    cells = _validate_agreement_cells(fields["cells"], source_count)
+    epochs = _validate_agreement_epochs(fields["epochs"])
+    expected = _agreement_aggregate(cells)
+    for name in expected:
+        if fields[name] != expected[name] or type(fields[name]) is not type(
+            expected[name]
+        ):
+            raise ValueError("SP3 agreement aggregate disagrees with cells")
+    if epochs != _agreement_epoch_aggregates(cells):
+        raise ValueError("SP3 agreement epoch aggregates disagree with cells")
+    return fields, cells, epochs
+
+
+def _validate_float_vector(value: object, description: str) -> list[float]:
+    if type(value) is not list or len(value) != 3:
+        raise ValueError(f"{description} must be a three-value list")
+    for component in value:
+        _exact_float(component, description)
+    return value
+
+
+def _validate_transform(
+    value: object, *, rates: bool
+) -> Optional[Mapping[str, object]]:
+    if value is None:
+        return None
+    expected = _HELMERT_RATE_FIELDS if rates else _HELMERT_PARAMETER_FIELDS
+    fields = _exact_fields(value, expected, "SP3 Helmert transform")
+    if rates:
+        _validate_float_vector(
+            fields["translation_mm_per_year"], "SP3 Helmert translation rates"
+        )
+        _exact_float(fields["scale_ppb_per_year"], "SP3 Helmert scale rate")
+        _validate_float_vector(
+            fields["rotation_mas_per_year"], "SP3 Helmert rotation rates"
+        )
+    else:
+        _validate_float_vector(fields["translation_mm"], "SP3 Helmert translation")
+        _exact_float(fields["scale_ppb"], "SP3 Helmert scale")
+        _validate_float_vector(fields["rotation_mas"], "SP3 Helmert rotation")
+    return fields
+
+
+def _sp3_frame_for_label(label: str) -> Optional[str]:
+    if label in {"ITRF2020", "ITRF20", "IGS20", "IGc20"}:
+        return "ITRF2020"
+    if label in {"ITRF2014", "ITRF14", "IGS14", "IGb14"}:
+        return "ITRF2014"
+    if label in {"ITRF2008", "ITRF08", "IGS08", "IGb08"}:
+        return "ITRF2008"
+    return None
+
+
+def _catalog_transform_dict(transform, *, rates: bool) -> dict:
+    if rates:
+        return {
+            "translation_mm_per_year": transform.translation_mm_per_year.tolist(),
+            "scale_ppb_per_year": transform.scale_ppb_per_year,
+            "rotation_mas_per_year": transform.rotation_mas_per_year.tolist(),
+        }
+    return {
+        "translation_mm": transform.translation_mm.tolist(),
+        "scale_ppb": transform.scale_ppb,
+        "rotation_mas": transform.rotation_mas.tolist(),
+    }
+
+
+def _validate_frame_method(
+    value: Mapping[str, object], policy: Mapping[str, object]
+) -> None:
+    source_label = value["source_label"]
+    target_label = value["target_label"]
+    assertion = next(
+        (
+            labels
+            for labels in policy["asserted_frame_label_sets"]
+            if source_label in labels and target_label in labels
+        ),
+        None,
+    )
+    if value["method"] == "asserted_equivalence":
+        helmert_fields = (
+            "source_frame",
+            "target_frame",
+            "catalog_source_frame",
+            "catalog_target_frame",
+            "reference_epoch_year",
+            "parameters",
+            "rates",
+            "provenance",
+            "epoch_year_span",
+        )
+        if (
+            value["asserted_label_set"] != assertion
+            or assertion is None
+            or source_label not in assertion
+            or target_label not in assertion
+            or any(value[name] is not None for name in helmert_fields)
+            or value["catalog_inverse"] is not False
+            or value["identity"] is not True
+        ):
+            raise ValueError("invalid asserted SP3 frame reconciliation")
+        return
+
+    if value["method"] != "helmert":
+        raise ValueError("invalid SP3 frame reconciliation method")
+    source_frame = _sp3_frame_for_label(source_label)
+    target_frame = _sp3_frame_for_label(target_label)
+    if (
+        policy["helmert"] is not True
+        or assertion is not None
+        or source_frame is None
+        or target_frame is None
+        or value["source_frame"] != source_frame
+        or value["target_frame"] != target_frame
+        or value["asserted_label_set"] is not None
+        or value["identity"] != (source_frame == target_frame)
+        or (value["records_affected"] != 0 and value["epoch_year_span"] is None)
+    ):
+        raise ValueError("invalid Helmert SP3 frame reconciliation")
+
+    if value["identity"]:
+        catalog_fields = (
+            "catalog_source_frame",
+            "catalog_target_frame",
+            "reference_epoch_year",
+            "parameters",
+            "rates",
+            "provenance",
+        )
+        if value["catalog_inverse"] is not False or any(
+            value[name] is not None for name in catalog_fields
+        ):
+            raise ValueError("invalid identity Helmert catalog record")
+        return
+
+    catalog_from, catalog_to = (
+        (target_frame, source_frame)
+        if value["catalog_inverse"]
+        else (source_frame, target_frame)
+    )
+    if (
+        value["catalog_source_frame"] != catalog_from
+        or value["catalog_target_frame"] != catalog_to
+    ):
+        raise ValueError("invalid Helmert catalog orientation")
+    catalog = sidereon.frame_catalog_entry(catalog_from, catalog_to)
+    if catalog is None:
+        raise ValueError("missing public Helmert catalog entry")
+    if (
+        value["reference_epoch_year"] != catalog.reference_epoch_year
+        or value["parameters"]
+        != _catalog_transform_dict(catalog.parameters, rates=False)
+        or value["rates"] != _catalog_transform_dict(catalog.rates, rates=True)
+        or value["provenance"] != catalog.provenance
+    ):
+        raise ValueError("SP3 frame reconciliation disagrees with public catalog")
+
+
+def _validate_frame_reconciliations(
+    value: object, source_count: int, policy: Mapping[str, object]
+) -> list[Mapping[str, object]]:
+    if type(value) is not list:
+        raise ValueError("SP3 frame reconciliations must be a list")
+    reconciliations = []
+    for item in value:
+        fields = _exact_fields(
+            item, _FRAME_RECONCILIATION_FIELDS, "SP3 frame reconciliation"
+        )
+        source_index = _exact_int(
+            fields["source_index"], "SP3 frame reconciliation source index"
+        )
+        if source_index == 0 or source_index >= source_count:
+            raise ValueError("SP3 frame reconciliation source index is invalid")
+        for name in ("source_label", "target_label"):
+            label = _exact_str(fields[name], f"SP3 frame reconciliation {name}")
+            if label != label.strip():
+                raise ValueError("SP3 frame reconciliation label is not canonical")
+        if fields["source_label"] == fields["target_label"]:
+            raise ValueError("SP3 frame reconciliation labels are equal")
+        method = _exact_str(fields["method"], "SP3 frame reconciliation method")
+        if method not in {"asserted_equivalence", "helmert"}:
+            raise ValueError("invalid SP3 frame reconciliation method")
+        labels = fields["asserted_label_set"]
+        if labels is not None:
+            if (
+                type(labels) is not list
+                or len(labels) < 2
+                or any(
+                    type(label) is not str or not label or label != label.strip()
+                    for label in labels
+                )
+                or labels != sorted(set(labels))
             ):
-                raise ValueError("SP3 merge summary empty metric has nonzero maximum")
+                raise ValueError("invalid asserted SP3 frame label set")
+        for name in (
+            "source_frame",
+            "target_frame",
+            "catalog_source_frame",
+            "catalog_target_frame",
+        ):
+            frame = fields[name]
+            if frame is not None and (
+                type(frame) is not str or frame not in _TERRESTRIAL_FRAMES
+            ):
+                raise ValueError("invalid SP3 terrestrial frame")
+        if type(fields["catalog_inverse"]) is not bool:
+            raise ValueError("SP3 catalog_inverse must be a boolean")
+        if fields["reference_epoch_year"] is not None:
+            _exact_float(fields["reference_epoch_year"], "SP3 frame reference epoch")
+        _validate_transform(fields["parameters"], rates=False)
+        _validate_transform(fields["rates"], rates=True)
+        _optional_exact_str(fields["provenance"], "SP3 frame provenance")
+        span = fields["epoch_year_span"]
+        if span is not None:
+            if type(span) is not list or len(span) != 2:
+                raise ValueError("invalid SP3 frame epoch span")
+            first = _exact_float(span[0], "SP3 frame epoch span")
+            last = _exact_float(span[1], "SP3 frame epoch span")
+            if not 0.0 <= first <= last < 10_000.0:
+                raise ValueError("invalid SP3 frame epoch span")
+        _exact_int(fields["records_affected"], "SP3 reconciled record count")
+        if type(fields["identity"]) is not bool:
+            raise ValueError("SP3 frame identity must be a boolean")
+        _validate_frame_method(fields, policy)
+        reconciliations.append(fields)
+    if not _strictly_ascending([item["source_index"] for item in reconciliations]):
+        raise ValueError("SP3 frame reconciliations are not ordered and unique")
+    if len({item["target_label"] for item in reconciliations}) > 1:
+        raise ValueError("SP3 frame reconciliation targets disagree")
+    return reconciliations
+
+
+def _contested_minimum(policy: Mapping[str, object]) -> int:
+    if policy["combine"] == "precedence" and policy["outlier_reject"] is not None:
+        return max(policy["min_agree"], 2)
+    return policy["min_agree"]
+
+
+def _within_scaled_relative_policy_bound(
+    value: float, bound: float, scale: float
+) -> bool:
+    if bound == 0.0:
+        return value == 0.0
+    return value / (scale * (1.0 + 1.0e-12)) <= bound
+
+
+def _validate_selected_member_dispersion(
+    cell: Mapping[str, object],
+    *,
+    position_selects_member: bool,
+    clock_selects_member: bool,
+) -> None:
+    if position_selects_member:
+        _validate_member_metric_bound(
+            cell["position_rms_m"],
+            cell["position_max_m"],
+            cell["position_members"],
+            "selected SP3 position dispersion",
+            upper_terms=cell["position_members"] - 1,
+        )
+    if clock_selects_member and cell["clock_members"] > 0:
+        _validate_member_metric_bound(
+            cell["clock_rms_s"],
+            cell["clock_max_s"],
+            cell["clock_members"],
+            "selected SP3 clock dispersion",
+            upper_terms=cell["clock_members"] - 1,
+        )
+
+
+def _validate_agreement_policy(
+    cells: Sequence[Mapping[str, object]], policy: Mapping[str, object]
+) -> None:
+    # Mean uses naive floating summation in core. Without the absolute source
+    # coordinates, a persisted report cannot derive a safe roundoff bound.
+    if policy["combine"] == "mean":
+        return
+    if policy["combine"] == "precedence":
+        if policy["outlier_reject"] is not None:
+            position_bound = policy["outlier_reject"]["position_tolerance_m"]
+            clock_bound = policy["outlier_reject"]["clock_tolerance_s"]
         else:
-            rms = _exact_float(
-                rms_value, f"SP3 merge summary {rms_name}", nonnegative=True
+            position_bound = policy["position_tolerance_m"]
+            clock_bound = policy["clock_tolerance_s"]
+        for cell in cells:
+            _validate_selected_member_dispersion(
+                cell,
+                position_selects_member=True,
+                clock_selects_member=True,
             )
-            maximum = _exact_float(
-                max_value, f"SP3 merge summary {max_name}", nonnegative=True
+            if cell["position_max_m"] > position_bound:
+                raise ValueError("SP3 position agreement exceeds merge policy")
+            if cell["clock_max_s"] is not None and cell["clock_max_s"] > clock_bound:
+                raise ValueError("SP3 clock agreement exceeds merge policy")
+        return
+
+    for cell in cells:
+        _validate_selected_member_dispersion(
+            cell,
+            position_selects_member=False,
+            clock_selects_member=cell["clock_members"] % 2 == 1,
+        )
+        if not _within_scaled_relative_policy_bound(
+            cell["position_max_m"],
+            policy["position_tolerance_m"],
+            _math.sqrt(3.0),
+        ):
+            raise ValueError("SP3 position agreement exceeds merge policy")
+        if cell["clock_max_s"] is not None and not (
+            _within_scaled_relative_policy_bound(
+                cell["clock_max_s"], policy["clock_tolerance_s"], 1.0
             )
-            if rms > maximum:
-                raise ValueError("SP3 merge summary RMS exceeds maximum")
+        ):
+            raise ValueError("SP3 clock agreement exceeds merge policy")
+
+
+def _j2000_second_key(value: Mapping[str, object]) -> int:
+    day_seconds = (value["jd_whole"] - 2_451_545.0) * 86_400.0
+    within_day = value["jd_fraction"] * 86_400.0
+    nearest = round(within_day)
+    if value["jd_fraction"] == nearest / 86_400.0:
+        return int(day_seconds + nearest)
+    whole_second = _math.floor(within_day)
+    fractional_second = within_day - whole_second
+    return int(_math.floor(day_seconds + whole_second + fractional_second))
+
+
+def _validate_epoch_grid(
+    records: Sequence[Mapping[str, object]], interval: Optional[float]
+) -> None:
+    if not records:
+        return
+    keyed_epochs = [
+        (_j2000_second_key(record), _epoch_key(record)) for record in records
+    ]
+    exact_epochs_by_second: dict[int, set[tuple[float, float]]] = {}
+    for second, exact_epoch in keyed_epochs:
+        exact_epochs_by_second.setdefault(second, set()).add(exact_epoch)
+    if any(len(epochs) > 1 for epochs in exact_epochs_by_second.values()):
+        raise ValueError("SP3 merge report contains aliased epochs")
+    if interval is None:
+        return
+    step = round(interval)
+    anchor = keyed_epochs[0][0]
+    if not all((second - anchor) % step == 0 for second, _ in keyed_epochs):
+        raise ValueError("SP3 merge report is off the requested epoch grid")
+
+
+def _validate_precedence_flags(
+    quarantined: Sequence[Mapping[str, object]],
+    single_source: Sequence[Mapping[str, object]],
+    position_outliers: Sequence[Mapping[str, object]],
+    clock_outliers: Sequence[Mapping[str, object]],
+    policy: Mapping[str, object],
+) -> None:
+    if policy["combine"] != "precedence":
+        return
+    outliers = list(position_outliers) + list(clock_outliers)
+    if policy["outlier_reject"] is None and any(
+        0 in flag["sources"] for flag in outliers
+    ):
+        raise ValueError("precedence outlier contains the preferred source")
+    if policy["precedence_scope"] != "satellite_arc":
+        return
+    all_flags = (
+        list(quarantined)
+        + list(single_source)
+        + list(position_outliers)
+        + list(clock_outliers)
+    )
+    satellites = {flag["satellite"] for flag in single_source}
+    for satellite in satellites:
+        owners = {
+            flag["sources"][0]
+            for flag in single_source
+            if flag["satellite"] == satellite
+        }
+        if len(owners) != 1:
+            raise ValueError("satellite-arc precedence owner is inconsistent")
+        owner = next(iter(owners))
+        mentioned = [
+            source
+            for flag in all_flags
+            if flag["satellite"] == satellite
+            for source in flag["sources"]
+        ]
+        if any(source < owner for source in mentioned):
+            raise ValueError("satellite-arc precedence owner is inconsistent")
+        if policy["outlier_reject"] is None and any(
+            flag["satellite"] == satellite and owner in flag["sources"]
+            for flag in outliers
+        ):
+            raise ValueError("satellite-arc precedence rejects its owner")
+
+
+def _validate_accepted_cells(
+    cells: Sequence[Mapping[str, object]],
+    single_source: Sequence[Mapping[str, object]],
+    position_outliers: Sequence[Mapping[str, object]],
+    clock_outliers: Sequence[Mapping[str, object]],
+    source_count: int,
+    policy: Mapping[str, object],
+) -> None:
+    single_by_key = {_cell_key(flag): flag for flag in single_source}
+    position_by_key = {_cell_key(flag): flag for flag in position_outliers}
+    clock_by_key = {_cell_key(flag): flag for flag in clock_outliers}
+    required = _contested_minimum(policy)
+    for cell in cells:
+        key = _cell_key(cell)
+        single = single_by_key.get(key)
+        position = position_by_key.get(key)
+        clock = clock_by_key.get(key)
+        position_sources = cell["position_members"] + (
+            0 if position is None else len(position["sources"])
+        )
+        clock_sources = cell["clock_members"] + (
+            0 if clock is None else len(clock["sources"])
+        )
+        if clock_sources > position_sources:
+            raise ValueError("clock contributor count exceeds position contributors")
+        if single is not None and (
+            cell["position_members"] != 1 or position is not None
+        ):
+            raise ValueError("single-source and outlier flags contradict")
+        if position is not None and (
+            source_count < 2
+            or position_sources > source_count
+            or cell["position_members"] < required
+        ):
+            raise ValueError("invalid SP3 position outlier")
+        if cell["position_members"] == 1 and single is None and position is None:
+            raise ValueError("single-member SP3 cell lacks an audit flag")
+        if cell["position_members"] > 1 and (
+            single is not None or cell["position_members"] < policy["min_agree"]
+        ):
+            raise ValueError("invalid SP3 position consensus")
+        if clock is None:
+            if 1 < cell["clock_members"] < policy["min_agree"]:
+                raise ValueError("invalid SP3 clock consensus")
+        elif (
+            source_count < 2
+            or (cell["clock_members"] > 0 and clock_sources > source_count)
+            or (cell["clock_members"] > 0 and cell["clock_members"] < required)
+            or (
+                cell["clock_members"] == 0
+                and not (
+                    policy["combine"] == "precedence"
+                    and policy["outlier_reject"] is not None
+                    and len(clock["sources"]) >= 2
+                )
+            )
+        ):
+            raise ValueError("invalid SP3 clock outlier")
+
+
+def _validate_merge_result(
+    value: object, source_count: int, policy: Mapping[str, object]
+) -> None:
+    fields = _exact_fields(value, _MERGE_RESULT_FIELDS, "SP3 merge result")
+    _validate_frame_reconciliations(
+        fields["frame_reconciliations"], source_count, policy
+    )
+    quarantined = _validate_flags(fields["quarantined"], source_count, "quarantined")
+    single_source = _validate_flags(
+        fields["single_source"], source_count, "single-source"
+    )
+    position_outliers = _validate_flags(
+        fields["position_outliers"], source_count, "position-outlier"
+    )
+    clock_outliers = _validate_flags(
+        fields["clock_outliers"], source_count, "clock-outlier"
+    )
+    _, cells, epochs = _validate_agreement(fields["agreement"], source_count)
+    accepted_keys = {_cell_key(cell) for cell in cells}
+    quarantined_keys = {_cell_key(flag) for flag in quarantined}
+    single_keys = {_cell_key(flag) for flag in single_source}
+    position_keys = {_cell_key(flag) for flag in position_outliers}
+    clock_keys = {_cell_key(flag) for flag in clock_outliers}
+    if any(len(flag["sources"]) < 2 for flag in quarantined):
+        raise ValueError("quarantined SP3 cells require multiple sources")
+    if quarantined and _contested_minimum(policy) < 2:
+        raise ValueError("quarantine is impossible under the merge policy")
+    if any(len(flag["sources"]) != 1 for flag in single_source):
+        raise ValueError("single-source SP3 flags require one source")
+    if not quarantined_keys.isdisjoint(
+        accepted_keys | single_keys | position_keys | clock_keys
+    ):
+        raise ValueError("quarantined SP3 flags contradict accepted records")
+    if not (
+        single_keys <= accepted_keys
+        and position_keys <= accepted_keys
+        and clock_keys <= accepted_keys
+    ):
+        raise ValueError("SP3 merge flags refer to unaccepted cells")
+    if not single_keys.isdisjoint(position_keys | clock_keys):
+        raise ValueError("single-source SP3 flags contradict outliers")
+    _validate_agreement_policy(cells, policy)
+    _validate_epoch_grid(
+        list(quarantined)
+        + list(single_source)
+        + list(position_outliers)
+        + list(clock_outliers)
+        + list(cells)
+        + list(epochs),
+        policy["target_epoch_interval_s"],
+    )
+    _validate_precedence_flags(
+        quarantined,
+        single_source,
+        position_outliers,
+        clock_outliers,
+        policy,
+    )
+    _validate_accepted_cells(
+        cells,
+        single_source,
+        position_outliers,
+        clock_outliers,
+        source_count,
+        policy,
+    )
+    if source_count == 1:
+        if (
+            quarantined
+            or position_outliers
+            or clock_outliers
+            or accepted_keys != single_keys
+            or any(
+                cell["position_members"] != 1 or cell["clock_members"] > 1
+                for cell in cells
+            )
+        ):
+            raise ValueError("invalid single-product SP3 merge report")
+    systems = policy["systems"]
+    if systems is not None and any(
+        record["satellite"][0] not in systems
+        for record in list(quarantined)
+        + list(single_source)
+        + list(position_outliers)
+        + list(clock_outliers)
+        + list(cells)
+    ):
+        raise ValueError("SP3 merge report contains a filtered system")
 
 
 def verify_merge_report(value: Mapping[str, object]) -> bool:
@@ -2861,7 +3832,6 @@ def verify_merge_report(value: Mapping[str, object]) -> bool:
             raise ValueError("single-product flag disagrees with contributors")
         if merged is not True:
             raise ValueError("merged flag must be true")
-        _validate_merge_summary(report["merge_report"])
         options = _merge_options_from_policy(policy_value)
         precedence = policy_value["precedence_artifact_sha256"]
         expected_precedence = (
@@ -2871,6 +3841,7 @@ def verify_merge_report(value: Mapping[str, object]) -> bool:
         )
         if precedence != expected_precedence:
             raise ValueError("precedence contributors disagree with contributor order")
+        _validate_merge_result(report["merge_report"], source_count, policy_value)
         identity = sp3_merge_input_identity(artifacts, options)
         return (
             type(report["input_identity_schema_version"]) is int
