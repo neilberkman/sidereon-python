@@ -9,6 +9,7 @@ The network tests (``@pytest.mark.network``) hit a live archive and are excluded
 by default; run them with ``pytest -m network``.
 """
 
+import copy
 import datetime as dt
 import functools
 import gzip
@@ -24,7 +25,7 @@ import pytest
 import sidereon
 import sidereon.data as data
 import sidereon.distribution as distribution
-from _helpers import CORE_FIXTURES
+from _helpers import CORE_FIXTURES, FIXTURES
 
 # --- fixtures ------------------------------------------------------------
 
@@ -675,6 +676,163 @@ def test_sp3_merge_input_identity_binds_artifact_set_order_and_policy(tmp_path):
     assert mapped == reversed_mapped
 
 
+def test_sp3_merge_input_identity_matches_all_surface_golden_contract():
+    with open(
+        os.path.join(FIXTURES, "sp3-merge-input-v1.json"), encoding="utf-8"
+    ) as handle:
+        fixture = json.load(handle)
+
+    def product_identity(value):
+        return distribution.ProductIdentity(
+            family=value["family"],
+            analysis_center=value["analysis_center"],
+            publisher=value["publisher"],
+            solution_class=value["solution"],
+            campaign=value["campaign"],
+            filename_version=value["version"],
+            date=dt.date.fromisoformat(value["date"]),
+            issue=value["issue"],
+            span=value["span"],
+            sample=value["sample"],
+            official_filename=value["official_filename"],
+            format=value["format"],
+            format_version=value["format_version"],
+            prediction_horizon_days=value["prediction_horizon_days"],
+        )
+
+    def artifact(value):
+        return data.ArtifactIdentity(
+            requested_identity=product_identity(value["requested_identity"]),
+            resolved_identity=product_identity(value["resolved_identity"]),
+            distribution_source=distribution.DistributionSource(
+                value["distribution_source"]
+            ),
+            official_filename=value["official_filename"],
+            product_sha256=value["product_sha256"],
+            product_byte_length=value["product_byte_length"],
+            archive_sha256=value["archive_sha256"],
+            archive_byte_length=value["archive_byte_length"],
+            compression=value["compression"],
+        )
+
+    def options(combine, *, reverse_sets=False, negative_zero=False):
+        value = fixture["complete_policy"]
+        frame = value["frame_reconciliation"]
+        label_sets = frame["asserted_equivalent_label_sets"]
+        systems = value["systems"]
+        if reverse_sets:
+            label_sets = [list(reversed(labels)) for labels in reversed(label_sets)]
+            systems = list(reversed(systems))
+        return sidereon.Sp3MergeOptions(
+            position_tolerance_m=(
+                -0.0 if negative_zero else value["position_tolerance_m"]
+            ),
+            clock_tolerance_s=value["clock_tolerance_s"],
+            min_agree=value["min_agree"],
+            clock_min_common=value["clock_min_common"],
+            combine=combine,
+            precedence_scope=value["precedence_scope"],
+            outlier_reject=sidereon.Sp3OutlierRejectOptions(
+                value["outlier_reject"]["position_tolerance_m"],
+                value["outlier_reject"]["clock_tolerance_s"],
+            ),
+            target_epoch_interval_s=value["target_epoch_interval_s"],
+            systems=systems,
+            asserted_frame_label_sets=label_sets,
+            helmert=frame["helmert"],
+        )
+
+    esa = artifact(fixture["artifacts"]["esa"])
+    cod = artifact(fixture["artifacts"]["cod"])
+    expected = fixture["expected"]
+
+    mean = data.sp3_merge_input_identity([esa, cod], options("mean"))
+    mean_reversed = data.sp3_merge_input_identity([cod, esa], options("mean"))
+    mean_reordered_sets = data.sp3_merge_input_identity(
+        [esa, cod], options("mean", reverse_sets=True)
+    )
+    median = data.sp3_merge_input_identity([esa, cod], options("median"))
+    precedence = data.sp3_merge_input_identity([esa, cod], options("precedence"))
+    precedence_reversed = data.sp3_merge_input_identity(
+        [cod, esa], options("precedence")
+    )
+    single = data.sp3_merge_input_identity([esa], options("mean"))
+
+    assert mean.schema_version == fixture["schema_version"]
+    assert mean.stable_id == expected["mean_esa_cod"]
+    assert mean_reversed.stable_id == expected["mean_esa_cod"]
+    assert mean_reordered_sets.stable_id == expected["mean_esa_cod"]
+    assert median.stable_id == expected["median_esa_cod"]
+    assert precedence.stable_id == expected["precedence_esa_cod"]
+    assert precedence_reversed.stable_id == expected["precedence_cod_esa"]
+    assert single.stable_id == expected["single_mean_esa"]
+    assert mean.canonical_contributors == mean_reversed.canonical_contributors
+    assert mean.precedence_contributors is None
+    assert precedence.canonical_contributors == mean.canonical_contributors
+    assert precedence.precedence_contributors == (esa, cod)
+    assert precedence_reversed.precedence_contributors == (cod, esa)
+    assert tuple(mean) == (mean.schema_version, mean.stable_id)
+
+    negative_zero = data.sp3_merge_input_identity(
+        [esa, cod], options("mean", negative_zero=True)
+    )
+    assert negative_zero.stable_id == mean.stable_id
+    assert options("mean", negative_zero=True).position_tolerance_m == 0.0
+
+    mutations = fixture["required_mutations"]
+    assert (
+        data.sp3_merge_input_identity(
+            [replace(esa, product_sha256=mutations["changed_product_sha256"]), cod],
+            options("mean"),
+        ).stable_id
+        != mean.stable_id
+    )
+    assert (
+        data.sp3_merge_input_identity(
+            [
+                replace(
+                    esa,
+                    resolved_identity=replace(
+                        esa.resolved_identity,
+                        format_version=mutations["changed_resolved_format_version"],
+                    ),
+                ),
+                cod,
+            ],
+            options("mean"),
+        ).stable_id
+        != mean.stable_id
+    )
+    changed_policy = options("mean")
+    changed_policy = sidereon.Sp3MergeOptions(
+        position_tolerance_m=changed_policy.position_tolerance_m,
+        clock_tolerance_s=mutations["changed_clock_tolerance_s"],
+        min_agree=changed_policy.min_agree,
+        clock_min_common=changed_policy.clock_min_common,
+        combine=changed_policy.combine,
+        precedence_scope=changed_policy.precedence_scope,
+        outlier_reject=changed_policy.outlier_reject,
+        target_epoch_interval_s=changed_policy.target_epoch_interval_s,
+        systems=changed_policy.systems,
+        asserted_frame_label_sets=changed_policy.asserted_frame_label_sets,
+        helmert=changed_policy.helmert,
+    )
+    assert (
+        data.sp3_merge_input_identity([esa, cod], changed_policy).stable_id
+        != mean.stable_id
+    )
+    with pytest.raises(ValueError, match="product SHA-256"):
+        data.sp3_merge_input_identity(
+            [replace(esa, product_sha256=mutations["malformed_product_sha256"])]
+        )
+    with pytest.raises(ValueError, match="whole number of seconds"):
+        sidereon.Sp3MergeOptions(
+            target_epoch_interval_s=mutations["fractional_target_epoch_interval_s"]
+        )
+    with pytest.raises(ValueError, match="must not be empty"):
+        sidereon.Sp3MergeOptions(systems=mutations["empty_systems"])
+
+
 def test_sp3_merge_input_identity_changes_with_contributor_bytes(tmp_path):
     product = data.mgex_sp3("cod", SP3_DATE)
     original_payload = _sp3_payload()
@@ -751,6 +909,170 @@ def test_merged_sp3_report_serialization_excludes_secrets_and_local_paths(tmp_pa
     assert not data.verify_merge_report(changed_artifact)
 
 
+def test_verify_merged_sp3_report_rejects_every_nested_schema_escape(tmp_path):
+    products = [data.mgex_sp3("cod", SP3_DATE), data.mgex_sp3("esa", SP3_DATE)]
+    payload = _sp3_payload()
+    archives = {
+        product.archive_url(): _archive_for_catalog_product(product, payload)
+        for product in products
+    }
+
+    def handler(request):
+        return httpx.Response(200, request=request, content=archives[str(request.url)])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        _, report = data.fetch_merged_sp3(
+            SP3_DATE,
+            ["cod", "esa"],
+            cache_dir=str(tmp_path),
+            http_client=client,
+            merge_options=sidereon.Sp3MergeOptions(
+                combine="precedence",
+                outlier_reject=sidereon.Sp3OutlierRejectOptions(),
+            ),
+        )
+    persisted = json.loads(json.dumps(report.to_dict()))
+    assert data.verify_merge_report(persisted)
+
+    def changed(mutator):
+        value = copy.deepcopy(persisted)
+        mutator(value)
+        return value
+
+    unknown_fields = [
+        lambda value: value.__setitem__("authorization", "secret"),
+        lambda value: value["contributors"][0].__setitem__("local_path", "/tmp/x"),
+        lambda value: value["contributors"][0]["artifact_identity"].__setitem__(
+            "cookie", "secret"
+        ),
+        lambda value: value["contributors"][0]["artifact_identity"][
+            "requested_identity"
+        ].__setitem__("token", "secret"),
+        lambda value: value["contributors"][0]["acquisition_facts"].__setitem__(
+            "temporary_path", "/tmp/x"
+        ),
+        lambda value: value["merge_policy"].__setitem__("credentials", "secret"),
+        lambda value: value["merge_policy"]["outlier_reject"].__setitem__(
+            "password", "secret"
+        ),
+        lambda value: value["merge_report"].__setitem__("secret", "value"),
+        lambda value: value["absent"].append(
+            {
+                "center": "gfz",
+                "filename": None,
+                "reason": "no_candidate",
+                "pattern": None,
+                "url": None,
+                "http_status": None,
+                "cache_dir": "/tmp/x",
+            }
+        ),
+    ]
+    for mutation in unknown_fields:
+        assert not data.verify_merge_report(changed(mutation))
+
+    attempt = {
+        "source": "direct",
+        "error_type": "product_not_published",
+        "message": "exact product is not published",
+        "url": persisted["contributors"][0]["acquisition_facts"]["original_url"],
+        "status": 404,
+    }
+    with_attempt = copy.deepcopy(persisted)
+    with_attempt["contributors"][0]["acquisition_facts"]["attempts"].append(attempt)
+    assert data.verify_merge_report(with_attempt)
+    with_attempt["contributors"][0]["acquisition_facts"]["attempts"][0][
+        "authorization"
+    ] = "secret"
+    assert not data.verify_merge_report(with_attempt)
+
+    coercions = [
+        lambda value: value.__setitem__("schema_version", "1"),
+        lambda value: value.__setitem__("source_count", "2"),
+        lambda value: value["contributors"][0]["artifact_identity"].__setitem__(
+            "schema_version", "1"
+        ),
+        lambda value: value["contributors"][0]["artifact_identity"].__setitem__(
+            "product_byte_length", "1597406"
+        ),
+        lambda value: value["contributors"][0]["acquisition_facts"].__setitem__(
+            "cache_hit", 1
+        ),
+        lambda value: value["merge_policy"].__setitem__("position_tolerance_m", 0),
+        lambda value: value["merge_policy"].__setitem__("min_agree", 2.0),
+        lambda value: value["merge_report"].__setitem__("agreement_count", True),
+        lambda value: value.__setitem__("input_identity_schema_version", "1"),
+    ]
+    for mutation in coercions:
+        assert not data.verify_merge_report(changed(mutation))
+
+    inconsistencies = [
+        lambda value: value["contributors"][0].__setitem__("center", "gfz"),
+        lambda value: value["contributors"][0].__setitem__("date", "2020-06-26"),
+        lambda value: value["contributors"][0].__setitem__("issue", "0600"),
+        lambda value: value["contributors"][0].__setitem__("pattern", "alias_latest"),
+        lambda value: value["contributors"][0].__setitem__("filename", "other.SP3"),
+        lambda value: value.__setitem__("source_count", 1),
+        lambda value: value.__setitem__("single_product", True),
+        lambda value: value.__setitem__("merged", False),
+        lambda value: value.__setitem__("requested_centers", ["cod"]),
+        lambda value: value["requested_centers"].append("gfz"),
+        lambda value: value["absent"].append(
+            {
+                "center": "cod",
+                "filename": None,
+                "reason": "no_candidate",
+                "pattern": None,
+                "url": None,
+                "http_status": None,
+            }
+        ),
+        lambda value: value["contributors"].reverse(),
+        lambda value: value["merge_policy"]["precedence_artifact_sha256"].__setitem__(
+            0, "00" * 32
+        ),
+        lambda value: value["merge_report"].__setitem__(
+            "position_agreement_rms_m", 2.0
+        ),
+        lambda value: value["merge_report"].__setitem__(
+            "position_agreement_max_m", -1.0
+        ),
+        lambda value: value["contributors"][0]["acquisition_facts"].__setitem__(
+            "original_url",
+            persisted["contributors"][0]["acquisition_facts"]["original_url"]
+            + "?token=secret",
+        ),
+    ]
+    for mutation in inconsistencies:
+        assert not data.verify_merge_report(changed(mutation))
+
+
+def test_verify_merged_sp3_report_accepts_exact_absent_center_partition(tmp_path):
+    product = data.mgex_sp3("cod", SP3_DATE)
+    archive = _archive_for_catalog_product(product, _sp3_payload())
+
+    def handler(request):
+        if str(request.url) == product.archive_url():
+            return httpx.Response(200, request=request, content=archive)
+        return httpx.Response(404, request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        _, report = data.fetch_merged_sp3(
+            SP3_DATE,
+            ["cod", "esa"],
+            cache_dir=str(tmp_path),
+            http_client=client,
+        )
+
+    persisted = report.to_dict()
+    assert persisted["requested_centers"] == ["cod", "esa"]
+    assert [center["center"] for center in persisted["absent"]] == ["esa"]
+    assert data.verify_merge_report(persisted)
+
+    persisted["absent"][0]["center"] = "gfz"
+    assert not data.verify_merge_report(persisted)
+
+
 def test_ultra_sp3_candidates_include_current_primary_and_alternates():
     candidates = data._sp3_candidates("esa_ult", dt.date(2026, 7, 13), None)
 
@@ -786,6 +1108,55 @@ def test_code_ultra_sp3_candidates_pin_primary_alternate_and_alias_urls():
         candidates[2].url,
         "none",
     )
+
+
+def test_code_ultra_alias_rejects_valid_sp3_with_wrong_duration(tmp_path):
+    alias = data._sp3_products_for_issue("cod_ult", SP3_DATE, "0000", None)[2]
+    payload = _sp3_payload()
+    final_epoch = payload.index(b"*  2020  6 26  0  0  0.00000000")
+    wrong_duration = payload[:final_epoch] + b"EOF\n"
+    wrong_duration = wrong_duration.replace(b"     289 ", b"     288 ", 1)
+    assert sidereon.load_sp3(wrong_duration).epoch_count == 288
+
+    def handler(request):
+        return httpx.Response(200, request=request, content=wrong_duration)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(
+            distribution.ProductValidationFailure,
+            match="duration differs from exact span",
+        ):
+            distribution._acquire_catalog_product(
+                alias, cache_dir=str(tmp_path), http_client=client
+            )
+
+    assert not list(tmp_path.rglob("*.provenance.json"))
+
+
+def test_code_ultra_alias_report_verifies_catalog_filename_equivalence(tmp_path):
+    candidates = data._sp3_products_for_issue("cod_ult", SP3_DATE, "0000", None)
+    alias = candidates[2]
+    payload = _sp3_payload()
+
+    def handler(request):
+        if str(request.url) == alias.archive_url():
+            return httpx.Response(200, request=request, content=payload)
+        return httpx.Response(404, request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        _, report = data.fetch_merged_sp3(
+            SP3_DATE,
+            ["cod_ult"],
+            cache_dir=str(tmp_path),
+            http_client=client,
+        )
+
+    persisted = report.to_dict()
+    contributor = persisted["contributors"][0]
+    assert contributor["pattern"] == "alias_latest"
+    assert contributor["filename"] == alias.filename
+    assert contributor["artifact_identity"]["official_filename"] != alias.filename
+    assert data.verify_merge_report(persisted)
 
 
 def test_aiub_download_follows_only_validated_object_store_redirect(monkeypatch):

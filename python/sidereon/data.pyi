@@ -2,7 +2,7 @@
 
 import datetime as _dt
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Optional, Sequence, Union
+from typing import Iterable, Iterator, Mapping, Optional, Sequence, Union
 
 import sidereon
 from sidereon.distribution import (
@@ -210,6 +210,14 @@ class AcquisitionFacts:
     def from_dict(cls, value: Mapping[str, object]) -> AcquisitionFacts: ...
 
 @dataclass(frozen=True)
+class Sp3MergeInputIdentity:
+    schema_version: int
+    stable_id: str
+    canonical_contributors: tuple[ArtifactIdentity, ...]
+    precedence_contributors: Optional[tuple[ArtifactIdentity, ...]]
+    def __iter__(self) -> Iterator[Union[int, str]]: ...
+
+@dataclass(frozen=True)
 class Contributor:
     center: str
     filename: str
@@ -231,6 +239,7 @@ class MergeReport:
     stable_input_identity: Optional[str] = ...
     input_identity_schema_version: Optional[int] = ...
     merge_policy: Optional[dict] = ...
+    requested_centers: list[str] = ...
     def to_dict(self) -> dict: ...
 
 @dataclass(frozen=True)
@@ -410,7 +419,7 @@ def fetch_merged_sp3(
 def sp3_merge_input_identity(
     contributors: Sequence[ArtifactIdentity],
     merge_options: Optional[sidereon.Sp3MergeOptions] = ...,
-) -> tuple[int, str]: ...
+) -> Sp3MergeInputIdentity: ...
 def verify_merge_report(value: Mapping[str, object]) -> bool: ...
 def fetch_merged_sp3_file(
     target: Union[_dt.date, _dt.datetime],

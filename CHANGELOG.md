@@ -2,6 +2,23 @@
 
 All notable changes to the Sidereon Python interface are documented here.
 
+## [0.31.2] - 2026-07-16
+
+### Fixed
+
+- Alias acquisition now proves the parsed SP3 epoch grid and complete coverage
+  duration match the exact catalog span before publishing artifact provenance.
+- Persisted merged-SP3 verification now enforces the complete versioned schema
+  without coercions, validates every nested record, checks catalog-facing
+  contributor fields, and requires contributors and absent centers to exactly
+  partition the requested center set.
+- The merged-SP3 identity API now returns the canonical contributor order and
+  the distinct ordered precedence contributors alongside the stable ID, while
+  preserving two-value unpacking compatibility.
+- Merge-policy validation now matches the core's executable domain, including
+  whole-second target spacing and canonical equivalence of negative zero.
+- Updated `sidereon` and `sidereon-core` to 0.31.2.
+
 ## [0.31.0] - 2026-07-16
 
 ### Added

@@ -1221,7 +1221,7 @@ def _validate_product(requested: ProductIdentity, content: bytes) -> ProductIden
             if sp3.epoch_count == 0:
                 raise ProductValidationFailure("SP3 product has no epochs")
             version = _sp3_version(content)
-            _validate_sp3_metadata(requested, content)
+            _validate_sp3_metadata(requested, content, sp3)
             format_version = f"SP3-{version}"
         elif requested.family == "ionex":
             ionex = sidereon.load_ionex(content)
@@ -1258,7 +1258,9 @@ def _sp3_version(content: bytes) -> str:
     return content[1:2].decode("ascii").lower()
 
 
-def _validate_sp3_metadata(requested: ProductIdentity, content: bytes) -> None:
+def _validate_sp3_metadata(
+    requested: ProductIdentity, content: bytes, sp3: "sidereon.Sp3"
+) -> None:
     first = content.splitlines()[0].decode("ascii", "strict")
     match = re.match(
         r"^#[a-dA-D][PV](\d{4})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})", first
@@ -1283,6 +1285,21 @@ def _validate_sp3_metadata(requested: ProductIdentity, content: bytes) -> None:
     expected = _sample_seconds(requested.sample)
     if expected is not None and abs(cadence - expected) > 1e-6:
         raise ProductValidationFailure("SP3 cadence differs from exact request")
+    span_match = re.fullmatch(r"(\d{2})([DHM])", requested.span)
+    if span_match is None:
+        raise ProductValidationFailure("SP3 span is unsupported")
+    amount = int(span_match.group(1))
+    unit_seconds = {"D": 86_400.0, "H": 3_600.0, "M": 60.0}
+    expected_span_s = amount * unit_seconds[span_match.group(2)]
+    epochs = sp3.epochs_j2000_seconds.tolist()
+    if len(epochs) < 2:
+        raise ProductValidationFailure("SP3 coverage is too short for exact span")
+    if expected is not None and any(
+        abs((right - left) - expected) > 1e-6 for left, right in zip(epochs, epochs[1:])
+    ):
+        raise ProductValidationFailure("SP3 epoch grid differs from exact sample")
+    if abs((epochs[-1] - epochs[0]) - expected_span_s) > 1e-6:
+        raise ProductValidationFailure("SP3 duration differs from exact span")
 
 
 def _ionex_version(content: bytes) -> str:

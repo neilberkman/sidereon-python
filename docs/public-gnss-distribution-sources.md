@@ -142,7 +142,10 @@ by cache hits, retrieval timestamps, mapping order, or mean/median contributor
 enumeration. Precedence contributor order is input priority and remains
 identity-bearing. Changing an artifact, resolved identity, contributor set, or
 merge policy changes the identity. `input_identity_schema_version` identifies
-the canonical encoding.
+the canonical encoding. Calling `data.sp3_merge_input_identity` directly returns
+the stable ID together with the canonical contributor order and, for precedence
+merges, the distinct ordered priority contributors. Two-value unpacking remains
+available for callers that only need `(schema_version, stable_id)`.
 An incomplete or inconsistent artifact record is rejected rather than hashed.
 The JSON-safe `merge_policy` records every effective option. When precedence
 combining is selected, `precedence_artifact_sha256` records the ordered artifact
@@ -158,6 +161,14 @@ path, same_report = data.fetch_merged_sp3_file(
 
 assert data.verify_merge_report(json.loads(persisted_report_json))
 ```
+
+Persisted-report verification is exact-schema and non-coercive at every nested
+level. It rechecks contributor filename, catalog pattern, center, date, and issue
+against the authenticated artifact identity; contributors and absent centers
+must exactly partition `requested_centers`; count and metric domains must be
+internally consistent. Unknown authorization, cookie, secret, or local-path
+fields are rejected. Alias candidates are accepted only after the parsed epoch
+grid proves both the catalog cadence and complete declared coverage span.
 
 The default file-helper return remains the written path for compatibility.
 Neither `report.to_dict()` nor the stable identity includes credentials,

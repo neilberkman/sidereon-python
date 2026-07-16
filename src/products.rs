@@ -29,7 +29,9 @@ use crate::marshal::option_py_or_default;
 use crate::{np_array, to_antex_err, PySp3};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Sp3ArtifactIdentityInput {
+    schema_version: u8,
     requested_identity: serde_json::Value,
     resolved_identity: serde_json::Value,
     distribution_source: String,
@@ -44,6 +46,11 @@ struct Sp3ArtifactIdentityInput {
 fn artifact_identity(json: &str) -> PyResult<Sp3ArtifactIdentity> {
     let input: Sp3ArtifactIdentityInput =
         serde_json::from_str(json).map_err(|error| PyValueError::new_err(error.to_string()))?;
+    if input.schema_version != 1 {
+        return Err(PyValueError::new_err(
+            "unsupported SP3 artifact identity schema version",
+        ));
+    }
     let requested_json = serde_json::to_string(&input.requested_identity)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
     let resolved_json = serde_json::to_string(&input.resolved_identity)
@@ -538,8 +545,8 @@ impl PySp3OutlierRejectOptions {
         require_nonnegative_finite("position_tolerance_m", position_tolerance_m)?;
         require_nonnegative_finite("clock_tolerance_s", clock_tolerance_s)?;
         Ok(Self {
-            position_tolerance_m,
-            clock_tolerance_s,
+            position_tolerance_m: normalize_nonnegative_zero(position_tolerance_m),
+            clock_tolerance_s: normalize_nonnegative_zero(clock_tolerance_s),
         })
     }
 
@@ -624,14 +631,19 @@ impl PySp3MergeOptions {
         }
         if let Some(value) = target_epoch_interval_s {
             require_positive_finite("target_epoch_interval_s", value)?;
+            if (value - value.round()).abs() > 1.0e-6 {
+                return Err(PyValueError::new_err(
+                    "target_epoch_interval_s must be a whole number of seconds",
+                ));
+            }
         }
 
         let systems = systems.map(parse_systems).transpose()?;
         let asserted_frame_label_sets = parse_asserted_frame_label_sets(asserted_frame_label_sets)?;
 
         Ok(Self {
-            position_tolerance_m,
-            clock_tolerance_s,
+            position_tolerance_m: normalize_nonnegative_zero(position_tolerance_m),
+            clock_tolerance_s: normalize_nonnegative_zero(clock_tolerance_s),
             min_agree,
             clock_min_common,
             combine,
@@ -1228,13 +1240,15 @@ fn merge_sp3(
 ///
 /// Artifact JSON is an internal bridge format assembled by the typed Python
 /// data API. Validation and canonicalization are performed by the shared core.
+type Sp3MergeInputIdentityTuple = (u8, String, Vec<usize>, Option<Vec<usize>>);
+
 #[pyfunction]
 #[pyo3(signature = (artifacts_json, options=None))]
 fn sp3_merge_input_identity(
     py: Python<'_>,
     artifacts_json: Vec<String>,
     options: Option<Py<PySp3MergeOptions>>,
-) -> PyResult<(u8, String)> {
+) -> PyResult<Sp3MergeInputIdentityTuple> {
     let artifacts = artifacts_json
         .iter()
         .map(|value| artifact_identity(value))
@@ -1247,7 +1261,25 @@ fn sp3_merge_input_identity(
     );
     let identity = Sp3MergeInputIdentity::new(&artifacts, &opts)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
-    Ok((identity.schema_version, identity.stable_id))
+    let indices = |contributors: &[Sp3ArtifactIdentity]| {
+        contributors
+            .iter()
+            .map(|contributor| {
+                artifacts
+                    .iter()
+                    .position(|artifact| artifact == contributor)
+                    .expect("core canonical contributors originate in the input")
+            })
+            .collect::<Vec<_>>()
+    };
+    let canonical_indices = indices(&identity.contributors);
+    let precedence_indices = identity.precedence_contributors.as_deref().map(indices);
+    Ok((
+        identity.schema_version,
+        identity.stable_id,
+        canonical_indices,
+        precedence_indices,
+    ))
 }
 
 fn require_finite(name: &str, value: f64) -> PyResult<()> {
@@ -1275,6 +1307,14 @@ fn require_nonnegative_finite(name: &str, value: f64) -> PyResult<()> {
         Err(PyValueError::new_err(format!(
             "{name} must be non-negative and finite"
         )))
+    }
+}
+
+fn normalize_nonnegative_zero(value: f64) -> f64 {
+    if value == 0.0 {
+        0.0
+    } else {
+        value
     }
 }
 

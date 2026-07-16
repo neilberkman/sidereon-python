@@ -54,7 +54,7 @@ import math as _math
 import os as _os
 import zlib as _zlib
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Iterable, Mapping, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Iterable, Iterator, Mapping, Optional, Sequence, Union
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -179,6 +179,7 @@ __all__ = [
     "Product",
     "ArtifactIdentity",
     "AcquisitionFacts",
+    "Sp3MergeInputIdentity",
     "MergeReport",
     "TerrainSourceEntry",
     "SpaceWeatherSourceEntry",
@@ -1905,6 +1906,156 @@ class AbsentCenter:
         }
 
 
+_PRODUCT_IDENTITY_FIELDS = {
+    "family",
+    "analysis_center",
+    "publisher",
+    "solution_class",
+    "campaign",
+    "filename_version",
+    "date",
+    "issue",
+    "span",
+    "sample",
+    "official_filename",
+    "format",
+    "format_version",
+    "prediction_horizon_days",
+}
+_ARTIFACT_IDENTITY_FIELDS = {
+    "schema_version",
+    "requested_identity",
+    "resolved_identity",
+    "distribution_source",
+    "official_filename",
+    "product_sha256",
+    "product_byte_length",
+    "archive_sha256",
+    "archive_byte_length",
+    "compression",
+}
+_ACQUISITION_FACTS_FIELDS = {
+    "schema_version",
+    "retrieved_at",
+    "cache_hit",
+    "original_url",
+    "final_url",
+    "etag",
+    "last_modified",
+    "attempts",
+}
+_SOURCE_FAILURE_FIELDS = {"source", "error_type", "message", "url", "status"}
+
+
+def _exact_fields(
+    value: object, expected: set[str], description: str
+) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or any(type(key) is not str for key in value):
+        raise ValueError(f"{description} must be a string-keyed mapping")
+    if set(value) != expected:
+        raise ValueError(f"invalid {description} fields")
+    return value
+
+
+def _exact_str(value: object, description: str, *, nonempty: bool = True) -> str:
+    if type(value) is not str or (nonempty and not value):
+        raise ValueError(f"{description} must be a string")
+    return value
+
+
+def _optional_exact_str(value: object, description: str) -> Optional[str]:
+    if value is None:
+        return None
+    return _exact_str(value, description)
+
+
+def _exact_int(value: object, description: str, *, minimum: int = 0) -> int:
+    if type(value) is not int or value < minimum:
+        raise ValueError(f"{description} must be an integer")
+    return value
+
+
+def _exact_float(
+    value: object, description: str, *, nonnegative: bool = False
+) -> float:
+    if type(value) is not float or not _math.isfinite(value):
+        raise ValueError(f"{description} must be a finite float")
+    if nonnegative and value < 0.0:
+        raise ValueError(f"{description} must be non-negative")
+    return value
+
+
+def _exact_schema_version(value: object, description: str) -> None:
+    if type(value) is not int or value != 1:
+        raise ValueError(f"unsupported {description} schema version")
+
+
+def _exact_date(value: object, description: str) -> _dt.date:
+    text = _exact_str(value, description)
+    parsed = _dt.date.fromisoformat(text)
+    if parsed.isoformat() != text:
+        raise ValueError(f"{description} is not canonical ISO-8601")
+    return parsed
+
+
+def _exact_product_identity(value: object) -> "ProductIdentity":
+    from sidereon import distribution
+
+    fields = _exact_fields(value, _PRODUCT_IDENTITY_FIELDS, "product identity")
+    for name in (
+        "family",
+        "analysis_center",
+        "publisher",
+        "solution_class",
+        "campaign",
+        "issue",
+        "span",
+        "sample",
+        "official_filename",
+        "format",
+    ):
+        _exact_str(fields[name], f"product identity {name}")
+    _exact_int(fields["filename_version"], "product identity filename_version")
+    _exact_date(fields["date"], "product identity date")
+    _optional_exact_str(fields["format_version"], "product identity format_version")
+    horizon = fields["prediction_horizon_days"]
+    if horizon is not None:
+        _exact_int(horizon, "product identity prediction_horizon_days")
+    return distribution.ProductIdentity.from_dict(fields)
+
+
+def _exact_public_url(value: object, description: str) -> Optional[str]:
+    from sidereon import distribution
+
+    result = _optional_exact_str(value, description)
+    if result is None:
+        return None
+    if result != distribution._sanitize_url(result) or not result.startswith(
+        ("https://", "http://")
+    ):
+        raise ValueError(f"{description} must be a sanitized public URL")
+    return result
+
+
+def _exact_source_failure(value: object) -> "SourceFailure":
+    from sidereon import distribution
+
+    fields = _exact_fields(value, _SOURCE_FAILURE_FIELDS, "source failure")
+    source = distribution.DistributionSource(
+        _exact_str(fields["source"], "source failure source")
+    )
+    error_type = _exact_str(fields["error_type"], "source failure error_type")
+    message = _exact_str(fields["message"], "source failure message")
+    url = _exact_public_url(fields["url"], "source failure URL")
+    status_value = fields["status"]
+    status = (
+        None
+        if status_value is None
+        else _exact_int(status_value, "source failure status", minimum=0)
+    )
+    return distribution.SourceFailure(source, error_type, message, url, status)
+
+
 @dataclass(frozen=True)
 class ArtifactIdentity:
     """Stable identity of one exact, verified SP3 artifact.
@@ -1960,24 +2111,34 @@ class ArtifactIdentity:
         """Restore a persisted artifact identity for core verification."""
         from sidereon import distribution
 
-        if int(str(value.get("schema_version", 0))) != 1:
-            raise ValueError("unsupported artifact identity schema version")
-        requested = value.get("requested_identity")
-        resolved = value.get("resolved_identity")
-        if not isinstance(requested, Mapping) or not isinstance(resolved, Mapping):
-            raise ValueError("artifact product identities must be mappings")
+        fields = _exact_fields(value, _ARTIFACT_IDENTITY_FIELDS, "artifact identity")
+        _exact_schema_version(fields["schema_version"], "artifact identity")
         return cls(
-            requested_identity=distribution.ProductIdentity.from_dict(requested),
-            resolved_identity=distribution.ProductIdentity.from_dict(resolved),
+            requested_identity=_exact_product_identity(fields["requested_identity"]),
+            resolved_identity=_exact_product_identity(fields["resolved_identity"]),
             distribution_source=distribution.DistributionSource(
-                str(value["distribution_source"])
+                _exact_str(fields["distribution_source"], "distribution source")
             ),
-            official_filename=str(value["official_filename"]),
-            product_sha256=str(value["product_sha256"]),
-            product_byte_length=int(str(value["product_byte_length"])),
-            archive_sha256=str(value["archive_sha256"]),
-            archive_byte_length=int(str(value["archive_byte_length"])),
-            compression=str(value["compression"]),
+            official_filename=_exact_str(
+                fields["official_filename"], "artifact official filename"
+            ),
+            product_sha256=_exact_str(
+                fields["product_sha256"], "artifact product SHA-256"
+            ),
+            product_byte_length=_exact_int(
+                fields["product_byte_length"],
+                "artifact product byte length",
+                minimum=1,
+            ),
+            archive_sha256=_exact_str(
+                fields["archive_sha256"], "artifact archive SHA-256"
+            ),
+            archive_byte_length=_exact_int(
+                fields["archive_byte_length"],
+                "artifact archive byte length",
+                minimum=1,
+            ),
+            compression=_exact_str(fields["compression"], "artifact compression"),
         )
 
 
@@ -2023,39 +2184,45 @@ class AcquisitionFacts:
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "AcquisitionFacts":
         """Restore persisted secret-free acquisition observations."""
-        from sidereon import distribution
-
-        if int(str(value.get("schema_version", 0))) != 1:
-            raise ValueError("unsupported acquisition facts schema version")
-        attempts = value.get("attempts", [])
-        if not isinstance(attempts, list):
+        fields = _exact_fields(value, _ACQUISITION_FACTS_FIELDS, "acquisition facts")
+        _exact_schema_version(fields["schema_version"], "acquisition facts")
+        attempts = fields["attempts"]
+        if type(attempts) is not list:
             raise ValueError("acquisition attempts must be a list")
-        if any(not isinstance(attempt, Mapping) for attempt in attempts):
-            raise ValueError("acquisition attempts must contain mappings")
-        cache_hit = value.get("cache_hit")
-        if not isinstance(cache_hit, bool):
+        cache_hit = fields["cache_hit"]
+        if type(cache_hit) is not bool:
             raise ValueError("acquisition cache_hit must be a boolean")
+        retrieved_at = _exact_str(fields["retrieved_at"], "retrieval time")
+        retrieved = _dt.datetime.fromisoformat(retrieved_at)
+        if retrieved.tzinfo is None or retrieved.isoformat() != retrieved_at:
+            raise ValueError("retrieval time must be canonical ISO-8601 with an offset")
         return cls(
-            retrieved_at=str(value["retrieved_at"]),
+            retrieved_at=retrieved_at,
             cache_hit=cache_hit,
-            original_url=(
-                None
-                if value.get("original_url") is None
-                else str(value["original_url"])
-            ),
-            final_url=(
-                None if value.get("final_url") is None else str(value["final_url"])
-            ),
-            etag=None if value.get("etag") is None else str(value["etag"]),
-            last_modified=(
-                None
-                if value.get("last_modified") is None
-                else str(value["last_modified"])
-            ),
-            attempts=tuple(
-                distribution.SourceFailure.from_dict(attempt) for attempt in attempts
-            ),
+            original_url=_exact_public_url(fields["original_url"], "original URL"),
+            final_url=_exact_public_url(fields["final_url"], "final URL"),
+            etag=_optional_exact_str(fields["etag"], "ETag"),
+            last_modified=_optional_exact_str(fields["last_modified"], "Last-Modified"),
+            attempts=tuple(_exact_source_failure(attempt) for attempt in attempts),
         )
+
+
+@dataclass(frozen=True)
+class Sp3MergeInputIdentity:
+    """Complete canonical identity returned by the shared Rust core.
+
+    Iteration yields ``(schema_version, stable_id)`` to preserve compatibility
+    with the original two-value return contract.
+    """
+
+    schema_version: int
+    stable_id: str
+    canonical_contributors: tuple[ArtifactIdentity, ...]
+    precedence_contributors: Optional[tuple[ArtifactIdentity, ...]]
+
+    def __iter__(self) -> Iterator[Union[int, str]]:
+        yield self.schema_version
+        yield self.stable_id
 
 
 @dataclass(frozen=True)
@@ -2103,6 +2270,7 @@ class MergeReport:
     stable_input_identity: Optional[str] = None
     input_identity_schema_version: Optional[int] = None
     merge_policy: Optional[dict] = None
+    requested_centers: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Return the public merge acquisition report as JSON-safe values."""
@@ -2115,6 +2283,7 @@ class MergeReport:
         merge_summary = None
         if self.merge_report is not None:
             merge_summary = {
+                "schema_version": 1,
                 "frame_reconciliation_count": (
                     self.merge_report.frame_reconciliation_count
                 ),
@@ -2134,6 +2303,7 @@ class MergeReport:
                 contributor.to_dict() for contributor in self.contributors
             ],
             "absent": [center.to_dict() for center in self.absent],
+            "requested_centers": list(self.requested_centers),
             "source_count": self.source_count,
             "single_product": self.single_product,
             "merged": self.merged,
@@ -2310,8 +2480,8 @@ def _reason_str(exc: DataError) -> str:
 def sp3_merge_input_identity(
     contributors: Sequence[ArtifactIdentity],
     merge_options: Optional["sidereon.Sp3MergeOptions"] = None,
-) -> tuple[int, str]:
-    """Return ``(schema_version, stable_id)`` for exact inputs and merge policy.
+) -> Sp3MergeInputIdentity:
+    """Return the complete canonical identity for exact inputs and policy.
 
     Contributor and mapping insertion order do not affect mean or median merge
     identities. Contributor order is semantic source priority for precedence
@@ -2329,7 +2499,19 @@ def sp3_merge_input_identity(
         )
         for item in artifacts
     ]
-    return _core_sp3_merge_input_identity(encoded, merge_options)
+    schema_version, stable_id, canonical_indices, precedence_indices = (
+        _core_sp3_merge_input_identity(encoded, merge_options)
+    )
+    return Sp3MergeInputIdentity(
+        schema_version=schema_version,
+        stable_id=stable_id,
+        canonical_contributors=tuple(artifacts[index] for index in canonical_indices),
+        precedence_contributors=(
+            None
+            if precedence_indices is None
+            else tuple(artifacts[index] for index in precedence_indices)
+        ),
+    )
 
 
 def _merge_options_from_policy(value: Mapping[str, object]):
@@ -2348,46 +2530,260 @@ def _merge_options_from_policy(value: Mapping[str, object]):
         "helmert",
         "precedence_artifact_sha256",
     }
-    if set(value) != expected_fields or int(str(value["schema_version"])) != 1:
-        raise ValueError("invalid merged-SP3 policy record")
-    outlier_value = value["outlier_reject"]
+    fields = _exact_fields(value, expected_fields, "merged-SP3 policy")
+    _exact_schema_version(fields["schema_version"], "merged-SP3 policy")
+    position_tolerance_m = _exact_float(
+        fields["position_tolerance_m"],
+        "merged-SP3 position tolerance",
+        nonnegative=True,
+    )
+    clock_tolerance_s = _exact_float(
+        fields["clock_tolerance_s"],
+        "merged-SP3 clock tolerance",
+        nonnegative=True,
+    )
+    min_agree = _exact_int(fields["min_agree"], "merged-SP3 min_agree", minimum=1)
+    clock_min_common = _exact_int(
+        fields["clock_min_common"],
+        "merged-SP3 clock_min_common",
+        minimum=1,
+    )
+    combine = _exact_str(fields["combine"], "merged-SP3 combine")
+    if combine not in {"mean", "median", "precedence"}:
+        raise ValueError("invalid merged-SP3 combine")
+    precedence_scope = _exact_str(
+        fields["precedence_scope"], "merged-SP3 precedence_scope"
+    )
+    if precedence_scope not in {"cell", "satellite_arc"}:
+        raise ValueError("invalid merged-SP3 precedence_scope")
+    outlier_value = fields["outlier_reject"]
     outlier = None
     if outlier_value is not None:
-        if not isinstance(outlier_value, Mapping) or set(outlier_value) != {
-            "position_tolerance_m",
-            "clock_tolerance_s",
-        }:
-            raise ValueError("invalid merged-SP3 outlier policy")
-        outlier = sidereon.Sp3OutlierRejectOptions(
-            float(outlier_value["position_tolerance_m"]),
-            float(outlier_value["clock_tolerance_s"]),
+        outlier_fields = _exact_fields(
+            outlier_value,
+            {"position_tolerance_m", "clock_tolerance_s"},
+            "merged-SP3 outlier policy",
         )
-    systems = value["systems"]
-    frame_sets = value["asserted_frame_label_sets"]
-    if systems is not None and not isinstance(systems, list):
-        raise ValueError("invalid merged-SP3 systems policy")
-    if not isinstance(frame_sets, list):
+        outlier = sidereon.Sp3OutlierRejectOptions(
+            _exact_float(
+                outlier_fields["position_tolerance_m"],
+                "merged-SP3 outlier position tolerance",
+                nonnegative=True,
+            ),
+            _exact_float(
+                outlier_fields["clock_tolerance_s"],
+                "merged-SP3 outlier clock tolerance",
+                nonnegative=True,
+            ),
+        )
+    target_interval = fields["target_epoch_interval_s"]
+    if target_interval is not None:
+        target_interval = _exact_float(
+            target_interval, "merged-SP3 target epoch interval"
+        )
+        if (
+            target_interval < 1.0
+            or abs(target_interval - round(target_interval)) > 1e-6
+        ):
+            raise ValueError("invalid merged-SP3 target epoch interval")
+    systems = fields["systems"]
+    if systems is not None:
+        if type(systems) is not list or not systems:
+            raise ValueError("invalid merged-SP3 systems policy")
+        if any(type(system) is not str or not system for system in systems):
+            raise ValueError("invalid merged-SP3 systems policy")
+        if systems != sorted(set(systems)):
+            raise ValueError("merged-SP3 systems policy is not canonical")
+    frame_sets = fields["asserted_frame_label_sets"]
+    if type(frame_sets) is not list:
         raise ValueError("invalid merged-SP3 frame policy")
-    helmert = value["helmert"]
-    if not isinstance(helmert, bool):
+    normalized_frame_sets = []
+    for labels in frame_sets:
+        if type(labels) is not list or len(labels) < 2:
+            raise ValueError("invalid merged-SP3 frame policy")
+        if any(
+            type(label) is not str or not label or label != label.strip()
+            for label in labels
+        ):
+            raise ValueError("invalid merged-SP3 frame policy")
+        canonical_labels = sorted(set(labels))
+        if len(canonical_labels) < 2 or labels != canonical_labels:
+            raise ValueError("merged-SP3 frame policy is not canonical")
+        normalized_frame_sets.append(canonical_labels)
+    if frame_sets != sorted(normalized_frame_sets):
+        raise ValueError("merged-SP3 frame policy is not canonical")
+    helmert = fields["helmert"]
+    if type(helmert) is not bool:
         raise ValueError("invalid merged-SP3 Helmert policy")
+    precedence = fields["precedence_artifact_sha256"]
+    if type(precedence) is not list or any(
+        type(digest) is not str for digest in precedence
+    ):
+        raise ValueError("invalid merged-SP3 precedence contributor policy")
     return sidereon.Sp3MergeOptions(
-        position_tolerance_m=float(value["position_tolerance_m"]),
-        clock_tolerance_s=float(value["clock_tolerance_s"]),
-        min_agree=int(str(value["min_agree"])),
-        clock_min_common=int(str(value["clock_min_common"])),
-        combine=str(value["combine"]),
-        precedence_scope=str(value["precedence_scope"]),
+        position_tolerance_m=position_tolerance_m,
+        clock_tolerance_s=clock_tolerance_s,
+        min_agree=min_agree,
+        clock_min_common=clock_min_common,
+        combine=combine,
+        precedence_scope=precedence_scope,
         outlier_reject=outlier,
-        target_epoch_interval_s=(
-            None
-            if value["target_epoch_interval_s"] is None
-            else float(value["target_epoch_interval_s"])
-        ),
+        target_epoch_interval_s=target_interval,
         systems=systems,
         asserted_frame_label_sets=frame_sets,
         helmert=helmert,
     )
+
+
+_MERGE_REPORT_FIELDS = {
+    "schema_version",
+    "contributors",
+    "absent",
+    "requested_centers",
+    "source_count",
+    "single_product",
+    "merged",
+    "stable_input_identity",
+    "input_identity_schema_version",
+    "merge_policy",
+    "merge_report",
+}
+_CONTRIBUTOR_FIELDS = {
+    "center",
+    "filename",
+    "date",
+    "issue",
+    "pattern",
+    "artifact_identity",
+    "acquisition_facts",
+}
+_ABSENT_CENTER_FIELDS = {
+    "center",
+    "filename",
+    "reason",
+    "pattern",
+    "url",
+    "http_status",
+}
+_MERGE_SUMMARY_FIELDS = {
+    "schema_version",
+    "frame_reconciliation_count",
+    "quarantined_count",
+    "single_source_count",
+    "position_outlier_count",
+    "clock_outlier_count",
+    "agreement_count",
+    "position_agreement_rms_m",
+    "position_agreement_max_m",
+    "clock_agreement_rms_s",
+    "clock_agreement_max_s",
+}
+
+
+def _contributor_matches_catalog(
+    contributor: Mapping[str, object], artifact: ArtifactIdentity
+) -> bool:
+    from sidereon import distribution
+
+    requested = artifact.requested_identity
+    center = _exact_str(contributor["center"], "contributor center")
+    filename = _exact_str(contributor["filename"], "contributor filename")
+    date = _exact_date(contributor["date"], "contributor date")
+    issue = contributor["issue"]
+    if issue is not None:
+        issue = _exact_str(issue, "contributor issue")
+    pattern = _exact_str(contributor["pattern"], "contributor pattern")
+    if (
+        center != requested.analysis_center
+        or date != requested.date
+        or ("0000" if issue is None else issue) != requested.issue
+    ):
+        return False
+
+    if pattern in {"canonical", "requested_sample"}:
+        if pattern == "canonical" and _ultra_center(center):
+            return False
+        if pattern == "requested_sample" and not _ultra_center(center):
+            return False
+        product = Product(
+            center,
+            "sp3",
+            date,
+            requested.sample,
+            issue=issue,
+            pattern=None if pattern == "canonical" else pattern,
+        )
+        return (
+            filename == product.canonical_filename()
+            and distribution._catalog_product_identity(product) == requested
+        )
+
+    if issue is None:
+        return False
+    return any(
+        candidate.pattern == pattern
+        and candidate.canonical_filename() == filename
+        and distribution._catalog_product_identity(candidate) == requested
+        for candidate in _sp3_products_for_issue(center, date, issue, None)
+    )
+
+
+def _validate_absent_center(value: object) -> str:
+    fields = _exact_fields(value, _ABSENT_CENTER_FIELDS, "absent center")
+    center = _exact_str(fields["center"], "absent center code")
+    _center_def(center)
+    filename = _optional_exact_str(fields["filename"], "absent center filename")
+    pattern = _optional_exact_str(fields["pattern"], "absent center pattern")
+    url = _exact_public_url(fields["url"], "absent center URL")
+    _exact_str(fields["reason"], "absent center reason")
+    status = fields["http_status"]
+    if status is not None:
+        _exact_int(status, "absent center HTTP status", minimum=0)
+    if (filename is None) != (url is None) or (
+        filename is None and pattern is not None
+    ):
+        raise ValueError("absent center candidate metadata is incomplete")
+    if filename is not None and ("/" in filename or "\\" in filename):
+        raise ValueError("absent center filename must not be a path")
+    return center
+
+
+def _validate_merge_summary(value: object) -> None:
+    fields = _exact_fields(value, _MERGE_SUMMARY_FIELDS, "SP3 merge summary")
+    _exact_schema_version(fields["schema_version"], "SP3 merge summary")
+    for name in (
+        "frame_reconciliation_count",
+        "quarantined_count",
+        "single_source_count",
+        "position_outlier_count",
+        "clock_outlier_count",
+        "agreement_count",
+    ):
+        _exact_int(fields[name], f"SP3 merge summary {name}")
+    for rms_name, max_name in (
+        ("position_agreement_rms_m", "position_agreement_max_m"),
+        ("clock_agreement_rms_s", "clock_agreement_max_s"),
+    ):
+        rms_value = fields[rms_name]
+        max_value = fields[max_name]
+        if rms_value is None:
+            if (
+                max_value is not None
+                and _exact_float(
+                    max_value, f"SP3 merge summary {max_name}", nonnegative=True
+                )
+                != 0.0
+            ):
+                raise ValueError("SP3 merge summary empty metric has nonzero maximum")
+        else:
+            rms = _exact_float(
+                rms_value, f"SP3 merge summary {rms_name}", nonnegative=True
+            )
+            maximum = _exact_float(
+                max_value, f"SP3 merge summary {max_name}", nonnegative=True
+            )
+            if rms > maximum:
+                raise ValueError("SP3 merge summary RMS exceeds maximum")
 
 
 def verify_merge_report(value: Mapping[str, object]) -> bool:
@@ -2397,53 +2793,75 @@ def verify_merge_report(value: Mapping[str, object]) -> bool:
     identity-mismatched reports. Observational acquisition facts are parsed but
     never enter the stable identity.
     """
+    from sidereon import distribution
+
     try:
-        if int(str(value.get("schema_version", 0))) != 1:
-            return False
-        contributors_value = value["contributors"]
-        policy_value = value["merge_policy"]
-        if not isinstance(contributors_value, list) or not isinstance(
-            policy_value, Mapping
-        ):
-            return False
+        report = _exact_fields(value, _MERGE_REPORT_FIELDS, "merged-SP3 report")
+        _exact_schema_version(report["schema_version"], "merged-SP3 report")
+        contributors_value = report["contributors"]
+        policy_value = report["merge_policy"]
+        if type(contributors_value) is not list:
+            raise ValueError("contributors must be a list")
+        if not isinstance(policy_value, Mapping):
+            raise ValueError("merge policy must be a mapping")
         artifacts = []
+        contributor_centers = []
         for contributor in contributors_value:
-            if not isinstance(contributor, Mapping):
-                return False
-            artifact_value = contributor.get("artifact_identity")
-            facts_value = contributor.get("acquisition_facts")
+            contributor = _exact_fields(
+                contributor, _CONTRIBUTOR_FIELDS, "SP3 contributor"
+            )
+            artifact_value = contributor["artifact_identity"]
+            facts_value = contributor["acquisition_facts"]
             if not isinstance(artifact_value, Mapping) or not isinstance(
                 facts_value, Mapping
             ):
-                return False
+                raise ValueError("contributor provenance must be mappings")
             artifact = ArtifactIdentity.from_dict(artifact_value)
             AcquisitionFacts.from_dict(facts_value)
-            if contributor.get("center") != artifact.requested_identity.analysis_center:
-                return False
-            if contributor.get("date") != artifact.requested_identity.date.isoformat():
-                return False
-            contributor_issue = contributor.get("issue")
-            if ("0000" if contributor_issue is None else contributor_issue) != (
-                artifact.requested_identity.issue
-            ):
-                return False
+            distribution._validate_requested_identity(artifact.requested_identity)
+            if not _contributor_matches_catalog(contributor, artifact):
+                raise ValueError("contributor fields disagree with artifact identity")
             artifacts.append(artifact)
-        source_count = value["source_count"]
-        single_product = value["single_product"]
-        merged = value["merged"]
-        if (
-            not artifacts
-            or not isinstance(source_count, int)
-            or isinstance(source_count, bool)
-            or source_count != len(artifacts)
+            contributor_centers.append(artifact.requested_identity.analysis_center)
+        if not artifacts or len(set(contributor_centers)) != len(contributor_centers):
+            raise ValueError("contributors must contain unique centers")
+
+        absent_value = report["absent"]
+        if type(absent_value) is not list:
+            raise ValueError("absent centers must be a list")
+        absent_centers = [_validate_absent_center(item) for item in absent_value]
+        if len(set(absent_centers)) != len(absent_centers):
+            raise ValueError("absent centers must be unique")
+
+        requested_centers = report["requested_centers"]
+        if type(requested_centers) is not list or any(
+            type(center) is not str for center in requested_centers
         ):
-            return False
-        if not isinstance(single_product, bool) or single_product != (
-            len(artifacts) == 1
-        ):
-            return False
+            raise ValueError("requested centers must be a list of strings")
+        if len(set(requested_centers)) != len(requested_centers):
+            raise ValueError("requested centers must be unique")
+        for center in requested_centers:
+            _center_def(center)
+        if set(requested_centers) != set(contributor_centers) | set(absent_centers):
+            raise ValueError("contributors and absent centers do not partition request")
+        if set(contributor_centers) & set(absent_centers):
+            raise ValueError("a center cannot be both contributor and absent")
+        order = {center: index for index, center in enumerate(requested_centers)}
+        if contributor_centers != sorted(contributor_centers, key=order.__getitem__):
+            raise ValueError("contributors are not in request order")
+        if absent_centers != sorted(absent_centers, key=order.__getitem__):
+            raise ValueError("absent centers are not in request order")
+
+        source_count = _exact_int(report["source_count"], "source count", minimum=1)
+        single_product = report["single_product"]
+        merged = report["merged"]
+        if source_count != len(artifacts):
+            raise ValueError("source count disagrees with contributors")
+        if type(single_product) is not bool or single_product != (len(artifacts) == 1):
+            raise ValueError("single-product flag disagrees with contributors")
         if merged is not True:
-            return False
+            raise ValueError("merged flag must be true")
+        _validate_merge_summary(report["merge_report"])
         options = _merge_options_from_policy(policy_value)
         precedence = policy_value["precedence_artifact_sha256"]
         expected_precedence = (
@@ -2452,13 +2870,15 @@ def verify_merge_report(value: Mapping[str, object]) -> bool:
             else []
         )
         if precedence != expected_precedence:
-            return False
-        schema_version, stable_id = sp3_merge_input_identity(artifacts, options)
+            raise ValueError("precedence contributors disagree with contributor order")
+        identity = sp3_merge_input_identity(artifacts, options)
         return (
-            int(str(value["input_identity_schema_version"])) == schema_version
-            and value["stable_input_identity"] == stable_id
+            type(report["input_identity_schema_version"]) is int
+            and report["input_identity_schema_version"] == identity.schema_version
+            and type(report["stable_input_identity"]) is str
+            and report["stable_input_identity"] == identity.stable_id
         )
-    except (KeyError, TypeError, ValueError, OverflowError):
+    except (KeyError, TypeError, ValueError, OverflowError, DataError):
         return False
 
 
@@ -2469,10 +2889,17 @@ def _merge_policy_to_dict(
     options = merge_options or sidereon.Sp3MergeOptions()
     outlier = options.outlier_reject
     combine = options.combine.label
+    canonical_frame_sets = sorted(
+        sorted(set(labels)) for labels in options.asserted_frame_label_sets
+    )
     return {
         "schema_version": 1,
-        "position_tolerance_m": options.position_tolerance_m,
-        "clock_tolerance_s": options.clock_tolerance_s,
+        "position_tolerance_m": (
+            0.0 if options.position_tolerance_m == 0.0 else options.position_tolerance_m
+        ),
+        "clock_tolerance_s": (
+            0.0 if options.clock_tolerance_s == 0.0 else options.clock_tolerance_s
+        ),
         "min_agree": options.min_agree,
         "clock_min_common": options.clock_min_common,
         "combine": combine,
@@ -2481,13 +2908,21 @@ def _merge_policy_to_dict(
             None
             if outlier is None
             else {
-                "position_tolerance_m": outlier.position_tolerance_m,
-                "clock_tolerance_s": outlier.clock_tolerance_s,
+                "position_tolerance_m": (
+                    0.0
+                    if outlier.position_tolerance_m == 0.0
+                    else outlier.position_tolerance_m
+                ),
+                "clock_tolerance_s": (
+                    0.0
+                    if outlier.clock_tolerance_s == 0.0
+                    else outlier.clock_tolerance_s
+                ),
             }
         ),
         "target_epoch_interval_s": options.target_epoch_interval_s,
-        "systems": options.systems,
-        "asserted_frame_label_sets": options.asserted_frame_label_sets,
+        "systems": None if options.systems is None else sorted(set(options.systems)),
+        "asserted_frame_label_sets": canonical_frame_sets,
         "helmert": options.helmert,
         "precedence_artifact_sha256": (
             [artifact.product_sha256 for artifact in artifacts]
@@ -2522,6 +2957,8 @@ def fetch_merged_sp3(
     """
     if not isinstance(centers, (list, tuple)):
         raise UnsupportedProduct("centers must be a list of center codes")
+    if len(set(centers)) != len(centers):
+        raise UnsupportedProduct("centers must not contain duplicates")
 
     # Validate every center up front so an unknown code raises rather than being
     # silently recorded as an absent contributor.
@@ -2571,6 +3008,7 @@ def fetch_merged_sp3(
         source_count=len(contributors),
         single_product=len(contributors) == 1,
         merged=True,
+        requested_centers=list(centers),
         merge_report=merge_report,
         stable_input_identity=stable_input_identity,
         input_identity_schema_version=input_identity_schema_version,
