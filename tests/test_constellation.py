@@ -10,6 +10,7 @@ binding must reproduce the core's records and bytes exactly.
 """
 
 import os
+from datetime import datetime, timezone
 
 import pytest
 import sidereon
@@ -33,6 +34,12 @@ def _statuses():
 
 def _merged():
     return sidereon.merge_navcen(_records(), _statuses())
+
+
+def _unix_us(year, month, day, hour, minute):
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    instant = datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+    return int((instant - epoch).total_seconds() * 1_000_000)
 
 
 def test_from_celestrak_json_builds_identity_records():
@@ -69,6 +76,85 @@ def test_parse_navcen_accepts_bytes():
     from_str = sidereon.parse_navcen(_read("navcen_gps_sample.html"))
     from_bytes = sidereon.parse_navcen(_read("navcen_gps_sample.html", "rb"))
     assert from_str == from_bytes
+
+
+def test_parse_navcen_at_applies_forecast_only_during_interval():
+    html = _read("navcen_forecast_cases.html")
+    before = sidereon.parse_navcen_at(html, _unix_us(2026, 7, 24, 1, 14))
+    during = sidereon.parse_navcen_at(html, _unix_us(2026, 7, 24, 1, 15))
+    after = sidereon.parse_navcen_at(html, _unix_us(2026, 7, 24, 13, 15))
+
+    def by_prn(rows):
+        return {row.status.prn: row for row in rows}
+
+    assert by_prn(before)[7].status.usable is True
+    assert by_prn(during)[7].status.usable is False
+    assert by_prn(after)[7].status.usable is True
+
+    forecast = by_prn(during)[7]
+    assert forecast.evaluated_at_unix_us == _unix_us(2026, 7, 24, 1, 15)
+    assert forecast.outage_start == "24 JUL 2026"
+    assert forecast.timing == "parsed"
+    assert forecast.effective_start_unix_us == _unix_us(2026, 7, 24, 1, 15)
+    assert forecast.effective_end_unix_us == _unix_us(2026, 7, 24, 13, 15)
+    assert forecast.status.nanu_type == "FCSTDV"
+    assert "JDAY 205/0115 - JDAY 205/1315" in forecast.status.nanu_subject
+
+
+def test_parse_navcen_at_preserves_terminal_and_ambiguous_notices():
+    assessments = sidereon.parse_navcen_at(
+        _read("navcen_forecast_cases.html"), _unix_us(2026, 7, 24, 2, 0)
+    )
+    by_prn = {row.status.prn: row for row in assessments}
+    assert by_prn[19].status.usable is False
+    assert by_prn[19].timing == "not_applicable"
+    assert by_prn[13].status.usable is False
+    assert by_prn[13].timing == "not_applicable"
+    assert by_prn[4].status.usable is True
+    assert by_prn[4].timing == "unparseable"
+    assert by_prn[4].effective_start_unix_us is None
+    assert by_prn[4].effective_end_unix_us is None
+    assert by_prn[4].status.nanu_type == "FCSTMX"
+    assert "UNTIL FURTHER NOTICE" in by_prn[4].status.nanu_subject
+    assert by_prn[8].status.usable is True
+    assert by_prn[8].status.active_nanu is False
+    assert by_prn[8].timing == "parsed"
+    assert by_prn[20].status.usable is False
+    assert by_prn[20].status.nanu_type == "UNUSUFN"
+    assert by_prn[20].timing == "not_applicable"
+
+    merged = sidereon.merge_navcen_at(_records(), assessments)
+    assert {record.prn: record for record in merged}[19].usable is False
+
+
+def test_legacy_navcen_parser_keeps_preexisting_unusufn_behavior():
+    statuses = sidereon.parse_navcen(_read("navcen_forecast_cases.html"))
+    by_prn = {status.prn: status for status in statuses}
+    assert by_prn[7].usable is False
+    assert by_prn[20].usable is True
+
+
+def test_merge_navcen_at_propagates_forecast_time_for_existing_record():
+    html = """
+    <table><tr>
+      <td class="views-field-field-gps-prn">19</td>
+      <td class="views-field-field-gps-svn">59</td>
+      <td class="views-field-field-gps-con-block-type">IIR</td>
+      <td class="views-field-field-nanu-outage-start-date">24 JUL 2026</td>
+      <td class="views-field-field-nanu-type">FCSTDV</td>
+      <td class="views-field-field-nanu-subject">
+        SVN59 (PRN19) FORECAST OUTAGE JDAY 205/0115 - JDAY 205/1315
+      </td>
+      <td class="nanu-active-check">1</td>
+    </tr></table>
+    """
+    during = sidereon.parse_navcen_at(html, _unix_us(2026, 7, 24, 2, 0))
+    after = sidereon.parse_navcen_at(html, _unix_us(2026, 7, 24, 13, 15))
+
+    during_record = {r.prn: r for r in sidereon.merge_navcen_at(_records(), during)}[19]
+    after_record = {r.prn: r for r in sidereon.merge_navcen_at(_records(), after)}[19]
+    assert during_record.usable is False
+    assert after_record.usable is True
 
 
 def test_merge_navcen_fills_svn_and_usability():

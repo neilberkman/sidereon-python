@@ -13,9 +13,10 @@ use pyo3::types::PyModule;
 use pyo3::IntoPyObjectExt;
 
 use sidereon_core::astro::omm::parse_json_array;
+use sidereon_core::astro::passes::UtcInstant;
 use sidereon_core::constellation::{
-    self, BoolStyle, CelestrakSource, Diff, FieldChange, NavcenSource, NavcenStatus, Record,
-    RecordSource, Validation,
+    self, BoolStyle, CelestrakSource, Diff, FieldChange, NavcenAssessment, NavcenSource,
+    NavcenStatus, NavcenTiming, Record, RecordSource, Validation,
 };
 use sidereon_core::GnssSystem;
 
@@ -315,6 +316,82 @@ pub struct PyNavcenStatus {
 impl PyNavcenStatus {
     fn from_inner(inner: NavcenStatus) -> Self {
         Self { inner }
+    }
+}
+
+/// A NAVCEN row evaluated at an explicit UTC instant.
+#[pyclass(module = "sidereon._sidereon", name = "NavcenAssessment")]
+#[derive(Clone, PartialEq, Eq)]
+pub struct PyNavcenAssessment {
+    inner: NavcenAssessment,
+}
+
+impl PyNavcenAssessment {
+    fn from_inner(inner: NavcenAssessment) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyNavcenAssessment {
+    /// Parsed row with `usable` evaluated at `evaluated_at_unix_us`.
+    #[getter]
+    fn status(&self) -> PyNavcenStatus {
+        PyNavcenStatus::from_inner(self.inner.status.clone())
+    }
+
+    /// Explicit UTC evaluation instant as Unix microseconds.
+    #[getter]
+    fn evaluated_at_unix_us(&self) -> i64 {
+        self.inner.evaluated_at_utc.unix_microseconds()
+    }
+
+    /// Cleaned NAVCEN Outage Start text. Duplicate cells are joined with
+    /// `" | "` and make bounded forecast timing unparseable.
+    #[getter]
+    fn outage_start(&self) -> Option<String> {
+        self.inner.outage_start.clone()
+    }
+
+    /// `"parsed"`, `"unparseable"`, or `"not_applicable"`.
+    #[getter]
+    fn timing(&self) -> &'static str {
+        match self.inner.timing {
+            NavcenTiming::Parsed(_) => "parsed",
+            NavcenTiming::Unparseable => "unparseable",
+            NavcenTiming::NotApplicable => "not_applicable",
+        }
+    }
+
+    /// Parsed interval start as Unix microseconds, or `None`.
+    #[getter]
+    fn effective_start_unix_us(&self) -> Option<i64> {
+        match self.inner.timing {
+            NavcenTiming::Parsed(interval) => Some(interval.start_utc.unix_microseconds()),
+            NavcenTiming::Unparseable | NavcenTiming::NotApplicable => None,
+        }
+    }
+
+    /// Parsed interval end as Unix microseconds, or `None`.
+    #[getter]
+    fn effective_end_unix_us(&self) -> Option<i64> {
+        match self.inner.timing {
+            NavcenTiming::Parsed(interval) => Some(interval.end_utc.unix_microseconds()),
+            NavcenTiming::Unparseable | NavcenTiming::NotApplicable => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "NavcenAssessment(status={:?}, evaluated_at_unix_us={}, timing={:?})",
+            self.inner.status,
+            self.inner.evaluated_at_utc.unix_microseconds(),
+            self.timing()
+        )
+    }
+
+    fn __eq__(&self, other: &PyNavcenAssessment) -> bool {
+        self == other
     }
 }
 
@@ -796,6 +873,19 @@ fn from_celestrak_omm_lenient(json: &str, system: PyGnssSystem) -> PyResult<PyCa
     })
 }
 
+fn navcen_html_bytes(html: &Bound<'_, PyAny>, function: &str) -> PyResult<Vec<u8>> {
+    let bytes: Vec<u8> = if let Ok(text) = html.extract::<String>() {
+        text.into_bytes()
+    } else if let Ok(raw) = html.extract::<Vec<u8>>() {
+        raw
+    } else {
+        return Err(PyTypeError::new_err(format!(
+            "{function} expects str or bytes"
+        )));
+    };
+    Ok(bytes)
+}
+
 /// Parse NAVCEN GPS constellation status HTML into status rows.
 ///
 /// Accepts the raw HTML as `str` or `bytes`. Returns rows sorted by PRN. Raises
@@ -803,13 +893,7 @@ fn from_celestrak_omm_lenient(json: &str, system: PyGnssSystem) -> PyResult<PyCa
 /// required integer cell fails to parse.
 #[pyfunction]
 fn parse_navcen(html: &Bound<'_, PyAny>) -> PyResult<Vec<PyNavcenStatus>> {
-    let bytes: Vec<u8> = if let Ok(text) = html.extract::<String>() {
-        text.into_bytes()
-    } else if let Ok(raw) = html.extract::<Vec<u8>>() {
-        raw
-    } else {
-        return Err(PyTypeError::new_err("parse_navcen expects str or bytes"));
-    };
+    let bytes = navcen_html_bytes(html, "parse_navcen")?;
     constellation::parse_navcen(&bytes)
         .map(|statuses| {
             statuses
@@ -818,6 +902,31 @@ fn parse_navcen(html: &Bound<'_, PyAny>) -> PyResult<Vec<PyNavcenStatus>> {
                 .collect()
         })
         .map_err(to_constellation_err)
+}
+
+/// Parse NAVCEN HTML and evaluate operational usability at explicit UTC Unix
+/// microseconds.
+///
+/// Active bounded forecasts affect usability only on `[start, end)`. An
+/// incomplete forecast is retained with `timing == "unparseable"` and does not
+/// disable the satellite. The host clock is never read.
+#[pyfunction]
+fn parse_navcen_at(
+    html: &Bound<'_, PyAny>,
+    evaluated_at_unix_us: i64,
+) -> PyResult<Vec<PyNavcenAssessment>> {
+    let bytes = navcen_html_bytes(html, "parse_navcen_at")?;
+    constellation::parse_navcen_at(
+        &bytes,
+        UtcInstant::from_unix_microseconds(evaluated_at_unix_us),
+    )
+    .map(|assessments| {
+        assessments
+            .into_iter()
+            .map(PyNavcenAssessment::from_inner)
+            .collect()
+    })
+    .map_err(to_constellation_err)
 }
 
 /// Merge NAVCEN status rows into CelesTrak records by PRN.
@@ -830,6 +939,16 @@ fn parse_navcen(html: &Bound<'_, PyAny>) -> PyResult<Vec<PyNavcenStatus>> {
 fn merge_navcen(records: Vec<PyRecord>, statuses: Vec<PyNavcenStatus>) -> Vec<PyRecord> {
     let statuses: Vec<NavcenStatus> = statuses.into_iter().map(|s| s.inner).collect();
     constellation::merge_navcen(&records_inner(&records), &statuses)
+        .into_iter()
+        .map(PyRecord::from_inner)
+        .collect()
+}
+
+/// Merge time-aware NAVCEN assessments into CelesTrak records.
+#[pyfunction]
+fn merge_navcen_at(records: Vec<PyRecord>, assessments: Vec<PyNavcenAssessment>) -> Vec<PyRecord> {
+    let assessments: Vec<NavcenAssessment> = assessments.into_iter().map(|a| a.inner).collect();
+    constellation::merge_navcen_at(&records_inner(&records), &assessments)
         .into_iter()
         .map(PyRecord::from_inner)
         .collect()
@@ -934,6 +1053,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRecordSource>()?;
     m.add_class::<PyRecord>()?;
     m.add_class::<PyNavcenStatus>()?;
+    m.add_class::<PyNavcenAssessment>()?;
     m.add_class::<PyValidation>()?;
     m.add_class::<PyFieldChange>()?;
     m.add_class::<PyDiff>()?;
@@ -942,7 +1062,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(from_celestrak_json, m)?)?;
     m.add_function(wrap_pyfunction!(from_celestrak_omm_lenient, m)?)?;
     m.add_function(wrap_pyfunction!(parse_navcen, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_navcen_at, m)?)?;
     m.add_function(wrap_pyfunction!(merge_navcen, m)?)?;
+    m.add_function(wrap_pyfunction!(merge_navcen_at, m)?)?;
     m.add_function(wrap_pyfunction!(to_csv, m)?)?;
     m.add_function(wrap_pyfunction!(validate, m)?)?;
     m.add_function(wrap_pyfunction!(validate_against_sp3_ids, m)?)?;

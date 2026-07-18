@@ -2,6 +2,23 @@
 
 All notable changes to the Sidereon Python interface are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Added `parse_navcen_at` and `merge_navcen_at`, plus `NavcenAssessment`, for
+  deterministic NAVCEN usability decisions at explicit UTC Unix microseconds.
+  Assessments expose the raw NANU notice, Outage Start cell, evaluation instant,
+  parsed interval, and explicit unparseable/not-applicable timing state.
+
+### Compatibility
+
+- Existing `parse_navcen` and `merge_navcen` behavior is unchanged. Operational
+  callers should use the explicit-time API so a future or completed forecast is
+  not treated as a current outage. The time-aware path additionally recognizes
+  active `UNUSUFN` notices as immediately unusable; the legacy parser's
+  pre-existing behavior remains unchanged.
+
 ## [0.31.2] - 2026-07-16
 
 ### Fixed
