@@ -502,7 +502,7 @@ wheels = [
 
 [[package]]
 name = "sidereon"
-version = "0.31.2"
+version = "0.32.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

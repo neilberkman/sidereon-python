@@ -4,6 +4,8 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-07-18
+
 ### Added
 
 - Added `parse_navcen_at` and `merge_navcen_at`, plus `NavcenAssessment`, for
@@ -18,6 +20,10 @@ All notable changes to the Sidereon Python interface are documented here.
   not treated as a current outage. The time-aware path additionally recognizes
   active `UNUSUFN` notices as immediately unusable; the legacy parser's
   pre-existing behavior remains unchanged.
+
+### Changed
+
+- Updated `sidereon` and `sidereon-core` to 0.32.0.
 
 ## [0.31.2] - 2026-07-16
 
