@@ -138,6 +138,8 @@ jobs:
               unzip -p "$wheel" \
                 "third_party_source/sidereon-core-0.33.1/tides/$source" \
                 >"$RUNNER_TEMP/$source"
+              cmp "$RUNNER_TEMP/$source" \
+                "third_party_source/sidereon-core-0.33.1/tides/$source"
             done
           done
           notice="$RUNNER_TEMP/sdist.notices"
@@ -156,6 +158,8 @@ jobs:
             tar -xOf "${sdists[0]}" --wildcards \
               "*/third_party_source/sidereon-core-0.33.1/tides/$source" \
               >"$RUNNER_TEMP/sdist-$source"
+            cmp "$RUNNER_TEMP/sdist-$source" \
+              "third_party_source/sidereon-core-0.33.1/tides/$source"
           done
       - name: Smoke-test installed x86_64 Linux wheel
         shell: bash
