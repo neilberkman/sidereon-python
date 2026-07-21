@@ -141,10 +141,31 @@ def test_exact_product_set_retains_prediction_tier_metadata():
     assert caught.value.unexpected == (two_day,)
 
 
-def test_exact_product_set_accepts_resolved_format_metadata():
+def test_exact_product_set_allows_resolution_but_pins_declared_format_metadata():
     expected = _sp3_request().identity
-    resolved = dataclasses.replace(expected, format_version="SP3-c")
-    assert distribution.validate_exact_product_set([expected], [resolved]) is None
+    resolved_c = dataclasses.replace(expected, format_version="SP3-c")
+    resolved_d = dataclasses.replace(expected, format_version="SP3-d")
+
+    assert distribution.validate_exact_product_set([expected], [resolved_c]) is None
+    with pytest.raises(distribution.ExactProductSetError) as caught:
+        distribution.validate_exact_product_set([resolved_d], [resolved_c])
+    assert caught.value.missing == (resolved_d,)
+    assert caught.value.unexpected == (resolved_c,)
+
+    with pytest.raises(distribution.ExactProductSetError) as caught:
+        distribution.validate_exact_product_set([resolved_c], [resolved_c, resolved_d])
+    assert caught.value.duplicate_available == (resolved_c,)
+
+
+def test_current_core_unsupported_distribution_message_is_typed():
+    navigation = distribution.identity(data.product("igs", "nav", SP3_DATE))
+    with pytest.raises(
+        distribution.UnsupportedDistribution,
+        match="distributor nasa_cddis does not serve nav",
+    ):
+        distribution._distribution_location(
+            navigation, distribution.DistributionSource.NASA_CDDIS
+        )
 
 
 def test_ionex_cddis_rejects_pretransition_long_name():
@@ -553,6 +574,73 @@ def test_cache_hit_revalidates_content_and_round_trips_provenance(tmp_path):
     assert second.provenance.resolved_identity == first.provenance.resolved_identity
     assert second.provenance.last_modified == "Thu, 25 Jun 2020 00:00:00 GMT"
     assert os.path.exists(first.path + ".archive")
+
+
+def test_warm_and_cold_caller_checksum_mismatches_are_identical(tmp_path):
+    source = distribution.Distribution.in_memory(_sp3_bytes(), compression="none")
+    exact = _sp3_request(source)
+    wrong_digest = hashlib.sha256(b"not this exact product").hexdigest()
+
+    with pytest.raises(distribution.ProductValidationFailure) as cold:
+        distribution.acquire(
+            exact,
+            cache_dir=tmp_path / "cold",
+            sha256=wrong_digest,
+        )
+
+    distribution.acquire(exact, cache_dir=tmp_path / "warm")
+    with pytest.raises(distribution.ProductValidationFailure) as warm:
+        distribution.acquire(
+            exact,
+            cache_dir=tmp_path / "warm",
+            sha256=wrong_digest,
+        )
+
+    assert cold.value.code == warm.value.code == "checksum_mismatch"
+    assert str(cold.value) == str(warm.value)
+
+
+def test_local_archive_read_is_bounded_before_validation(tmp_path, monkeypatch):
+    source_path = tmp_path / "oversized.SP3"
+    source_path.write_bytes(b"0123456789")
+    read_sizes = []
+    original_open = Path.open
+
+    class RecordingFile:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+        def read(self, size=-1):
+            read_sizes.append(size)
+            return self.handle.read(size)
+
+    def recording_open(path, *args, **kwargs):
+        handle = original_open(path, *args, **kwargs)
+        return RecordingFile(handle) if path == source_path else handle
+
+    monkeypatch.setattr(Path, "open", recording_open)
+    exact = _sp3_request(distribution.Distribution.local_file(source_path))
+    with pytest.raises(distribution.ProductValidationFailure) as caught:
+        distribution.acquire(exact, cache_dir=tmp_path / "cache", max_archive_bytes=4)
+
+    assert caught.value.code == "download_size_exceeded"
+    assert read_sizes == [5]
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, float("nan")])
+def test_acquisition_byte_limits_require_positive_integers(tmp_path, limit):
+    exact = _sp3_request(distribution.Distribution.in_memory(_sp3_bytes()))
+    with pytest.raises(ValueError, match="byte limits must be positive"):
+        distribution.acquire(exact, cache_dir=tmp_path, max_archive_bytes=limit)
+    with pytest.raises(ValueError, match="byte limits must be positive"):
+        distribution.acquire(exact, cache_dir=tmp_path, max_product_bytes=limit)
 
 
 def test_offline_corrupt_cache_is_a_cache_read_failure(tmp_path):

@@ -106,3 +106,31 @@ def test_stubbed_class_attributes_exist_at_runtime():
             if not hasattr(cls, attr):
                 missing.append(f"{name}.{attr}")
     assert missing == []
+
+
+def test_code_dcb_option_requiredness_matches_runtime():
+    functions = {
+        node.name: node
+        for node in _stub_module().body
+        if isinstance(node, ast.FunctionDef)
+    }
+    for name in (
+        "parse_code_dcb",
+        "parse_code_dcb_lossy",
+        "load_code_dcb",
+        "load_code_dcb_lossy",
+    ):
+        runtime_parameter = inspect.signature(getattr(sidereon, name)).parameters[
+            "options"
+        ]
+        assert runtime_parameter.default is inspect.Parameter.empty
+
+        stub = functions[name]
+        positional = [*stub.args.posonlyargs, *stub.args.args]
+        first_default = len(positional) - len(stub.args.defaults)
+        option_index = next(
+            index
+            for index, parameter in enumerate(positional)
+            if parameter.arg == "options"
+        )
+        assert option_index < first_default

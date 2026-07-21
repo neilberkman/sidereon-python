@@ -304,6 +304,8 @@ class InvalidTileId(DataError):
 class OfflineCacheMiss(DataError):
     """``offline=True`` and the product is not present in the cache."""
 
+    code = "offline_cache_miss"
+
 
 class FileNotFoundOnArchive(DataError):
     """A candidate URL returned HTTP 404."""

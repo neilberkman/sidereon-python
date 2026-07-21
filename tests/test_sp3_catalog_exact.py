@@ -322,14 +322,16 @@ def test_historical_cddis_unix_compress_round_trip_and_bounded_failure():
 
 
 def test_unix_compress_output_limit_stops_further_archive_input(monkeypatch):
+    archive = ncompress.compress(b"A")
+
     def fake_decompress(source, output):
-        assert source.read(1) == b"a"
+        assert source.read(1) == archive[:1]
         output.write(b"overflow")
         assert source.read(1) == b""
 
     monkeypatch.setattr(distribution.ncompress, "decompress", fake_decompress)
     with pytest.raises(data.DownloadSizeExceeded):
-        distribution._decompress(b"archive", "unix_compress", 1)
+        distribution._decompress(archive, "unix_compress", 1)
 
 
 def test_publication_absence_falls_back_to_the_same_exact_identity(tmp_path):

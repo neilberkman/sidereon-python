@@ -115,6 +115,48 @@ jobs:
           path: dist
           pattern: wheels-*
           merge-multiple: true
+      - name: Verify third-party notices are packaged
+        shell: bash
+        run: |
+          wheels=(dist/*.whl)
+          sdists=(dist/*.tar.gz)
+          test "${#wheels[@]}" -eq 5
+          test "${#sdists[@]}" -eq 1
+          for wheel in "${wheels[@]}"; do
+            notice="$RUNNER_TEMP/$(basename "$wheel").notices"
+            unzip -p "$wheel" THIRD-PARTY-NOTICES.md >"$notice"
+            grep -F 'Apache License' "$notice" >/dev/null
+            grep -F 'Copyright © 2015, Simonas Kazlauskas' "$notice" >/dev/null
+            grep -F 'IERS Conventions Software License' "$notice" >/dev/null
+            for license in ERFA-BSD-3-Clause.txt \
+              IERS-CONVENTIONS-SOFTWARE-LICENSE.txt SciPy-BSD-3-Clause.txt; do
+              unzip -p "$wheel" "third_party_licenses/$license" \
+                >"$RUNNER_TEMP/$license"
+              cmp "$RUNNER_TEMP/$license" "third_party_licenses/$license"
+            done
+            for source in mod.rs ocean.rs pole.rs; do
+              unzip -p "$wheel" \
+                "third_party_source/sidereon-core-0.33.1/tides/$source" \
+                >"$RUNNER_TEMP/$source"
+            done
+          done
+          notice="$RUNNER_TEMP/sdist.notices"
+          tar -xOf "${sdists[0]}" --wildcards '*/THIRD-PARTY-NOTICES.md' >"$notice"
+          grep -F 'Apache License' "$notice" >/dev/null
+          grep -F 'Copyright © 2015, Simonas Kazlauskas' "$notice" >/dev/null
+          grep -F 'IERS Conventions Software License' "$notice" >/dev/null
+          for license in ERFA-BSD-3-Clause.txt \
+            IERS-CONVENTIONS-SOFTWARE-LICENSE.txt SciPy-BSD-3-Clause.txt; do
+            tar -xOf "${sdists[0]}" --wildcards \
+              "*/third_party_licenses/$license" \
+              >"$RUNNER_TEMP/sdist-$license"
+            cmp "$RUNNER_TEMP/sdist-$license" "third_party_licenses/$license"
+          done
+          for source in mod.rs ocean.rs pole.rs; do
+            tar -xOf "${sdists[0]}" --wildcards \
+              "*/third_party_source/sidereon-core-0.33.1/tides/$source" \
+              >"$RUNNER_TEMP/sdist-$source"
+          done
       - name: Smoke-test installed x86_64 Linux wheel
         shell: bash
         run: |

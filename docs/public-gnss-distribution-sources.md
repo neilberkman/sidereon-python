@@ -99,7 +99,9 @@ IONEX paths use `ionex/<year>/<day-of-year>`. Both retain the exact official
 filename. CDDIS packages current long-name products with gzip. IGS combined
 final SP3 before GPS week 2238 uses the official `igs<week><day>.sp3.Z` name and
 Unix-compress packaging; Python accepts `compression="unix_compress"` and
-detects the `.Z` magic bytes in `compression="auto"` input.
+detects the `.Z` magic bytes in `compression="auto"` input. Unix-compress
+decoding validates terminal code completeness and padding before product
+parsing, so a structurally partial archive fails decompression.
 
 IGS combined final SP3 begins at GPS week 0730. Before week 2238, Sidereon
 derives the verified short filename and CDDIS location; at week 2238 it switches
@@ -342,8 +344,8 @@ derivation is deliberately stricter for unsupported historical CODE dates and
 dates before the verified SP3-family publication floors, known center/product
 mismatches now fail before HTTP, and integrity failures no longer fall through
 to another distributor. Those observable corrections plus the additive
-exact-SP3 API make a minor release (`0.33.0`) appropriate rather than a patch
-release.
+exact-SP3 API put these changes in the `0.33` minor line. Python `0.33.1`
+aligns with the core source-package compliance patch on that line.
 
 ## Adding another distributor
 

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "sidereon"
-version = "0.33.0"
+version = "0.33.1"
 description = "Python bindings for the Sidereon GNSS positioning engine (SP3 loading and SPP/RTK/PPP solves)"
 readme = "README.md"
 license = { text = "MIT" }
@@ -69,3 +69,12 @@ no_implicit_optional = true
 python-source = "python"
 module-name = "sidereon._sidereon"
 features = ["pyo3/extension-module"]
+include = [
+  "THIRD-PARTY-NOTICES.md",
+  "third_party_licenses/ERFA-BSD-3-Clause.txt",
+  "third_party_licenses/IERS-CONVENTIONS-SOFTWARE-LICENSE.txt",
+  "third_party_licenses/SciPy-BSD-3-Clause.txt",
+  "third_party_source/sidereon-core-0.33.1/tides/mod.rs",
+  "third_party_source/sidereon-core-0.33.1/tides/ocean.rs",
+  "third_party_source/sidereon-core-0.33.1/tides/pole.rs",
+]

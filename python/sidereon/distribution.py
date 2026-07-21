@@ -29,6 +29,9 @@ import sidereon
 from sidereon import _exact_cache
 from sidereon import data as _data
 from sidereon._sidereon import (
+    _validate_unix_compress,
+)
+from sidereon._sidereon import (
     data_distribution_location_for_identity as _core_distribution_location,
 )
 from sidereon._sidereon import data_product_identity as _core_product_identity
@@ -175,6 +178,10 @@ class EarthdataAuth:
     def __post_init__(self) -> None:
         if self.bearer_token is not None and not self.bearer_token.strip():
             raise ValueError("bearer_token must not be blank")
+        if self.bearer_token is not None and any(
+            byte in self.bearer_token for byte in "\r\n"
+        ):
+            raise ValueError("bearer_token must not contain CR or LF")
         if self.bearer_token is not None and self.use_netrc:
             raise ValueError("choose bearer_token or netrc, not both")
 
@@ -489,7 +496,13 @@ def _distribution_location(
         if (
             "does not support" in message
             or "unsupported distribution" in message
-            or "has no cataloged" in message
+            or (
+                message.startswith("distributor ")
+                and (
+                    " does not serve " in message
+                    or (" has no cataloged " in message and " layout for " in message)
+                )
+            )
         ):
             raise UnsupportedDistribution(message) from None
         raise ProductValidationFailure(message) from None
@@ -505,9 +518,10 @@ def validate_exact_product_set(
 
     Both lists are validated, duplicates are rejected, missing products fail,
     and undeclared products fail. Comparison uses the complete
-    distributor-independent identity rather than only the official filename;
-    a format version resolved from validated bytes may be present only on the
-    available copy. For SP3 observed/predicted timing, use
+    distributor-independent identity rather than only the official filename.
+    An unresolved expected format version matches the concrete version obtained
+    from validated bytes; a concrete expected version must match exactly. For
+    SP3 observed/predicted timing, use
     :meth:`sidereon.Sp3.prediction_summary`; catalog fields and issue times are
     not substitutes for the prediction flags in the parsed product.
     """
@@ -521,10 +535,14 @@ def validate_exact_product_set(
     expected_counts = _identity_counts(expected)
     available_counts = _identity_counts(available)
     missing = _unique_by_key(
-        item for item in expected if _product_set_key(item) not in available_counts
+        item
+        for item in expected
+        if not any(_product_set_match(item, candidate) for candidate in available)
     )
     unexpected = _unique_by_key(
-        item for item in available if _product_set_key(item) not in expected_counts
+        item
+        for item in available
+        if not any(_product_set_match(candidate, item) for candidate in expected)
     )
     duplicate_expected = _unique_by_key(
         item for item in expected if expected_counts[_product_set_key(item)] > 1
@@ -568,8 +586,8 @@ def _unique_by_key(identities) -> Tuple[ProductIdentity, ...]:
 
 
 def _product_set_key(identity: ProductIdentity) -> tuple[object, ...]:
-    # ``format_version`` is resolved from validated bytes after acquisition; it
-    # is not part of the distributor-independent catalog identity.
+    # Duplicate detection intentionally uses the catalog identity: two copies
+    # that differ only in resolved format version are still duplicate products.
     return (
         identity.family,
         identity.analysis_center,
@@ -584,6 +602,13 @@ def _product_set_key(identity: ProductIdentity) -> tuple[object, ...]:
         identity.official_filename,
         identity.format,
         identity.prediction_horizon_days,
+    )
+
+
+def _product_set_match(expected: ProductIdentity, available: ProductIdentity) -> bool:
+    return _product_set_key(expected) == _product_set_key(available) and (
+        expected.format_version is None
+        or expected.format_version == available.format_version
     )
 
 
@@ -657,7 +682,10 @@ def _acquire_impl(
             "timeouts must be non-negative, timeout_s must be positive, "
             "and backoff_s must be non-negative"
         )
-    if max_archive_bytes <= 0 or max_product_bytes <= 0:
+    if any(
+        isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0
+        for limit in (max_archive_bytes, max_product_bytes)
+    ):
         raise ValueError("byte limits must be positive")
     auth = earthdata_auth or EarthdataAuth()
     root = Path(cache_dir) if cache_dir is not None else Path(_data.default_cache_dir())
@@ -689,7 +717,11 @@ def _acquire_impl(
                     if isinstance(caught, CacheWriteFailure):
                         raise
                     cached = None
-                    cache_error = caught
+                    # Cache and cold-acquisition failures use one public error
+                    # vocabulary. In particular, a caller checksum pin must
+                    # not surface as raw ``data.ChecksumMismatch`` merely
+                    # because an otherwise coherent warm entry was present.
+                    cache_error = _normalize_error(caught)
                 if cached is not None:
                     return cached
                 if offline and distributor.source in (
@@ -823,14 +855,7 @@ def _acquire_one(
         archive = download.archive
     elif source is DistributionSource.LOCAL_FILE:
         original_url = None
-        try:
-            archive = Path(distributor.path or "").read_bytes()
-        except OSError as exc:
-            raise CacheReadFailure("unable to read caller-provided local file") from exc
-        if len(archive) > max_archive_bytes:
-            raise _data.DownloadSizeExceeded(
-                f"caller-provided archive exceeded {max_archive_bytes} bytes"
-            )
+        archive = _read_local_archive(Path(distributor.path or ""), max_archive_bytes)
         compression = _detect_compression(archive, distributor.compression)
         download = _Download(archive, "", "", None, None, None)
     elif source is DistributionSource.IN_MEMORY:
@@ -1185,11 +1210,24 @@ def _retryable(error: AcquisitionError) -> bool:
         return error.kind in {
             "timeout",
             "connection",
-            "other",
             "http_408",
             "http_429",
-        } or (isinstance(status, int) and status >= 500)
+        } or (isinstance(status, int) and 500 <= status <= 599)
     return False
+
+
+def _read_local_archive(path: Path, limit: int) -> bytes:
+    """Read at most one byte beyond ``limit`` from a caller-provided file."""
+    try:
+        with path.open("rb") as handle:
+            archive = handle.read(limit + 1)
+    except OSError as exc:
+        raise CacheReadFailure("unable to read caller-provided local file") from exc
+    if len(archive) > limit:
+        raise _data.DownloadSizeExceeded(
+            f"caller-provided archive exceeded {limit} bytes"
+        )
+    return archive
 
 
 def _detect_compression(content: bytes, requested: Optional[str]) -> str:
@@ -1244,7 +1282,16 @@ def _decompress(content: bytes, compression: str, limit: int) -> bytes:
         output = _BoundedBytesIO(limit)
         compressed_input = _BoundedCompressedInput(content, output)
         try:
-            ncompress.decompress(compressed_input, output)
+            # Reject partial terminal codes before ncompress can return their
+            # plausible output prefix. The native scan is O(archive bytes),
+            # emits no output, and is bounded by the acquisition archive cap.
+            _validate_unix_compress(content)
+            # Historical compress tools may encode an empty input as an empty
+            # stream; ncompress requires the header form, so preserve the
+            # format-level empty-stream parity here. Product validation still
+            # rejects an empty decoded product during acquisition.
+            if content:
+                ncompress.decompress(compressed_input, output)
         except _data.DownloadSizeExceeded:
             raise
         except (RuntimeError, TypeError, ValueError):

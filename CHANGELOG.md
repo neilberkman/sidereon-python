@@ -4,7 +4,7 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
-## [0.33.0] - 2026-07-20
+## [0.33.1] - 2026-07-20
 
 ### Added
 
@@ -37,9 +37,25 @@ All notable changes to the Sidereon Python interface are documented here.
   retired endpoints, and exhausted source-local transport availability only.
   Parsing, digest, cadence, span, identity, policy, cache, and caller errors are
   terminal and preserve the first integrity failure.
+- Unix-compress acquisition now rejects partial terminal codes and invalid
+  terminal padding before product parsing. The wheel and source distribution
+  include the corresponding third-party attribution notice and the full
+  Apache-2.0 and ISC terms required by compiled Rust dependencies. Release
+  artifacts also include the exact SciPy 1.18.0 and ERFA 2.0.1 licenses, the
+  full IERS license, and the public 0.33.1 tide sources corresponding to the
+  IERS-derived routines in the extension.
+- Warm-cache and cold-acquisition caller checksum mismatches now expose the
+  same typed integrity failure. Local-file archives are read only through the
+  configured compressed-byte bound, and caller/configuration HTTP failures no
+  longer authorize another distributor while explicit transient failures do.
+- Exact product-set comparison now enforces a caller-declared format version
+  while retaining the normal unresolved-request to validated-result workflow.
+  The CODE DCB stubs now correctly require the native API's explicit options
+  argument (which may be `None`).
 - Known unsupported center/product pairs now fail before HTTP instead of being
   reported as an absent merge contributor.
-- Updated `sidereon` and `sidereon-core` to 0.33.0.
+- Updated `sidereon` and `sidereon-core` to 0.33.1 and
+  `trust-region-least-squares` to 0.9.2.
 
 ### Compatibility
 
@@ -48,7 +64,9 @@ All notable changes to the Sidereon Python interface are documented here.
   ESA/GFZ/IGS ultra-rapid publication floor are now rejected instead of being
   assigned unsupported current long filenames. Callers that depended on
   fallback after corrupt bytes must handle the integrity failure. These
-  observable corrections make 0.33.0 a minor release rather than a patch.
+  Exact-set callers that declare a format version must now provide a matching
+  resolved version. These observable corrections belong in the 0.33 minor
+  line; 0.33.1 also incorporates the core source-package compliance patch.
 
 ## [0.32.0] - 2026-07-18
 

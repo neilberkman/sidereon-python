@@ -104,6 +104,7 @@ mod terrain;
 mod terrain_store;
 mod tides;
 mod tropo;
+mod unix_compress;
 
 pub(crate) use ephemeris::{PyPreciseEphemerisSamples, PySp3};
 
@@ -480,6 +481,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     doppler::register(m)?;
     defaults::register(m)?;
     data_catalog::register(m)?;
+    unix_compress::register(m)?;
     exact_cache::register(m)?;
     elements::register(m)?;
     almanac::register(m)?;
