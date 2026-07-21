@@ -89,6 +89,9 @@ from sidereon._sidereon import (
     data_default_sample as _core_data_default_sample,
 )
 from sidereon._sidereon import (
+    data_default_sample_for_date as _core_data_default_sample_for_date,
+)
+from sidereon._sidereon import (
     data_dted_block_dir as _core_data_dted_block_dir,
 )
 from sidereon._sidereon import (
@@ -111,6 +114,12 @@ from sidereon._sidereon import (
 )
 from sidereon._sidereon import (
     data_predicted_day_offset as _core_data_predicted_day_offset,
+)
+from sidereon._sidereon import (
+    data_product_sample as _core_data_product_sample,
+)
+from sidereon._sidereon import (
+    data_product_solution_class as _core_data_product_solution_class,
 )
 from sidereon._sidereon import (
     data_skadi_archive_url as _core_data_skadi_archive_url,
@@ -191,6 +200,8 @@ __all__ = [
     "allowed_hosts",
     "gps_week",
     "day_of_year",
+    "default_sample_for_date",
+    "product_solution_class",
     "canonical_filename",
     "archive_url",
     "mgex_ionex",
@@ -655,6 +666,28 @@ def _default_sample(center: str, content: str) -> str:
         raise _catalog_error(exc) from None
 
 
+def default_sample_for_date(center: str, content: str, date: _dt.date) -> str:
+    """Published default sample token for one center/product/date."""
+    try:
+        return _core_data_default_sample_for_date(
+            center, content, date.year, date.month, date.day
+        )
+    except (AttributeError, ValueError) as exc:
+        raise _catalog_error(ValueError(str(exc))) from None
+
+
+def product_solution_class(center: str, content: str) -> str:
+    """Solution class for a supported center/product family.
+
+    This is product-aware: for example, IGS SP3 is ``"final"`` while IGS
+    broadcast navigation is ``"broadcast"``.
+    """
+    try:
+        return _core_data_product_solution_class(center, content)
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
+
+
 # --- product -------------------------------------------------------------
 
 
@@ -709,7 +742,7 @@ class Product:
         return day_of_year(self.date)
 
     def canonical_filename(self) -> str:
-        """The canonical IGS long-name filename (no ``.gz`` suffix)."""
+        """The canonical official filename, without transport compression."""
         if self.filename is not None:
             return self.filename
         try:
@@ -729,6 +762,10 @@ class Product:
         if self.compression is not None:
             return self.compression
         try:
+            # Do not report a center-wide current compression for an era whose
+            # direct archive layout is deliberately unsupported.
+            if self.url is None:
+                self.archive_url()
             return _core_data_archive_compression(self.center, self.content)
         except ValueError as exc:
             raise _catalog_error(exc) from None
@@ -771,7 +808,17 @@ def product(
 ) -> Product:
     """Build a :class:`Product` for any center/content/date/sample."""
     if sample is None:
-        sample = _default_sample(center, content)
+        try:
+            sample = _core_data_product_sample(
+                center,
+                content,
+                date.year,
+                date.month,
+                date.day,
+                issue,
+            )
+        except ValueError as exc:
+            raise _catalog_error(exc) from None
     return Product(
         center=center, content=content, date=date, sample=sample, issue=issue
     )
@@ -822,23 +869,38 @@ def ops_ultra_sp3(
     Pass a ``date`` with an explicit ``issue`` (defaults to ``"0000"``), or a
     ``datetime`` target and the latest issue not after that time is selected. If
     ``available_issues`` is given, selection falls back to the newest issue
-    present in that list.
+    present in that list. When ``sample`` is omitted, the core catalog selects
+    the published cadence for that exact issue, including intraday transitions.
     """
     cdef = _center_def(center)
     if not cdef["issues"] or "sp3" not in cdef["products"]:
         raise UnsupportedProduct(f"{center} is not an ultra-rapid SP3 center")
-    if sample is None:
-        sample = _default_sample(center, "sp3")
     if isinstance(target, _dt.datetime):
         if issue is not None:
-            return Product(center, "sp3", target.date(), sample, issue)
-        date, issue = _latest_ultra_issue(
-            center, _as_naive_datetime(target), available_issues
-        )
-        return Product(center, "sp3", date, sample, issue)
-    date = _as_date(target)
-    if issue is None:
-        issue = "0000"
+            date = target.date()
+        else:
+            date, issue = _latest_ultra_issue(
+                center, _as_naive_datetime(target), available_issues
+            )
+    else:
+        date = _as_date(target)
+        if issue is None:
+            issue = "0000"
+    if sample is None:
+        try:
+            locations = _core_data_ultra_sp3_locations(
+                center, date.year, date.month, date.day, issue
+            )
+        except ValueError as exc:
+            raise _catalog_error(exc) from None
+        if not locations:
+            raise UnsupportedProduct(
+                f"{center} has no ultra-rapid SP3 location for {date} issue {issue}"
+            )
+        # The core orders candidates with the exact published cadence for this
+        # issue first. This matters at intraday cadence transitions, which a
+        # date-only default cannot represent.
+        sample = locations[0][2]
     return Product(center, "sp3", date, sample, issue)
 
 
@@ -890,7 +952,7 @@ def canonical_filename(
     *,
     issue: Optional[str] = None,
 ) -> str:
-    """The canonical IGS long-name filename for a center/content/date/sample."""
+    """The canonical official filename for a center/content/date/sample."""
     return product(center, content, date, sample, issue=issue).canonical_filename()
 
 
@@ -2416,7 +2478,10 @@ def _sp3_candidates(
     cdef = _center_def(center)
     if "sp3" not in cdef["products"]:
         raise UnsupportedProduct(f"{center} does not serve sp3")
-    eff_sample = sample if sample is not None else _default_sample(center, "sp3")
+    date = _as_date(target)
+    eff_sample = (
+        sample if sample is not None else default_sample_for_date(center, "sp3", date)
+    )
 
     if _ultra_center(center) and isinstance(target, _dt.datetime):
         candidates = _ultra_issue_candidates(center, _as_naive_datetime(target))
@@ -2425,7 +2490,6 @@ def _sp3_candidates(
             for date, issue in candidates
             for product in _sp3_products_for_issue(center, date, issue, sample)
         ]
-    date = _as_date(target)
     if _ultra_center(center):
         return _sp3_products_for_issue(center, date, "0000", sample)
     return [Product(center, "sp3", date, eff_sample)]
@@ -2490,12 +2554,9 @@ def _fetch_center_sp3(
 ):
     from sidereon import distribution
 
-    try:
-        candidates = _sp3_candidates(center, target, sample)
-    except UnsupportedProduct as exc:
-        # The center does not publish SP3 at all: a clean absence for the merge.
-        # UnknownCenter (a caller mistake) propagates rather than being recorded.
-        return ("absent", AbsentCenter(center, None, _reason_str(exc)))
+    # Unsupported center/product combinations are caller configuration errors,
+    # not publication absence, and must fail before any acquisition attempt.
+    candidates = _sp3_candidates(center, target, sample)
 
     last: Optional[tuple[Product, str, DataError]] = None
     candidate_attempts = []
@@ -3931,10 +3992,11 @@ def fetch_merged_sp3(
     if len(set(centers)) != len(centers):
         raise UnsupportedProduct("centers must not contain duplicates")
 
-    # Validate every center up front so an unknown code raises rather than being
-    # silently recorded as an absent contributor.
+    # Validate every center and its SP3 capability before any cache or network
+    # acquisition. A known non-SP3 center is caller configuration, not absence.
     for center in centers:
-        _center_def(center)
+        if "sp3" not in _center_def(center)["products"]:
+            raise UnsupportedProduct(f"{center} does not serve sp3")
 
     fetch_kwargs = dict(cache_dir=cache_dir, offline=offline, **fetch_opts)
     if "max_compressed_bytes" in fetch_kwargs:

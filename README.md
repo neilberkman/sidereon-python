@@ -191,7 +191,9 @@ The Python package mirrors the full breadth of the engine.
   products (SP3 and IONEX from IGS/MGEX analysis centers, including merged
   multi-center SP3) and DTED terrain tiles. Exact-product requests can select
   direct archives, NASA CDDIS/Earthdata, local files, or caller-provided bytes
-  without changing product identity; see
+  without changing product identity. `ExactSp3Request` validates the declared
+  cadence, regular epoch grid, exact half-open or inclusive coverage, producer,
+  and SP3 header metadata before bytes are accepted; see
   [Public GNSS distribution sources](docs/public-gnss-distribution-sources.md).
 
 RAIM residual tests must be weighted with per-satellite residual variances.

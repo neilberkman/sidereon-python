@@ -26,7 +26,7 @@ import pytest
 import sidereon
 import sidereon.data as data
 import sidereon.distribution as distribution
-from _helpers import CORE_FIXTURES, FIXTURES
+from _helpers import CORE_FIXTURES, FIXTURES, sp3_bytes_for_date
 
 # --- fixtures ------------------------------------------------------------
 
@@ -76,6 +76,17 @@ def _sp3_payload():
 def _archive_for_catalog_product(product, content):
     identity = distribution._catalog_product_identity(product)
     _, compression = distribution._catalog_direct_location(product, identity)
+    agency = {
+        "cod": "AIUB",
+        "cod_ult": "AIUB",
+        "esa": "ESOC",
+        "esa_ult": "ESOC",
+        "gfz": "GFZ",
+        "gfz_ult": "GFZ",
+        "igs": "IGS",
+        "igs_ult": "IGS",
+    }[product.center]
+    content = sp3_bytes_for_date(content, product.date, agency)
     return gzip.compress(content, mtime=0) if compression == "gzip" else content
 
 
@@ -305,7 +316,7 @@ def _seed_space_weather(cache_dir, product="sw_all", fetched_at=None, payload=No
 # predicted_ionex, so we build the product and seed at its resolved date.
 IONEX_DATE = dt.date(2026, 6, 14)
 # The real CODE final SP3 fixture is for doy 177 of 2020 (2020-06-25).
-SP3_DATE = dt.date(2020, 6, 25)
+SP3_DATE = dt.date(2026, 6, 25)
 
 
 # --- builder / URL unit tests (no network) -------------------------------
@@ -341,7 +352,8 @@ def test_rapid_ionex_filename_and_url_match_reference():
     p = data.rapid_ionex(dt.date(2026, 6, 13))
     assert p.canonical_filename() == "COD0OPSRAP_20261640000_01D_01H_GIM.INX"
     assert p.archive_url() == (
-        "http://ftp.aiub.unibe.ch/CODE/COD0OPSRAP_20261640000_01D_01H_GIM.INX.gz"
+        "https://www.aiub.unibe.ch/download/CODE/"
+        "COD0OPSRAP_20261640000_01D_01H_GIM.INX.gz"
     )
 
 
@@ -361,7 +373,7 @@ def test_sp3_center_filenames_match_reference():
     # CODE final MGEX SP3
     assert (
         data.mgex_sp3("cod", SP3_DATE).canonical_filename()
-        == "COD0MGXFIN_20201770000_01D_05M_ORB.SP3"
+        == "COD0MGXFIN_20261760000_01D_05M_ORB.SP3"
     )
 
 
@@ -1596,13 +1608,14 @@ def test_code_ultra_sp3_candidates_pin_primary_alternate_and_alias_urls():
     )
 
 
-def test_code_ultra_alias_rejects_valid_sp3_with_wrong_duration(tmp_path):
+def test_code_ultra_alias_rejects_287_epoch_sp3(tmp_path):
     alias = data._sp3_products_for_issue("cod_ult", SP3_DATE, "0000", None)[2]
     payload = _sp3_payload()
-    final_epoch = payload.index(b"*  2020  6 26  0  0  0.00000000")
+    final_epoch = payload.index(b"*  2020  6 25 23 55  0.00000000")
     wrong_duration = payload[:final_epoch] + b"EOF\n"
-    wrong_duration = wrong_duration.replace(b"     289 ", b"     288 ", 1)
-    assert sidereon.load_sp3(wrong_duration).epoch_count == 288
+    wrong_duration = wrong_duration.replace(b"     289 ", b"     287 ", 1)
+    assert sidereon.load_sp3(wrong_duration).epoch_count == 287
+    wrong_duration = sp3_bytes_for_date(wrong_duration, SP3_DATE)
 
     def handler(request):
         return httpx.Response(200, request=request, content=wrong_duration)
@@ -1610,7 +1623,7 @@ def test_code_ultra_alias_rejects_valid_sp3_with_wrong_duration(tmp_path):
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(
             distribution.ProductValidationFailure,
-            match="duration differs from exact span",
+            match="span mismatch",
         ):
             distribution._acquire_catalog_product(
                 alias, cache_dir=str(tmp_path), http_client=client
@@ -1622,7 +1635,7 @@ def test_code_ultra_alias_rejects_valid_sp3_with_wrong_duration(tmp_path):
 def test_code_ultra_alias_report_verifies_catalog_filename_equivalence(tmp_path):
     candidates = data._sp3_products_for_issue("cod_ult", SP3_DATE, "0000", None)
     alias = candidates[2]
-    payload = _sp3_payload()
+    payload = sp3_bytes_for_date(_sp3_payload(), SP3_DATE)
 
     def handler(request):
         if str(request.url) == alias.archive_url():

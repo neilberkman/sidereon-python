@@ -12,6 +12,7 @@ order, from:
    core the extension was built against.
 """
 
+import datetime as dt
 import os
 import re
 import struct
@@ -138,3 +139,48 @@ def __getattr__(name):
 def hex_to_f64(s):
     """Decode a `0x...` big-endian IEEE-754 float64 bit pattern to a Python float."""
     return struct.unpack(">d", struct.pack(">Q", int(s, 16)))[0]
+
+
+def sp3_bytes_for_date(content, date, agency="AIUB"):
+    """Shift the committed full-day SP3 fixture to a catalog-supported date."""
+    lines = content.decode("ascii").splitlines()
+    first_fields = lines[0][3:31].split()
+    original = dt.datetime(
+        int(first_fields[0]),
+        int(first_fields[1]),
+        int(first_fields[2]),
+        int(first_fields[3]),
+        int(first_fields[4]),
+    )
+    target = dt.datetime(date.year, date.month, date.day)
+    delta = target - original
+
+    def epoch_prefix(marker, value):
+        return (
+            f"{marker}{value.year:4d}{value.month:3d}{value.day:3d}"
+            f"{value.hour:3d}{value.minute:3d}"
+            f"{value.second + value.microsecond / 1_000_000:12.8f}"
+        )
+
+    lines[0] = epoch_prefix(lines[0][:3], target) + lines[0][31:-4] + f"{agency:>4}"
+    gps_seconds = int((target.date() - dt.date(1980, 1, 6)).days) * 86_400
+    gps_week, tow = divmod(gps_seconds, 7 * 86_400)
+    mjd = (target.date() - dt.date(1858, 11, 17)).days
+    cadence = float(lines[1][24:38])
+    lines[1] = (
+        f"## {gps_week:4d} {float(tow):14.8f} {cadence:14.8f} {mjd:5d} {0.0:15.13f}"
+    )
+    for index, line in enumerate(lines):
+        if not line.startswith("*  "):
+            continue
+        fields = line[3:31].split()
+        epoch = dt.datetime(
+            int(fields[0]),
+            int(fields[1]),
+            int(fields[2]),
+            int(fields[3]),
+            int(fields[4]),
+        ) + dt.timedelta(seconds=float(fields[5]))
+        shifted = epoch + delta
+        lines[index] = epoch_prefix("*  ", shifted) + line[31:]
+    return ("\n".join(lines) + "\n").encode("ascii")

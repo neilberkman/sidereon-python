@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional
 
-from . import _sidereon
+from . import _sidereon  # type: ignore[attr-defined]
 
 CONTROL_DIRECTORY = _sidereon._EXACT_CACHE_CONTROL_DIRECTORY
 

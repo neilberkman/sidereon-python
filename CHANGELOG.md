@@ -4,6 +4,52 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-07-20
+
+### Added
+
+- Added product-aware `data.product_solution_class` and date-aware
+  `data.default_sample_for_date` catalog queries.
+- Added `ExactSp3Request`, `ExactSp3Coverage`, `parse_exact_sp3`, and
+  `validate_exact_sp3`. Parsed `Sp3` values now expose the epoch count and start
+  declared by header line 1.
+- Added historical IGS final-orbit identity and CDDIS `.Z` routing, including
+  bounded Unix-compress decoding for local, in-memory, and CDDIS acquisition.
+
+### Changed
+
+- Catalog identity and distributor locations now come from the Rust core, so
+  IGS final SP3 naming switches at GPS week 2238, GFZ rapid defaults retain the
+  historical `15M`/`05M` cadence boundary, and CODE SP3, clock, final IONEX,
+  rapid IONEX, and predicted tiers keep product-specific AIUB HTTPS routes.
+- Catalog derivation now enforces the verified publication floors for ESA
+  final, GFZ rapid, and IGS/ESA/GFZ ultra-rapid SP3. ESA and GFZ ultra-rapid
+  defaults follow their historical cadence eras, including ESA's intraday
+  transition between the 2025-02-02 0600 and 1200 issues. CDDIS rejects
+  pre-week-2238 long-name SP3 and IONEX identities instead of inventing
+  archive paths. ESA `ESA0MGNFIN` final SP3 stays on its verified direct archive
+  rather than being assigned an unverified CDDIS mapping.
+- Exact SP3 acquisition now enforces the full core structural, start, agency,
+  cadence, regular-grid, count, span, and format-version contract. Both the
+  288-epoch half-open and 289-epoch inclusive representations of a one-day
+  five-minute product are accepted.
+- Multi-distributor acquisition advances after ordinary publication absence,
+  retired endpoints, and exhausted source-local transport availability only.
+  Parsing, digest, cadence, span, identity, policy, cache, and caller errors are
+  terminal and preserve the first integrity failure.
+- Known unsupported center/product pairs now fail before HTTP instead of being
+  reported as an absent merge contributor.
+- Updated `sidereon` and `sidereon-core` to 0.33.0.
+
+### Compatibility
+
+- Existing public call signatures remain available. The new APIs are additive.
+  Historical CODE dates before GPS week 2238 and dates before each verified
+  ESA/GFZ/IGS ultra-rapid publication floor are now rejected instead of being
+  assigned unsupported current long filenames. Callers that depended on
+  fallback after corrupt bytes must handle the integrity failure. These
+  observable corrections make 0.33.0 a minor release rather than a patch.
+
 ## [0.32.0] - 2026-07-18
 
 ### Added

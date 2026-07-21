@@ -14,16 +14,16 @@ import httpx
 import pytest
 import sidereon.data as data
 import sidereon.distribution as distribution
-from _helpers import CORE_FIXTURES
+from _helpers import CORE_FIXTURES, sp3_bytes_for_date
 
-SP3_DATE = dt.date(2020, 6, 25)
-IONEX_DATE = dt.date(2020, 6, 24)
+SP3_DATE = dt.date(2026, 6, 25)
+IONEX_DATE = dt.date(2024, 6, 24)
 
 
 def _sp3_bytes():
     path = os.path.join(CORE_FIXTURES, "sp3", "COD0MGXFIN_20201770000_01D_05M_ORB.SP3")
     with open(path, "rb") as handle:
-        return handle.read()
+        return sp3_bytes_for_date(handle.read(), SP3_DATE)
 
 
 def _ionex_bytes():
@@ -91,11 +91,11 @@ def test_identity_is_independent_of_distributor_and_paths_are_exact():
     assert exact.identity.issue == "0000"
     assert exact.identity.sample == "05M"
     assert exact.identity.official_filename == (
-        "COD0MGXFIN_20201770000_01D_05M_ORB.SP3"
+        "COD0MGXFIN_20261760000_01D_05M_ORB.SP3"
     )
     assert distribution.cddis_url(exact.identity) == (
-        "https://cddis.nasa.gov/archive/gnss/products/2111/"
-        "COD0MGXFIN_20201770000_01D_05M_ORB.SP3.gz"
+        "https://cddis.nasa.gov/archive/gnss/products/2424/"
+        "COD0MGXFIN_20261760000_01D_05M_ORB.SP3.gz"
     )
     assert [item.source for item in exact.distributors] == [
         distribution.DistributionSource.DIRECT,
@@ -147,16 +147,27 @@ def test_exact_product_set_accepts_resolved_format_metadata():
     assert distribution.validate_exact_product_set([expected], [resolved]) is None
 
 
-def test_ionex_cddis_year_day_path_and_parsed_acquisition(tmp_path):
+def test_ionex_cddis_rejects_pretransition_long_name():
+    product = data.mgex_ionex("esa", dt.date(2020, 6, 24))
+    exact = distribution.request(product, [distribution.Distribution.nasa_cddis()])
+    with pytest.raises(distribution.UnsupportedDistribution):
+        distribution.cddis_url(exact.identity)
+
+
+def test_current_ionex_cddis_year_day_path_and_parsed_acquisition(tmp_path):
     product = data.mgex_ionex("esa", IONEX_DATE)
     exact = distribution.request(product, [distribution.Distribution.nasa_cddis()])
     assert distribution.cddis_url(exact.identity) == (
-        "https://cddis.nasa.gov/archive/gnss/products/ionex/2020/176/"
-        "ESA0OPSFIN_20201760000_01D_02H_GIM.INX.gz"
+        "https://cddis.nasa.gov/archive/gnss/products/ionex/2024/176/"
+        "ESA0OPSFIN_20241760000_01D_02H_GIM.INX.gz"
     )
 
     def handler(request):
-        return _gzip_response(request, _ionex_bytes(), etag='"ionex-etag"')
+        return _gzip_response(
+            request,
+            _ionex_bytes_for(IONEX_DATE, interval_hours=2),
+            etag='"ionex-etag"',
+        )
 
     with _client(handler) as client:
         result = distribution.acquire(exact, cache_dir=tmp_path, http_client=client)
@@ -165,7 +176,7 @@ def test_ionex_cddis_year_day_path_and_parsed_acquisition(tmp_path):
     assert result.provenance.etag == '"ionex-etag"'
     assert result.provenance.requested_identity == exact.identity
     with open(result.path, "rb") as handle:
-        assert handle.read() == _ionex_bytes()
+        assert handle.read() == _ionex_bytes_for(IONEX_DATE, interval_hours=2)
 
 
 def test_predicted_ionex_direct_path_and_semantic_identity(tmp_path):
@@ -669,7 +680,7 @@ def test_explicit_fallback_records_only_same_product_failures(tmp_path):
     assert result.provenance.attempts[0].error_type == "product_not_published"
 
 
-def test_all_explicit_sources_failed_preserves_each_public_reason(tmp_path):
+def test_policy_failure_is_terminal_after_publication_absence(tmp_path):
     exact = _sp3_request(
         distribution.Distribution.nasa_cddis(),
         distribution.Distribution.direct(),
@@ -681,16 +692,12 @@ def test_all_explicit_sources_failed_preserves_each_public_reason(tmp_path):
 
     with (
         _client(handler) as client,
-        pytest.raises(distribution.AllDistributorsFailed) as caught,
+        pytest.raises(distribution.AuthorizationDenied) as caught,
     ):
         distribution.acquire(exact, cache_dir=tmp_path, http_client=client, retries=1)
 
-    assert [failure.error_type for failure in caught.value.attempts] == [
-        "product_not_published",
-        "authorization_denied",
-    ]
-    assert caught.value.attempts[0].source is distribution.DistributionSource.NASA_CDDIS
-    assert caught.value.attempts[1].source is distribution.DistributionSource.DIRECT
+    assert caught.value.status == 403
+    assert "token" not in str(caught.value)
 
 
 def test_distinct_product_identities_have_distinct_cache_entries(tmp_path):

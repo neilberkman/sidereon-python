@@ -6,7 +6,7 @@ use pyo3::types::{PyBytes, PyModule};
 
 use sidereon_core::data as core;
 use sidereon_core::data::{
-    AnalysisCenter, ArchiveCompression, ProductDate, ProductDateTime, ProductType,
+    AnalysisCenter, ProductDate, ProductDateTime, ProductIdentity, ProductType,
     SpaceWeatherProduct, UltraIssue,
 };
 
@@ -82,6 +82,50 @@ fn data_default_sample(center_code: &str, product_code: &str) -> PyResult<String
 }
 
 #[pyfunction]
+fn data_default_sample_for_date(
+    center_code: &str,
+    product_code: &str,
+    year: i32,
+    month: u8,
+    day: u8,
+) -> PyResult<String> {
+    core::default_sample_for_date(
+        center(center_code)?,
+        product_type(product_code)?,
+        date(year, month, day)?,
+    )
+    .map(ToOwned::to_owned)
+    .map_err(to_data_err)
+}
+
+#[pyfunction]
+fn data_product_sample(
+    center_code: &str,
+    product_code: &str,
+    year: i32,
+    month: u8,
+    day: u8,
+    issue: Option<&str>,
+) -> PyResult<String> {
+    core::product(
+        center(center_code)?,
+        product_type(product_code)?,
+        date(year, month, day)?,
+        None,
+        issue,
+    )
+    .map(|product| product.sample)
+    .map_err(to_data_err)
+}
+
+#[pyfunction]
+fn data_product_solution_class(center_code: &str, product_code: &str) -> PyResult<String> {
+    core::product_solution_class(center(center_code)?, product_type(product_code)?)
+        .map(|solution| solution.code().to_string())
+        .map_err(to_data_err)
+}
+
+#[pyfunction]
 fn data_gps_week(year: i32, month: u8, day: u8) -> PyResult<u32> {
     core::gps_week(date(year, month, day)?).map_err(to_data_err)
 }
@@ -140,10 +184,81 @@ fn data_archive_url(
 fn data_archive_compression(center_code: &str, product_code: &str) -> PyResult<&'static str> {
     let convention = core::product_convention(center(center_code)?, product_type(product_code)?)
         .map_err(to_data_err)?;
-    Ok(match convention.compression {
-        ArchiveCompression::Gzip => "gzip",
-        ArchiveCompression::None => "none",
-    })
+    Ok(convention.compression.as_str())
+}
+
+fn identity_json(identity: &ProductIdentity) -> PyResult<String> {
+    serde_json::to_string(&serde_json::json!({
+        "family": identity.family.code(),
+        "analysis_center": identity.analysis_center.code(),
+        "publisher": identity.publisher.code(),
+        "solution_class": identity.solution.code(),
+        "campaign": identity.campaign.code(),
+        "filename_version": identity.version,
+        "date": format!(
+            "{:04}-{:02}-{:02}",
+            identity.date.year, identity.date.month, identity.date.day
+        ),
+        "issue": identity.issue.as_deref().unwrap_or(""),
+        "span": identity.span,
+        "sample": identity.sample,
+        "official_filename": identity.official_filename,
+        "format": identity.format.code(),
+        "format_version": identity.format_version,
+        "prediction_horizon_days": identity.prediction_horizon_days,
+    }))
+    .map_err(to_data_err)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn data_product_identity(
+    center_code: &str,
+    product_code: &str,
+    year: i32,
+    month: u8,
+    day: u8,
+    sample: Option<&str>,
+    issue: Option<&str>,
+    span: Option<&str>,
+    official_filename: Option<&str>,
+) -> PyResult<String> {
+    let mut identity = core::product_identity(
+        center(center_code)?,
+        product_type(product_code)?,
+        date(year, month, day)?,
+        sample,
+        issue,
+    )
+    .map_err(to_data_err)?;
+    if let Some(span) = span {
+        identity.span = span.to_owned();
+    }
+    if let Some(official_filename) = official_filename {
+        identity.official_filename = official_filename.to_owned();
+    }
+    identity.validate().map_err(to_data_err)?;
+    identity_json(&identity)
+}
+
+type DistributionLocationTuple = (String, Option<String>, String, String);
+
+#[pyfunction]
+fn data_distribution_location_for_identity(
+    identity_json: &str,
+    source_code: &str,
+) -> PyResult<DistributionLocationTuple> {
+    let location = core::distribution_location_for_identity(
+        &crate::exact_cache::identity(identity_json)?,
+        crate::exact_cache::source(source_code)?,
+    )
+    .map_err(to_data_err)?;
+    Ok((
+        location.source.code().to_string(),
+        location.original_url,
+        location.archive_filename,
+        location.compression.as_str().to_string(),
+    ))
 }
 
 #[pyfunction]
@@ -358,12 +473,20 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(data_allowed_hosts, m)?)?;
     m.add_function(wrap_pyfunction!(data_center_entry, m)?)?;
     m.add_function(wrap_pyfunction!(data_default_sample, m)?)?;
+    m.add_function(wrap_pyfunction!(data_default_sample_for_date, m)?)?;
+    m.add_function(wrap_pyfunction!(data_product_sample, m)?)?;
+    m.add_function(wrap_pyfunction!(data_product_solution_class, m)?)?;
     m.add_function(wrap_pyfunction!(data_gps_week, m)?)?;
     m.add_function(wrap_pyfunction!(data_day_of_year, m)?)?;
     m.add_function(wrap_pyfunction!(data_predicted_day_offset, m)?)?;
     m.add_function(wrap_pyfunction!(data_canonical_filename, m)?)?;
     m.add_function(wrap_pyfunction!(data_archive_url, m)?)?;
     m.add_function(wrap_pyfunction!(data_archive_compression, m)?)?;
+    m.add_function(wrap_pyfunction!(data_product_identity, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        data_distribution_location_for_identity,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(data_skadi_source_entry, m)?)?;
     m.add_function(wrap_pyfunction!(data_space_weather_source_entry, m)?)?;
     m.add_function(wrap_pyfunction!(data_space_weather_filename, m)?)?;

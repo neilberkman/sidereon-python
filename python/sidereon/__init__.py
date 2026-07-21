@@ -1120,6 +1120,13 @@ from ._sidereon import (
     signal_dll_lower_bound,
     signal_multipath_error_envelope,
 )
+from .exact_sp3 import (
+    ExactSp3Coverage,
+    ExactSp3Request,
+    ExactSp3ValidationError,
+    parse_exact_sp3,
+    validate_exact_sp3,
+)
 
 __all__ = [
     "SidereonError",
@@ -1333,6 +1340,11 @@ __all__ = [
     "FaultMode",
     "AraimResult",
     "load_sp3",
+    "ExactSp3Coverage",
+    "ExactSp3Request",
+    "ExactSp3ValidationError",
+    "parse_exact_sp3",
+    "validate_exact_sp3",
     "build_precise_interpolant_artifact_bytes",
     "fit_sp3_precise_orbit",
     "fit_sp3_ecef_precise_orbit",

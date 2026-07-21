@@ -11,12 +11,10 @@ import httpx
 from . import data as _data
 
 class DistributionSource(enum.Enum):
-    DIRECT: DistributionSource
-    NASA_CDDIS: DistributionSource
-    LOCAL_FILE: DistributionSource
-    IN_MEMORY: DistributionSource
-    @property
-    def value(self) -> str: ...
+    DIRECT = "direct"
+    NASA_CDDIS = "nasa_cddis"
+    LOCAL_FILE = "local_file"
+    IN_MEMORY = "in_memory"
 
 @dataclass(frozen=True)
 class Distribution:

@@ -57,6 +57,7 @@ fn artifact_identity(json: &str) -> PyResult<Sp3ArtifactIdentity> {
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
     let compression = match input.compression.as_str() {
         "gzip" => ArchiveCompression::Gzip,
+        "unix_compress" => ArchiveCompression::UnixCompress,
         "none" => ArchiveCompression::None,
         _ => return Err(PyValueError::new_err("unknown archive compression")),
     };

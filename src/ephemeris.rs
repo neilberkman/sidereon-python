@@ -19,16 +19,18 @@ use pyo3::types::{PyAny, PyByteArray, PyBytes, PyModule};
 use sidereon_core::astro::time::civil::seconds_between_splits;
 use sidereon_core::astro::time::{Instant, InstantRepr, JulianDateSplit};
 use sidereon_core::constants::J2000_JD;
+use sidereon_core::data::ProductDate;
 use sidereon_core::ephemeris::{
     align_clock_reference as core_align_clock_reference,
     clock_reference_offset as core_clock_reference_offset,
     observable_states_at_j2000_s as core_observable_states_at_j2000_s,
     observable_states_at_shared_j2000_s as core_observable_states_at_shared_j2000_s,
-    sample as core_sample, ClockReferenceOffset, EphemerisSampleRow, EphemerisSampleStatus,
-    MmapPreciseEphemerisInterpolant, ObservableEphemerisSource, ObservableStateBatch,
-    ObservableStateElementStatus, ObservablesError, PreciseEphemerisInterpolant,
-    PreciseEphemerisSample, PreciseEphemerisSamples, PreciseInterpolantStoreError, Sp3,
-    OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
+    parse_exact_sp3 as core_parse_exact_sp3, sample as core_sample,
+    validate_exact_sp3 as core_validate_exact_sp3, ClockReferenceOffset, EphemerisSampleRow,
+    EphemerisSampleStatus, ExactSp3Coverage, ExactSp3Request, MmapPreciseEphemerisInterpolant,
+    ObservableEphemerisSource, ObservableStateBatch, ObservableStateElementStatus,
+    ObservablesError, PreciseEphemerisInterpolant, PreciseEphemerisSample, PreciseEphemerisSamples,
+    PreciseInterpolantStoreError, Sp3, OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
 };
 use sidereon_core::Error as CoreError;
 use sidereon_core::GnssSatelliteId;
@@ -132,6 +134,18 @@ impl PySp3 {
     #[getter]
     fn epoch_count(&self) -> usize {
         self.inner.epoch_count()
+    }
+
+    /// Epoch count declared on SP3 header line 1.
+    #[getter]
+    fn declared_epoch_count(&self) -> u64 {
+        self.inner.declared_epoch_count()
+    }
+
+    /// Start epoch declared on SP3 header line 1, as J2000 seconds.
+    #[getter]
+    fn declared_start_j2000_s(&self) -> Option<f64> {
+        self.inner.declared_start_j2000_s()
     }
 
     /// The satellite tokens (e.g. `"G01"`) present in the product, ascending.
@@ -1204,6 +1218,159 @@ fn load_sp3(source: &Bound<'_, PyAny>) -> PyResult<PySp3> {
     Ok(PySp3 { inner })
 }
 
+fn exact_sp3_error(error: impl std::fmt::Display) -> PyErr {
+    PyValueError::new_err(error.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exact_sp3_request(
+    year: i32,
+    month: u8,
+    day: u8,
+    issue: Option<&str>,
+    span: &str,
+    sample: &str,
+    expected_agency: Option<&str>,
+    identity_json: Option<&str>,
+) -> PyResult<ExactSp3Request> {
+    let mut request = if let Some(identity_json) = identity_json {
+        ExactSp3Request::from_identity(&crate::exact_cache::identity(identity_json)?)
+            .map_err(exact_sp3_error)?
+    } else {
+        ExactSp3Request::new(
+            ProductDate::new(year, month, day).map_err(exact_sp3_error)?,
+            issue,
+            span,
+            sample,
+        )
+        .map_err(exact_sp3_error)?
+    };
+    if let Some(agency) = expected_agency {
+        request = request
+            .with_expected_agency(agency)
+            .map_err(exact_sp3_error)?;
+    }
+    Ok(request)
+}
+
+fn exact_sp3_coverage(coverage: ExactSp3Coverage) -> &'static str {
+    match coverage {
+        ExactSp3Coverage::HalfOpen => "half_open",
+        ExactSp3Coverage::Inclusive => "inclusive",
+    }
+}
+
+type ExactSp3RequestFields = (
+    i32,
+    u8,
+    u8,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+);
+
+#[pyfunction]
+fn _exact_sp3_request_from_identity(identity_json: &str) -> PyResult<ExactSp3RequestFields> {
+    let request = ExactSp3Request::from_identity(&crate::exact_cache::identity(identity_json)?)
+        .map_err(exact_sp3_error)?;
+    let date = request.date();
+    Ok((
+        date.year,
+        date.month,
+        date.day,
+        request.issue().map(ToOwned::to_owned),
+        request.span().to_owned(),
+        request.sample().to_owned(),
+        request.format_version().map(ToOwned::to_owned),
+        request.expected_agency().map(ToOwned::to_owned),
+    ))
+}
+
+#[pyfunction]
+#[pyo3(signature = (year, month, day, issue, span, sample, expected_agency=None, identity_json=None))]
+#[allow(clippy::too_many_arguments)]
+fn _validate_exact_sp3_request(
+    year: i32,
+    month: u8,
+    day: u8,
+    issue: Option<&str>,
+    span: &str,
+    sample: &str,
+    expected_agency: Option<&str>,
+    identity_json: Option<&str>,
+) -> PyResult<()> {
+    exact_sp3_request(
+        year,
+        month,
+        day,
+        issue,
+        span,
+        sample,
+        expected_agency,
+        identity_json,
+    )
+    .map(|_| ())
+}
+
+#[pyfunction]
+#[pyo3(signature = (content, year, month, day, issue, span, sample, expected_agency=None, identity_json=None))]
+#[allow(clippy::too_many_arguments)]
+fn _parse_exact_sp3(
+    content: &[u8],
+    year: i32,
+    month: u8,
+    day: u8,
+    issue: Option<&str>,
+    span: &str,
+    sample: &str,
+    expected_agency: Option<&str>,
+    identity_json: Option<&str>,
+) -> PyResult<(PySp3, &'static str)> {
+    let request = exact_sp3_request(
+        year,
+        month,
+        day,
+        issue,
+        span,
+        sample,
+        expected_agency,
+        identity_json,
+    )?;
+    let (sp3, coverage) = core_parse_exact_sp3(content, &request).map_err(exact_sp3_error)?;
+    Ok((PySp3 { inner: sp3 }, exact_sp3_coverage(coverage)))
+}
+
+#[pyfunction]
+#[pyo3(signature = (sp3, year, month, day, issue, span, sample, expected_agency=None, identity_json=None))]
+#[allow(clippy::too_many_arguments)]
+fn _validate_exact_sp3(
+    sp3: &PySp3,
+    year: i32,
+    month: u8,
+    day: u8,
+    issue: Option<&str>,
+    span: &str,
+    sample: &str,
+    expected_agency: Option<&str>,
+    identity_json: Option<&str>,
+) -> PyResult<&'static str> {
+    let request = exact_sp3_request(
+        year,
+        month,
+        day,
+        issue,
+        span,
+        sample,
+        expected_agency,
+        identity_json,
+    )?;
+    core_validate_exact_sp3(&sp3.inner, &request)
+        .map(exact_sp3_coverage)
+        .map_err(exact_sp3_error)
+}
+
 /// Build deterministic precise-interpolant artifact bytes from an SP3 product.
 #[pyfunction]
 fn build_precise_interpolant_artifact_bytes<'py>(
@@ -1402,6 +1569,10 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
     )?;
     m.add_function(wrap_pyfunction!(load_sp3, m)?)?;
+    m.add_function(wrap_pyfunction!(_exact_sp3_request_from_identity, m)?)?;
+    m.add_function(wrap_pyfunction!(_validate_exact_sp3_request, m)?)?;
+    m.add_function(wrap_pyfunction!(_parse_exact_sp3, m)?)?;
+    m.add_function(wrap_pyfunction!(_validate_exact_sp3, m)?)?;
     m.add_function(wrap_pyfunction!(
         build_precise_interpolant_artifact_bytes,
         m

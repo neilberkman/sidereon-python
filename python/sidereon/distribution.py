@@ -10,10 +10,10 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import hashlib
+import io
 import json
 import netrc
 import os
-import re
 import time
 import zlib
 from dataclasses import asdict, dataclass, field, replace
@@ -23,10 +23,15 @@ from typing import Mapping, Optional, Sequence, Tuple, Union, cast
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
+import ncompress
 
 import sidereon
 from sidereon import _exact_cache
 from sidereon import data as _data
+from sidereon._sidereon import (
+    data_distribution_location_for_identity as _core_distribution_location,
+)
+from sidereon._sidereon import data_product_identity as _core_product_identity
 
 
 class DistributionSource(Enum):
@@ -56,8 +61,10 @@ class Distribution:
                 raise ValueError("in_memory distribution requires content only")
         elif self.path is not None or self.content is not None:
             raise ValueError("network distributions do not accept path or content")
-        if self.compression not in (None, "none", "gzip", "auto"):
-            raise ValueError("compression must be none, gzip, auto, or None")
+        if self.compression not in (None, "none", "gzip", "unix_compress", "auto"):
+            raise ValueError(
+                "compression must be none, gzip, unix_compress, auto, or None"
+            )
 
     @classmethod
     def direct(cls) -> "Distribution":
@@ -408,13 +415,6 @@ class ExactProductSetError(AcquisitionError):
         super().__init__(message)
 
 
-_SOLUTION_NAMES = {
-    "FIN": "final",
-    "RAP": "rapid",
-    "ULT": "ultra_rapid",
-    "PRD": "predicted",
-}
-_PREDICTION_HORIZON = {"cod_prd1": 1, "cod_prd2": 2}
 _AIUB_OBJECT_STORE_SUFFIX = ".s3.cloud.switch.ch"
 _MAX_REDIRECTS = 8
 _DEFAULT_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
@@ -426,45 +426,25 @@ def identity(product: _data.Product) -> ProductIdentity:
     filename = product.canonical_filename()
     if not _safe_filename(filename):
         raise _data.UnsupportedProduct(f"unsafe official filename: {filename!r}")
-    parts = filename.split("_")
-    if len(parts) < 5 or len(parts[0]) < 10 or len(parts[1]) != 11:
-        raise _data.UnsupportedProduct(f"unsupported official filename: {filename!r}")
-    token, timestamp, span, sample = parts[:4]
-    suffix = parts[-1]
-    publisher = token[:3]
     try:
-        filename_version = int(token[3])
-    except ValueError:
+        value = json.loads(
+            _core_product_identity(
+                product.center,
+                product.content,
+                product.date.year,
+                product.date.month,
+                product.date.day,
+                product.sample,
+                product.issue,
+                product.span,
+                filename,
+            )
+        )
+    except (TypeError, ValueError) as exc:
         raise _data.UnsupportedProduct(
-            f"invalid filename version: {filename!r}"
+            f"invalid exact product identity: {exc}"
         ) from None
-    campaign = token[4:7]
-    solution_token = token[7:10]
-    solution = _SOLUTION_NAMES.get(solution_token)
-    if solution is None:
-        raise _data.UnsupportedProduct(
-            f"unsupported solution token: {solution_token!r}"
-        )
-    expected_suffix = {"sp3": "ORB.SP3", "ionex": "GIM.INX"}.get(product.content)
-    if expected_suffix is None or suffix != expected_suffix:
-        raise _data.UnsupportedProduct(
-            "exact distribution acquisition currently supports SP3 and IONEX"
-        )
-    return ProductIdentity(
-        family=product.content,
-        analysis_center=product.center,
-        publisher=publisher,
-        solution_class=solution,
-        campaign=campaign,
-        filename_version=filename_version,
-        date=product.date,
-        issue=timestamp[-4:],
-        span=span,
-        sample=sample,
-        official_filename=filename,
-        format="SP3" if product.content == "sp3" else "IONEX",
-        prediction_horizon_days=_PREDICTION_HORIZON.get(product.center),
-    )
+    return ProductIdentity.from_dict(value)
 
 
 def request(
@@ -483,22 +463,39 @@ def request(
 
 def cddis_url(product_identity: ProductIdentity) -> str:
     """Official NASA CDDIS HTTPS URL for an exact SP3 or IONEX product."""
+    url, _, _ = _distribution_location(product_identity, DistributionSource.NASA_CDDIS)
+    if url is None:  # pragma: no cover - the network source always has a URL
+        raise UnsupportedDistribution("NASA CDDIS source has no public URL")
+    return url
+
+
+def _distribution_location(
+    product_identity: ProductIdentity, source: DistributionSource
+) -> tuple[Optional[str], str, str]:
     _validate_requested_identity(product_identity)
-    filename = product_identity.official_filename
-    if not _safe_filename(filename):
-        raise MalformedUrl("unsafe official filename")
-    if product_identity.family == "sp3":
-        week = _data.gps_week(product_identity.date)
-        return f"https://cddis.nasa.gov/archive/gnss/products/{week}/{filename}.gz"
-    if product_identity.family == "ionex":
-        doy = _data.day_of_year(product_identity.date)
-        return (
-            "https://cddis.nasa.gov/archive/gnss/products/ionex/"
-            f"{product_identity.date.year}/{doy:03d}/{filename}.gz"
+    try:
+        resolved_source, url, archive_filename, compression = (
+            _core_distribution_location(
+                json.dumps(
+                    product_identity.to_dict(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                source.value,
+            )
         )
-    raise UnsupportedDistribution(
-        f"NASA CDDIS source does not support {product_identity.family}"
-    )
+    except ValueError as exc:
+        message = str(exc)
+        if (
+            "does not support" in message
+            or "unsupported distribution" in message
+            or "has no cataloged" in message
+        ):
+            raise UnsupportedDistribution(message) from None
+        raise ProductValidationFailure(message) from None
+    if resolved_source != source.value:
+        raise ProductValidationFailure("catalog returned a different distributor")
+    return url, archive_filename, compression
 
 
 def validate_exact_product_set(
@@ -666,6 +663,7 @@ def _acquire_impl(
     root = Path(cache_dir) if cache_dir is not None else Path(_data.default_cache_dir())
     attempts: list[SourceFailure] = []
     last_error: Optional[_data.DataError] = None
+    first_nonabsence_error: Optional[_data.DataError] = None
 
     for distributor in exact_request.distributors:
         path = _cache_path(root, exact_request.identity, distributor.source)
@@ -723,6 +721,11 @@ def _acquire_impl(
                         error = _normalize_error(caught)
                         if isinstance(error, CacheWriteFailure):
                             raise error from caught
+                    if cache_error is not None:
+                        # A bad committed entry may be repaired from the same
+                        # source, but source absence cannot erase that earlier
+                        # integrity failure or authorize another distributor.
+                        error = cache_error
         except _exact_cache.CacheLockTimeout:
             raise CacheWriteFailure(
                 f"timed out waiting for exact-product cache lock {path.name}"
@@ -734,10 +737,29 @@ def _acquire_impl(
         failure = _source_failure(distributor.source, error)
         attempts.append(failure)
         last_error = error
+        fallback = _distributor_fallback_kind(error)
+        if fallback is None:
+            raise error
+        if fallback == "availability" and first_nonabsence_error is None:
+            first_nonabsence_error = error
 
+    if first_nonabsence_error is not None:
+        raise first_nonabsence_error
     if len(attempts) == 1 and last_error is not None:
         raise last_error
     raise AllDistributorsFailed(attempts)
+
+
+def _distributor_fallback_kind(error: _data.DataError) -> Optional[str]:
+    """Classify only failures that may advance to another exact distributor."""
+    if isinstance(
+        error,
+        (ProductNotPublished, RetiredEndpoint, _data.OfflineCacheMiss),
+    ):
+        return "absence"
+    if isinstance(error, TransportFailure) and _retryable(error):
+        return "availability"
+    return None
 
 
 @dataclass(frozen=True)
@@ -769,9 +791,9 @@ def _acquire_one(
     source = distributor.source
     if source is DistributionSource.DIRECT:
         if direct_location is None:
-            product = _product_from_identity(requested)
-            original_url = product.archive_url()
-            compression = product.archive_compression()
+            original_url, _, compression = _distribution_location(requested, source)
+            if original_url is None:  # pragma: no cover - network source invariant
+                raise UnsupportedDistribution("direct source has no public URL")
         else:
             original_url, compression = direct_location
         download = _download_http(
@@ -786,8 +808,8 @@ def _acquire_one(
         )
         archive = download.archive
     elif source is DistributionSource.NASA_CDDIS:
+        _, _, compression = _distribution_location(requested, source)
         original_url = cddis_url(requested)
-        compression = "gzip"
         download = _download_http(
             original_url,
             source,
@@ -889,8 +911,12 @@ def _catalog_direct_location(
     product: _data.Product, product_identity: ProductIdentity
 ) -> tuple[str, str]:
     if product.url is None:
-        standard = _product_from_identity(product_identity)
-        return standard.archive_url(), standard.archive_compression()
+        url, _, compression = _distribution_location(
+            product_identity, DistributionSource.DIRECT
+        )
+        if url is None:  # pragma: no cover - network source invariant
+            raise UnsupportedDistribution("direct source has no public URL")
+        return url, compression
     if product.content != "sp3" or product.issue is None:
         raise ProductValidationFailure("invalid catalog distribution location")
     rows = _data._core_data_ultra_sp3_locations(
@@ -919,24 +945,8 @@ def _validate_requested_identity(value: ProductIdentity) -> None:
         raise ProductValidationFailure("invalid requested product identity")
     try:
         _exact_cache.validate_identity(value)
-        issue = value.issue if value.solution_class == "ultra_rapid" else None
-        expected = identity(
-            _data.Product(
-                value.analysis_center,
-                value.family,
-                value.date,
-                value.sample,
-                issue=issue,
-                span=value.span,
-                filename=value.official_filename,
-            )
-        )
     except (ValueError, TypeError, _data.DataError):
         raise ProductValidationFailure("invalid requested product identity") from None
-    if replace(value, format_version=None) != expected:
-        raise ProductValidationFailure(
-            "requested identity disagrees with its official filename"
-        )
 
 
 def _download_http(
@@ -1184,8 +1194,45 @@ def _retryable(error: AcquisitionError) -> bool:
 
 def _detect_compression(content: bytes, requested: Optional[str]) -> str:
     if requested in (None, "auto"):
-        return "gzip" if content.startswith(b"\x1f\x8b") else "none"
+        if content.startswith(b"\x1f\x8b"):
+            return "gzip"
+        if content.startswith(b"\x1f\x9d"):
+            return "unix_compress"
+        return "none"
     return requested
+
+
+class _BoundedBytesIO(io.BytesIO):
+    def __init__(self, limit: int) -> None:
+        super().__init__()
+        self.limit = limit
+        self.exceeded = False
+
+    def write(self, content: bytes) -> int:
+        remaining = max(0, self.limit - self.tell())
+        if len(content) > remaining:
+            self.exceeded = True
+            if remaining:
+                super().write(content[:remaining])
+            # The native stream adapter cannot safely propagate a Python
+            # exception from write(). Report the full write as consumed while
+            # retaining at most ``limit`` bytes, then raise after it returns.
+            return len(content)
+        return super().write(content)
+
+
+class _BoundedCompressedInput(io.BytesIO):
+    def __init__(self, content: bytes, output: _BoundedBytesIO) -> None:
+        super().__init__(content)
+        self.output = output
+
+    def read(self, size: int = -1) -> bytes:
+        # ncompress's native callback cannot safely unwind a Python exception.
+        # Once the output cap is reached, return EOF at its next input refill so
+        # the native decoder cannot continue consuming the whole archive.
+        if self.output.exceeded:
+            return b""
+        return super().read(size)
 
 
 def _decompress(content: bytes, compression: str, limit: int) -> bytes:
@@ -1193,6 +1240,27 @@ def _decompress(content: bytes, compression: str, limit: int) -> bytes:
         if len(content) > limit:
             raise _data.DownloadSizeExceeded(f"product exceeded {limit} bytes")
         return content
+    if compression == "unix_compress":
+        output = _BoundedBytesIO(limit)
+        compressed_input = _BoundedCompressedInput(content, output)
+        try:
+            ncompress.decompress(compressed_input, output)
+        except _data.DownloadSizeExceeded:
+            raise
+        except (RuntimeError, TypeError, ValueError):
+            raise DecompressionFailure(
+                "invalid or truncated Unix-compress product"
+            ) from None
+        if output.exceeded:
+            raise _data.DownloadSizeExceeded(
+                f"decompressed product exceeded {limit} bytes"
+            )
+        result = output.getvalue()
+        if len(result) > limit:
+            raise _data.DownloadSizeExceeded(
+                f"decompressed product exceeded {limit} bytes"
+            )
+        return result
     if compression != "gzip":
         raise DecompressionFailure(f"unsupported compression {compression!r}")
     decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
@@ -1217,11 +1285,9 @@ def _validate_product(requested: ProductIdentity, content: bytes) -> ProductIden
         raise ProductValidationFailure("empty product")
     try:
         if requested.family == "sp3":
-            sp3 = sidereon.load_sp3(content)
-            if sp3.epoch_count == 0:
-                raise ProductValidationFailure("SP3 product has no epochs")
+            exact_request = sidereon.ExactSp3Request.from_identity(requested)
+            sidereon.parse_exact_sp3(content, exact_request)
             version = _sp3_version(content)
-            _validate_sp3_metadata(requested, content, sp3)
             format_version = f"SP3-{version}"
         elif requested.family == "ionex":
             ionex = sidereon.load_ionex(content)
@@ -1236,6 +1302,8 @@ def _validate_product(requested: ProductIdentity, content: bytes) -> ProductIden
             )
     except ProductValidationFailure:
         raise
+    except sidereon.ExactSp3ValidationError as exc:
+        raise ProductValidationFailure(str(exc)) from None
     except Exception as exc:
         if isinstance(exc, _data.DataError):
             raise
@@ -1256,50 +1324,6 @@ def _sp3_version(content: bytes) -> str:
     if len(content) < 2 or content[:1] != b"#" or content[1:2].lower() not in b"abcd":
         raise ProductValidationFailure("invalid SP3 version header")
     return content[1:2].decode("ascii").lower()
-
-
-def _validate_sp3_metadata(
-    requested: ProductIdentity, content: bytes, sp3: "sidereon.Sp3"
-) -> None:
-    first = content.splitlines()[0].decode("ascii", "strict")
-    match = re.match(
-        r"^#[a-dA-D][PV](\d{4})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})", first
-    )
-    if match is None:
-        raise ProductValidationFailure("SP3 first epoch is malformed")
-    year, month, day, hour, minute = map(int, match.groups())
-    if (year, month, day) != (
-        requested.date.year,
-        requested.date.month,
-        requested.date.day,
-    ) or f"{hour:02d}{minute:02d}" != requested.issue:
-        raise ProductValidationFailure("SP3 coverage start differs from exact request")
-    lines = content.splitlines()
-    if len(lines) < 2:
-        raise ProductValidationFailure("SP3 header is truncated")
-    second = lines[1].decode("ascii", "strict")
-    try:
-        cadence = float(second[24:38])
-    except ValueError:
-        raise ProductValidationFailure("SP3 cadence is malformed") from None
-    expected = _sample_seconds(requested.sample)
-    if expected is not None and abs(cadence - expected) > 1e-6:
-        raise ProductValidationFailure("SP3 cadence differs from exact request")
-    span_match = re.fullmatch(r"(\d{2})([DHM])", requested.span)
-    if span_match is None:
-        raise ProductValidationFailure("SP3 span is unsupported")
-    amount = int(span_match.group(1))
-    unit_seconds = {"D": 86_400.0, "H": 3_600.0, "M": 60.0}
-    expected_span_s = amount * unit_seconds[span_match.group(2)]
-    epochs = sp3.epochs_j2000_seconds.tolist()
-    if len(epochs) < 2:
-        raise ProductValidationFailure("SP3 coverage is too short for exact span")
-    if expected is not None and any(
-        abs((right - left) - expected) > 1e-6 for left, right in zip(epochs, epochs[1:])
-    ):
-        raise ProductValidationFailure("SP3 epoch grid differs from exact sample")
-    if abs((epochs[-1] - epochs[0]) - expected_span_s) > 1e-6:
-        raise ProductValidationFailure("SP3 duration differs from exact span")
 
 
 def _ionex_version(content: bytes) -> str:

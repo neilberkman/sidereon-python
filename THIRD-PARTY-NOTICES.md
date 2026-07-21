@@ -48,6 +48,13 @@ reimplements algorithms equivalent to SciPy's least-squares routines.
   Licensed under the BSD 3-Clause License.
 
 --------------------------------------------------------------------------------
+## ncompress (Unlicense)
+
+Historical Unix-compress (`.Z`) transport decoding uses the `ncompress` Python
+package. It is free and unencumbered software released into the public domain
+under the Unlicense. See <https://github.com/valgur/ncompress>.
+
+--------------------------------------------------------------------------------
 ## IERS Conventions Software
 
 The solid-earth / ocean / pole tide displacement follows the IERS Conventions
