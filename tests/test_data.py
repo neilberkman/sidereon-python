@@ -189,7 +189,7 @@ class _StubResponse:
         self.headers = headers or {}
         self.closed = False
 
-    def iter_bytes(self):
+    def iter_bytes(self, chunk_size=None):
         yield self._body
 
     def close(self):
@@ -1571,91 +1571,20 @@ def test_verify_merged_sp3_report_accepts_exact_absent_center_partition(tmp_path
     assert not data.verify_merge_report(persisted)
 
 
-def test_ultra_sp3_candidates_include_current_primary_and_alternates():
+def test_ultra_sp3_candidates_include_only_evidenced_current_product():
     candidates = data._sp3_candidates("esa_ult", dt.date(2026, 7, 13), None)
 
-    assert [candidate.pattern for candidate in candidates] == [
-        "primary_02D_05M",
-        "alternate_02D_15M",
-        "alternate_01D_05M",
-    ]
+    assert [candidate.pattern for candidate in candidates] == ["primary_02D_05M"]
 
 
-def test_code_ultra_sp3_candidates_pin_primary_alternate_and_alias_urls():
+def test_code_ultra_sp3_candidates_exclude_the_moving_latest_snapshot():
     candidates = data._sp3_candidates("cod_ult", dt.date(2026, 7, 14), None)
 
-    assert [candidate.pattern for candidate in candidates] == [
-        "primary_01D_05M",
-        "alternate_02D_05M",
-        "alias_latest",
-    ]
+    assert [candidate.pattern for candidate in candidates] == ["primary_01D_05M"]
     assert [candidate.archive_url() for candidate in candidates] == [
         "https://www.aiub.unibe.ch/download/CODE/"
         "COD0OPSULT_20261950000_01D_05M_ORB.SP3",
-        "https://www.aiub.unibe.ch/download/CODE/"
-        "COD0OPSULT_20261950000_02D_05M_ORB.SP3",
-        "https://www.aiub.unibe.ch/download/CODE/COD0OPSULT.SP3",
     ]
-    alternate_identity = distribution._catalog_product_identity(candidates[1])
-    alias_identity = distribution._catalog_product_identity(candidates[2])
-    assert alternate_identity.span == "02D"
-    assert alternate_identity.official_filename.endswith("_02D_05M_ORB.SP3")
-    assert alias_identity.span == "01D"
-    assert alias_identity.official_filename.endswith("_01D_05M_ORB.SP3")
-    assert distribution._catalog_direct_location(candidates[2], alias_identity) == (
-        candidates[2].url,
-        "none",
-    )
-
-
-def test_code_ultra_alias_rejects_287_epoch_sp3(tmp_path):
-    alias = data._sp3_products_for_issue("cod_ult", SP3_DATE, "0000", None)[2]
-    payload = _sp3_payload()
-    final_epoch = payload.index(b"*  2020  6 25 23 55  0.00000000")
-    wrong_duration = payload[:final_epoch] + b"EOF\n"
-    wrong_duration = wrong_duration.replace(b"     289 ", b"     287 ", 1)
-    assert sidereon.load_sp3(wrong_duration).epoch_count == 287
-    wrong_duration = sp3_bytes_for_date(wrong_duration, SP3_DATE)
-
-    def handler(request):
-        return httpx.Response(200, request=request, content=wrong_duration)
-
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        with pytest.raises(
-            distribution.ProductValidationFailure,
-            match="span mismatch",
-        ):
-            distribution._acquire_catalog_product(
-                alias, cache_dir=str(tmp_path), http_client=client
-            )
-
-    assert not list(tmp_path.rglob("*.provenance.json"))
-
-
-def test_code_ultra_alias_report_verifies_catalog_filename_equivalence(tmp_path):
-    candidates = data._sp3_products_for_issue("cod_ult", SP3_DATE, "0000", None)
-    alias = candidates[2]
-    payload = sp3_bytes_for_date(_sp3_payload(), SP3_DATE)
-
-    def handler(request):
-        if str(request.url) == alias.archive_url():
-            return httpx.Response(200, request=request, content=payload)
-        return httpx.Response(404, request=request)
-
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        _, report = data.fetch_merged_sp3(
-            SP3_DATE,
-            ["cod_ult"],
-            cache_dir=str(tmp_path),
-            http_client=client,
-        )
-
-    persisted = report.to_dict()
-    contributor = persisted["contributors"][0]
-    assert contributor["pattern"] == "alias_latest"
-    assert contributor["filename"] == alias.filename
-    assert contributor["artifact_identity"]["official_filename"] != alias.filename
-    assert data.verify_merge_report(persisted)
 
 
 def test_aiub_download_follows_only_validated_object_store_redirect(monkeypatch):
@@ -1686,12 +1615,12 @@ def test_aiub_download_rejects_untrusted_redirect_target(monkeypatch):
         data._download_once(source, 1.0, 1024)
 
 
-def test_ultra_sp3_primary_miss_uses_alternate(monkeypatch):
+def test_gfz_documented_cadence_overlap_falls_back_after_dated_absence(monkeypatch):
     calls = []
 
     def fake_acquire(product, **_kwargs):
         calls.append(product.pattern)
-        if product.pattern == "primary_02D_05M":
+        if product.pattern == "primary_02D_15M":
             raise distribution.ProductNotPublished(
                 404, product.archive_url(), "not published"
             )
@@ -1701,17 +1630,17 @@ def test_ultra_sp3_primary_miss_uses_alternate(monkeypatch):
         )
 
     monkeypatch.setattr(distribution, "_acquire_catalog_product", fake_acquire)
-    result = data._fetch_center_sp3("esa_ult", dt.date(2026, 7, 13), None, {})
+    result = data._fetch_center_sp3("gfz_ult", dt.date(2021, 5, 15), None, {})
 
     assert result[0] == "ok"
-    assert result[1].pattern == "alternate_02D_15M"
-    assert calls == ["primary_02D_05M", "alternate_02D_15M"]
+    assert result[1].pattern == "alternate_02D_05M"
+    assert calls == ["primary_02D_15M", "alternate_02D_05M"]
     attempts = result[1].acquisition_facts.attempts
     assert len(attempts) == 1
     assert attempts[0].source is distribution.DistributionSource.DIRECT
     assert attempts[0].error_type == "product_not_published"
     assert attempts[0].status == 404
-    assert attempts[0].url.endswith("_02D_05M_ORB.SP3.gz")
+    assert attempts[0].url.endswith("_02D_15M_ORB.SP3.gz")
 
 
 def test_ultra_sp3_all_variants_missing_records_absence(monkeypatch):
@@ -1724,19 +1653,17 @@ def test_ultra_sp3_all_variants_missing_records_absence(monkeypatch):
         )
 
     monkeypatch.setattr(distribution, "_acquire_catalog_product", fake_acquire)
-    result = data._fetch_center_sp3("esa_ult", dt.date(2026, 7, 13), None, {})
+    result = data._fetch_center_sp3("gfz_ult", dt.date(2021, 5, 15), None, {})
 
     assert result[0] == "absent"
     assert result[1].reason == "candidate_not_found"
-    assert result[1].pattern == "alternate_01D_05M"
+    assert result[1].pattern == "alternate_02D_05M"
     assert result[1].url is not None
-    assert result[1].url.startswith("https://navigation-office.esa.int/")
-    assert result[1].url.endswith("_01D_05M_ORB.SP3.gz")
+    assert result[1].url.endswith("_02D_05M_ORB.SP3.gz")
     assert result[1].http_status == 404
     assert calls == [
-        "primary_02D_05M",
-        "alternate_02D_15M",
-        "alternate_01D_05M",
+        "primary_02D_15M",
+        "alternate_02D_05M",
     ]
 
 
@@ -1996,11 +1923,58 @@ def test_fetch_dted_rejects_oversized_compressed_payload(tmp_path, monkeypatch):
         )
 
 
+def test_legacy_fetch_retains_only_limit_plus_one_from_one_oversized_chunk(
+    tmp_path, monkeypatch
+):
+    _stub_http(monkeypatch, [(200, b"x" * 2_000_000)])
+    original = data._append_bounded
+    retained_sizes = []
+
+    def tracking_append(buffer, chunk, limit):
+        overflow = original(buffer, chunk, limit)
+        retained_sizes.append(len(buffer))
+        return overflow
+
+    monkeypatch.setattr(data, "_append_bounded", tracking_append)
+
+    with pytest.raises(data.DownloadSizeExceeded):
+        data.fetch_dted(
+            36.5,
+            -106.5,
+            cache_dir=str(tmp_path),
+            max_compressed_bytes=4,
+        )
+
+    assert retained_sizes == [5]
+
+
 def test_fetch_dted_rejects_wrong_hgt_length(tmp_path, monkeypatch):
     _stub_http(monkeypatch, [(200, gzip.compress(b"short", mtime=0))])
 
     with pytest.raises(data.DecompressError):
         data.fetch_dted(36.5, -106.5, cache_dir=str(tmp_path))
+
+
+def test_legacy_gunzip_uses_the_complete_bounded_member_contract():
+    first = b"A" * 100_000
+    second = b"B" * 90_000
+    first_member = gzip.compress(first, mtime=0)
+    second_member = gzip.compress(second, mtime=0)
+    archive = first_member + second_member
+
+    assert data._gunzip(archive, len(first) + len(second)) == first + second
+
+    with pytest.raises(data.DecompressError, match="exceeded cap"):
+        data._gunzip(archive, len(first) + len(second) - 1)
+
+    invalid = [
+        first_member + second_member[:-1],
+        first_member + bytes([second_member[0] ^ 0x01]) + second_member[1:],
+        first_member + b"trailing garbage",
+    ]
+    for candidate in invalid:
+        with pytest.raises(data.DecompressError):
+            data._gunzip(candidate, len(first) + len(second))
 
 
 def test_fetch_dted_conversion_reference_and_terrain_reader(tmp_path, monkeypatch):

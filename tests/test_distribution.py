@@ -15,6 +15,7 @@ import pytest
 import sidereon.data as data
 import sidereon.distribution as distribution
 from _helpers import CORE_FIXTURES, sp3_bytes_for_date
+from sidereon import _compression
 
 SP3_DATE = dt.date(2026, 6, 25)
 IONEX_DATE = dt.date(2024, 6, 24)
@@ -73,6 +74,26 @@ def _gzip_response(request, body=None, **headers):
         content=archive,
         headers={"content-type": "application/gzip", **headers},
     )
+
+
+def _gzip_with_extra(archive, data_size=49_996):
+    extra = b"AB" + data_size.to_bytes(2, "little") + b"\0" * data_size
+    assert len(extra) <= 65_535
+    header = bytearray(archive[:10])
+    header[3] |= 0x04
+    return bytes(header) + len(extra).to_bytes(2, "little") + extra + archive[10:]
+
+
+def _gzip_with_comment(archive, size=70_000):
+    header = bytearray(archive[:10])
+    header[3] |= 0x10
+    return bytes(header) + b"x" * size + b"\0" + archive[10:]
+
+
+def _corrupt_byte(content, index):
+    corrupted = bytearray(content)
+    corrupted[index] ^= 0x01
+    return bytes(corrupted)
 
 
 def test_identity_is_independent_of_distributor_and_paths_are_exact():
@@ -453,6 +474,163 @@ def test_error_documents_and_truncated_compression_never_enter_cache(
     with _client(response) as client, pytest.raises(error_type):
         distribution.acquire(
             _sp3_request(), cache_dir=tmp_path, http_client=client, retries=1
+        )
+    assert not list(tmp_path.rglob("*.SP3"))
+
+
+def test_complete_rfc_1952_member_sequences_are_acquired(tmp_path):
+    content = _sp3_bytes()
+    split_at = len(content) // 2
+    first, second = content[:split_at], content[split_at:]
+    ordinary = gzip.compress(content, mtime=0)
+    archives = {
+        "split-members": gzip.compress(first, mtime=0) + gzip.compress(second, mtime=0),
+        "empty-prefix": gzip.compress(b"", mtime=0) + ordinary,
+        "empty-suffix": ordinary + gzip.compress(b"", mtime=0),
+        "large-extra": _gzip_with_extra(ordinary),
+        "large-comment": _gzip_with_comment(ordinary),
+    }
+
+    for label, archive in archives.items():
+        exact = _sp3_request(
+            distribution.Distribution.in_memory(archive, compression="gzip")
+        )
+        acquired = distribution.acquire(exact, cache_dir=tmp_path / label)
+
+        assert Path(acquired.path).read_bytes() == content
+        assert acquired.provenance.archive_sha256 == hashlib.sha256(archive).hexdigest()
+
+
+def test_exact_http_retains_only_limit_plus_one_from_one_oversized_chunk(
+    tmp_path, monkeypatch
+):
+    original = distribution.append_bounded
+    retained_sizes = []
+
+    def tracking_append(buffer, chunk, limit):
+        overflow = original(buffer, chunk, limit)
+        retained_sizes.append(len(buffer))
+        return overflow
+
+    monkeypatch.setattr(distribution, "append_bounded", tracking_append)
+
+    def oversized_response(request):
+        return httpx.Response(
+            200,
+            request=request,
+            content=b"x" * 2_000_000,
+            headers={"content-type": "application/gzip"},
+        )
+
+    with (
+        _client(oversized_response) as client,
+        pytest.raises(distribution.ProductValidationFailure) as caught,
+    ):
+        distribution.acquire(
+            _sp3_request(distribution.Distribution.direct()),
+            cache_dir=tmp_path,
+            http_client=client,
+            max_archive_bytes=4,
+        )
+
+    assert caught.value.code == "download_size_exceeded"
+    assert retained_sizes == [5]
+
+
+def test_many_tiny_gzip_members_are_processed_with_bounded_fresh_input(monkeypatch):
+    content = _sp3_bytes()
+    archive = gzip.compress(b"", mtime=0) * 10_000 + gzip.compress(content, mtime=0)
+    original = _compression.zlib.decompressobj
+    feed_lengths = []
+
+    class TrackingDecompressor:
+        def __init__(self, *args, **kwargs):
+            self._inner = original(*args, **kwargs)
+
+        def decompress(self, data, max_length=0):
+            feed_lengths.append(len(data))
+            return self._inner.decompress(data, max_length)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    monkeypatch.setattr(_compression.zlib, "decompressobj", TrackingDecompressor)
+
+    assert _compression.gunzip_members(archive, len(content)) == content
+    assert max(feed_lengths) <= _compression._MAX_INPUT_CHUNK_BYTES
+    assert sum(feed_lengths) <= len(archive) * 8
+
+
+def test_later_gzip_member_integrity_and_trailing_data_fail_closed(tmp_path):
+    content = _sp3_bytes()
+    split_at = len(content) // 2
+    first = gzip.compress(content[:split_at], mtime=0)
+    second = gzip.compress(content[split_at:], mtime=0)
+    complete = gzip.compress(content, mtime=0)
+    candidates = {
+        "leading-garbage": b"not-a-gzip-member" + complete,
+        "truncated-later-member": first + second[:-1],
+        "corrupt-later-crc": first + _corrupt_byte(second, -8),
+        "corrupt-later-isize": first + _corrupt_byte(second, -1),
+        "inter-member-garbage": first + b"not-a-gzip-member" + second,
+        "trailing-garbage": complete + b"not-a-gzip-member",
+    }
+
+    for label, archive in candidates.items():
+        exact = _sp3_request(
+            distribution.Distribution.in_memory(archive, compression="gzip")
+        )
+        with pytest.raises(distribution.DecompressionFailure):
+            distribution.acquire(exact, cache_dir=tmp_path / label)
+        assert not list((tmp_path / label).rglob("*.SP3"))
+
+
+def test_concatenated_gzip_uses_one_cumulative_product_limit(tmp_path):
+    content = _sp3_bytes()
+    split_at = len(content) // 2
+    archive = gzip.compress(content[:split_at], mtime=0) + gzip.compress(
+        content[split_at:], mtime=0
+    )
+    exact = _sp3_request(
+        distribution.Distribution.in_memory(archive, compression="gzip")
+    )
+
+    with pytest.raises(distribution.ProductValidationFailure) as caught:
+        distribution.acquire(
+            exact,
+            cache_dir=tmp_path,
+            max_product_bytes=len(content) - 1,
+        )
+
+    assert caught.value.code == "download_size_exceeded"
+    assert not list(tmp_path.rglob("*.SP3"))
+
+
+def test_invalid_gzip_is_terminal_before_a_valid_later_source(tmp_path):
+    content = _sp3_bytes()
+    invalid = gzip.compress(content, mtime=0)[:-1]
+
+    def truncated_response(request):
+        return httpx.Response(
+            200,
+            request=request,
+            content=invalid,
+            headers={"content-type": "application/gzip"},
+        )
+
+    exact = _sp3_request(
+        distribution.Distribution.direct(),
+        distribution.Distribution.in_memory(content, compression="none"),
+    )
+    with (
+        _client(truncated_response) as client,
+        pytest.raises(distribution.DecompressionFailure, match="truncated"),
+    ):
+        distribution.acquire(
+            exact,
+            cache_dir=tmp_path,
+            http_client=client,
+            retries=1,
         )
     assert not list(tmp_path.rglob("*.SP3"))
 

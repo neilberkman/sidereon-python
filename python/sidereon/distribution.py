@@ -15,7 +15,6 @@ import json
 import netrc
 import os
 import time
-import zlib
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -28,6 +27,12 @@ import ncompress
 import sidereon
 from sidereon import _exact_cache
 from sidereon import data as _data
+from sidereon._compression import (
+    GzipIntegrityError,
+    GzipSizeLimitError,
+    gunzip_members,
+)
+from sidereon._ingress import _STREAM_CHUNK_BYTES, append_bounded
 from sidereon._sidereon import (
     _validate_unix_compress,
 )
@@ -918,18 +923,7 @@ def _catalog_product_identity(product: _data.Product) -> ProductIdentity:
     try:
         return identity(product)
     except _data.DataError:
-        if not (product.pattern or "").startswith("alias_"):
-            raise ProductValidationFailure("invalid catalog product identity") from None
-        canonical = replace(
-            product,
-            filename=None,
-            cache_filename=None,
-            url=None,
-            compression=None,
-            span=None,
-            pattern=None,
-        )
-        return identity(canonical)
+        raise ProductValidationFailure("invalid catalog product identity") from None
 
 
 def _catalog_direct_location(
@@ -1062,11 +1056,10 @@ def _download_http_once(
                 chunks = (
                     (response.content,)
                     if response.is_stream_consumed
-                    else response.iter_raw()
+                    else response.iter_raw(chunk_size=_STREAM_CHUNK_BYTES)
                 )
                 for chunk in chunks:
-                    archive.extend(chunk)
-                    if len(archive) > max_bytes:
+                    if append_bounded(archive, chunk, max_bytes):
                         raise _data.DownloadSizeExceeded(
                             f"archive payload exceeded {max_bytes} bytes"
                         )
@@ -1310,21 +1303,14 @@ def _decompress(content: bytes, compression: str, limit: int) -> bytes:
         return result
     if compression != "gzip":
         raise DecompressionFailure(f"unsupported compression {compression!r}")
-    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
     try:
-        output = decompressor.decompress(content, limit + 1)
-        if len(output) > limit or decompressor.unconsumed_tail:
-            raise _data.DownloadSizeExceeded(
-                f"decompressed product exceeded {limit} bytes"
-            )
-        output += decompressor.flush(limit + 1 - len(output))
-    except zlib.error:
-        raise DecompressionFailure("invalid or truncated gzip product") from None
-    if len(output) > limit:
-        raise _data.DownloadSizeExceeded(f"decompressed product exceeded {limit} bytes")
-    if not decompressor.eof or decompressor.unused_data:
-        raise DecompressionFailure("invalid, truncated, or concatenated gzip product")
-    return output
+        return gunzip_members(content, limit)
+    except GzipSizeLimitError:
+        raise _data.DownloadSizeExceeded(
+            f"decompressed product exceeded {limit} bytes"
+        ) from None
+    except GzipIntegrityError as exc:
+        raise DecompressionFailure(str(exc)) from None
 
 
 def _validate_product(requested: ProductIdentity, content: bytes) -> ProductIdentity:

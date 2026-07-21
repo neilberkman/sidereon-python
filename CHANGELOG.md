@@ -4,6 +4,61 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-07-21
+
+### Added
+
+- Added `data.sp3_content_start_convention`, returning the core-backed
+  `Sp3ContentStartConvention` value and its exact offset in seconds. The query
+  enforces each center's issue schedule and exposes the historical GFZ
+  ultra-rapid transition without duplicating catalog policy in Python.
+- Added `data.supported_samples`, a product-, date-, and issue-aware query for
+  officially cataloged sampling tokens. Explicit product construction enforces
+  the same result before deriving a filename, URL, identity, or cache key.
+
+### Fixed
+
+- Exact SP3 parsing and acquisition now accept a complete `EOF` logical record
+  padded with ASCII spaces through the 80-column interoperability limit,
+  including LF and CRLF line endings. Malformed EOF-like records, nonblank
+  trailing data, and missing terminal records continue to fail closed in the
+  shared Rust core. Python acquisition also continues to reject truncated
+  compressed products before exact parsing or cache publication.
+- Python's bounded gzip decoder now accepts complete RFC 1952 multi-member
+  archives, applies one cumulative decompressed-byte cap, and verifies every
+  member's end marker, CRC32, and ISIZE. Truncated or corrupt later members and
+  non-member trailing bytes remain terminal integrity failures. Exact-product
+  acquisition and the legacy fetch path now use this same decoder.
+- Built-in exact and legacy HTTP download paths now retain at most the
+  compressed-input limit plus one probe byte, even when a transport supplies
+  one oversized chunk. Network reads also request bounded chunks explicitly;
+  local-file reads retain the same limit-plus-one policy.
+- Exact requests derived from historical GFZ ultra-rapid identities now apply
+  the core's cataloged filename-epoch/content-start relationship while keeping
+  declared-start, header-metadata, first-epoch, cadence, grid, and span checks
+  strict.
+- Ultra-rapid exact candidates now contain only dated span/cadence variants
+  evidenced for the exact center, date, and issue. CODE's moving latest-product
+  snapshot is excluded because it is not the dated one-day product; the
+  documented GFZ `2021-05-15 0000` dual-cadence overlap remains the only
+  two-candidate issue. Caller-built identities must use the cataloged span.
+
+### Changed
+
+- Updated `sidereon` and `sidereon-core` to 0.34.0.
+
+### Compatibility
+
+- The new catalog query is additive; existing Python call signatures and all
+  numerical calculations are unchanged. Ultra-SP3 candidate lists can be
+  shorter because unsupported alternate spans/cadences and the non-exact CODE
+  moving snapshot are no longer returned. Reports or cache entries that claimed
+  that snapshot as a dated identity no longer verify. This is a minor release
+  because the catalog API is public and identity-derived historical GFZ and
+  span validation are newly enforced. Valid concatenated gzip members are newly
+  accepted; incomplete or corrupt archives remain rejected. Terminal-record
+  behavior is inherited from the same core used by every Sidereon interface.
+
 ## [0.33.1] - 2026-07-20
 
 ### Added

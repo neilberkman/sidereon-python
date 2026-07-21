@@ -103,6 +103,12 @@ detects the `.Z` magic bytes in `compression="auto"` input. Unix-compress
 decoding validates terminal code completeness and padding before product
 parsing, so a structurally partial archive fails decompression.
 
+Gzip decoding follows the RFC 1952 member-sequence model: each member must have
+a complete header, DEFLATE stream, CRC32, ISIZE, and end marker. Valid
+concatenated members are decoded under one cumulative output cap. Arbitrary
+bytes before, between, or after members, plus an incomplete or corrupt member
+at any position, fail before product parsing or cache publication.
+
 IGS combined final SP3 begins at GPS week 0730. Before week 2238, Sidereon
 derives the verified short filename and CDDIS location; at week 2238 it switches
 to `IGS0OPSFIN_<epoch>_01D_15M_ORB.SP3.gz`. Current direct BKG locations use the
@@ -112,6 +118,20 @@ IGS broadcast navigation retains its existing `BRDC00WRD` catalog behavior.
 Use `data.product_solution_class("igs", "sp3")` for `"final"` and
 `data.product_solution_class("igs", "nav")` for `"broadcast"`; classification
 is intentionally product-aware rather than inferred from the center alone.
+
+`data.supported_samples(center, content, date, issue)` returns only sampling
+tokens evidenced for that exact catalog line. It captures the GFZ rapid date
+boundary and the issue-level ESA/GFZ ultra-rapid transitions; constructors
+enforce the same set before deriving a filename, URL, identity, or cache key.
+Omitting `issue` for an issue-based query selects its `0000` publication, while
+constructing the product still requires the issue explicitly.
+
+`data.sp3_content_start_convention(center, date, issue)` exposes the core
+catalog's relationship between an SP3 filename epoch and the product's first
+content epoch. It returns `FILENAME_EPOCH` for aligned products and
+`FILENAME_EPOCH_MINUS_ONE_DAY` for the historical GFZ ultra-rapid convention;
+each enum value also provides `content_start_offset_s`. The issue is validated
+against the selected center's published issue schedule.
 
 CODE product families are routed independently through AIUB's HTTPS service:
 
@@ -134,6 +154,13 @@ is modeled only from GPS week 2238. ESA ultra-rapid defaults to `15M` through
 the 2025-02-02 0600 issue and `05M` from the 1200 issue; the date-only query
 uses the start-of-day (`0000`) convention. GFZ ultra-rapid defaults to `15M`
 through 2021-05-15 and `05M` from 2021-05-16.
+
+Ultra-rapid acquisition enumerates only dated cadence/span variants evidenced
+for the exact center, date, and issue. The GFZ 2021-05-15 `0000` issue is the
+only cataloged two-candidate overlap. AIUB's separately documented
+`COD0OPSULT.SP3` is a moving two-day snapshot, not an exact alias for CODE's
+dated `01D_05M` product, so it is not a fallback candidate. A missing CODE dated
+object is reported as absent rather than assigned bytes from that snapshot.
 
 CDDIS distribution is rejected for every pre-week-2238 long-name SP3 or IONEX
 identity. The one supported historical CDDIS SP3 exception is the IGS
@@ -242,8 +269,9 @@ level. It rechecks contributor filename, catalog pattern, center, date, and issu
 against the authenticated artifact identity; contributors and absent centers
 must exactly partition `requested_centers`; count and metric domains must be
 internally consistent. Unknown authorization, cookie, secret, or local-path
-fields are rejected. Alias candidates are accepted only after the parsed epoch
-grid proves both the catalog cadence and complete declared coverage span.
+fields are rejected. Moving latest-product snapshots are not assigned an exact
+dated identity and are excluded from candidate acquisition and report
+verification.
 
 The default file-helper return remains the written path for compatibility.
 Neither `report.to_dict()` nor the stable identity includes credentials,
@@ -321,6 +349,7 @@ All sources in this table were accessed on 2026-07-20.
 
 | Change | Official public evidence | Accessed |
 |---|---|---|
+| A gzip file is a sequence of members; each member carries its own CRC32 and ISIZE trailer. Python acquisition accepts only a complete, valid sequence under the caller's cumulative output limit. | [RFC 1952](https://www.rfc-editor.org/rfc/rfc1952) | 2026-07-21 |
 | IGS combined final orbits begin at GPS week 0730. | [1994 IGS Annual Report](https://files.igs.org/pub/resource/pubs/94an_repta.pdf) | 2026-07-20 |
 | IGS final SP3 changes from the short `.sp3.Z` convention to the long `.SP3.gz` convention at GPS week 2238. | [IGS transition guideline](https://files.igs.org/pub/resource/guidelines/Guideline_for_the_transition_of_the_IGS_products_to_IGS20_and_long_filenames_v2.0.pdf), [IGSMAIL-8256](https://lists.igs.org/pipermail/igsmail/2022/008252.html), [week 2237 CDDIS object](https://cddis.nasa.gov/archive/gnss/products/2237/igs22370.sp3.Z), [week 2238 CDDIS object](https://cddis.nasa.gov/archive/gnss/products/2238/IGS0OPSFIN_20223310000_01D_15M_ORB.SP3.gz) | 2026-07-20 |
 | CDDIS's documented legacy orbit convention and the IGS week-2238 transition support one modeled pre-transition mapping: the IGS combined-final short name with `.Z`. Other centers' pre-transition long names are not projected into CDDIS. | [NASA precise-orbit convention](https://www.earthdata.nasa.gov/data/space-geodesy-techniques/gnss/precise-orbits-product), [IGS transition guideline](https://files.igs.org/pub/resource/guidelines/Guideline_for_the_transition_of_the_IGS_products_to_IGS20_and_long_filenames_v2.0.pdf), [week 2237 legacy object](https://cddis.nasa.gov/archive/gnss/products/2237/igs22370.sp3.Z), [week 2238 long-name object](https://cddis.nasa.gov/archive/gnss/products/2238/IGS0OPSFIN_20223310000_01D_15M_ORB.SP3.gz) | 2026-07-20 |

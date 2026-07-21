@@ -99,6 +99,25 @@ fn data_default_sample_for_date(
 }
 
 #[pyfunction]
+fn data_supported_samples(
+    center_code: &str,
+    product_code: &str,
+    year: i32,
+    month: u8,
+    day: u8,
+    issue: Option<&str>,
+) -> PyResult<Vec<String>> {
+    core::supported_samples(
+        center(center_code)?,
+        product_type(product_code)?,
+        date(year, month, day)?,
+        issue,
+    )
+    .map(|samples| samples.iter().map(|sample| (*sample).to_owned()).collect())
+    .map_err(to_data_err)
+}
+
+#[pyfunction]
 fn data_product_sample(
     center_code: &str,
     product_code: &str,
@@ -122,6 +141,24 @@ fn data_product_sample(
 fn data_product_solution_class(center_code: &str, product_code: &str) -> PyResult<String> {
     core::product_solution_class(center(center_code)?, product_type(product_code)?)
         .map(|solution| solution.code().to_string())
+        .map_err(to_data_err)
+}
+
+#[pyfunction]
+fn data_sp3_content_start_convention(
+    center_code: &str,
+    year: i32,
+    month: u8,
+    day: u8,
+    issue: Option<&str>,
+) -> PyResult<(String, i64)> {
+    core::sp3_content_start_convention(center(center_code)?, date(year, month, day)?, issue)
+        .map(|convention| {
+            (
+                convention.code().to_owned(),
+                convention.content_start_offset_s(),
+            )
+        })
         .map_err(to_data_err)
 }
 
@@ -474,8 +511,10 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(data_center_entry, m)?)?;
     m.add_function(wrap_pyfunction!(data_default_sample, m)?)?;
     m.add_function(wrap_pyfunction!(data_default_sample_for_date, m)?)?;
+    m.add_function(wrap_pyfunction!(data_supported_samples, m)?)?;
     m.add_function(wrap_pyfunction!(data_product_sample, m)?)?;
     m.add_function(wrap_pyfunction!(data_product_solution_class, m)?)?;
+    m.add_function(wrap_pyfunction!(data_sp3_content_start_convention, m)?)?;
     m.add_function(wrap_pyfunction!(data_gps_week, m)?)?;
     m.add_function(wrap_pyfunction!(data_day_of_year, m)?)?;
     m.add_function(wrap_pyfunction!(data_predicted_day_offset, m)?)?;

@@ -52,8 +52,8 @@ import hashlib as _hashlib
 import json as _json
 import math as _math
 import os as _os
-import zlib as _zlib
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import TYPE_CHECKING, Iterable, Iterator, Mapping, Optional, Sequence, Union
 from urllib.parse import urljoin, urlsplit
 
@@ -61,6 +61,11 @@ import httpx
 import platformdirs
 
 import sidereon
+from sidereon._compression import GzipIntegrityError as _GzipIntegrityError
+from sidereon._compression import GzipSizeLimitError as _GzipSizeLimitError
+from sidereon._compression import gunzip_members as _gunzip_members
+from sidereon._ingress import _STREAM_CHUNK_BYTES as _STREAM_CHUNK_BYTES
+from sidereon._ingress import append_bounded as _append_bounded
 from sidereon._sidereon import (
     data_allowed_hosts as _core_data_allowed_hosts,
 )
@@ -134,6 +139,9 @@ from sidereon._sidereon import (
     data_skadi_tile_id as _core_data_skadi_tile_id,
 )
 from sidereon._sidereon import (
+    data_sp3_content_start_convention as _core_data_sp3_content_start_convention,
+)
+from sidereon._sidereon import (
     data_space_weather_archive_url as _core_data_space_weather_archive_url,
 )
 from sidereon._sidereon import (
@@ -144,6 +152,9 @@ from sidereon._sidereon import (
 )
 from sidereon._sidereon import (
     data_space_weather_source_entry as _core_data_space_weather_source_entry,
+)
+from sidereon._sidereon import (
+    data_supported_samples as _core_data_supported_samples,
 )
 from sidereon._sidereon import (
     data_terrain_tile_index as _core_data_terrain_tile_index,
@@ -201,7 +212,10 @@ __all__ = [
     "gps_week",
     "day_of_year",
     "default_sample_for_date",
+    "supported_samples",
     "product_solution_class",
+    "Sp3ContentStartConvention",
+    "sp3_content_start_convention",
     "canonical_filename",
     "archive_url",
     "mgex_ionex",
@@ -678,6 +692,29 @@ def default_sample_for_date(center: str, content: str, date: _dt.date) -> str:
         raise _catalog_error(ValueError(str(exc))) from None
 
 
+def supported_samples(
+    center: str,
+    content: str,
+    date: _dt.date,
+    issue: Optional[str] = None,
+) -> list[str]:
+    """Officially cataloged sample tokens for one product date and issue.
+
+    The result is product-, date-, and issue-aware. For an issue-based product
+    line, omitting ``issue`` queries the ``0000`` issue; product construction
+    still requires an explicit issue. Unsupported centers, products, eras, and
+    issue values raise :class:`UnsupportedProduct`.
+    """
+    try:
+        return list(
+            _core_data_supported_samples(
+                center, content, date.year, date.month, date.day, issue
+            )
+        )
+    except (AttributeError, ValueError) as exc:
+        raise _catalog_error(ValueError(str(exc))) from None
+
+
 def product_solution_class(center: str, content: str) -> str:
     """Solution class for a supported center/product family.
 
@@ -688,6 +725,49 @@ def product_solution_class(center: str, content: str) -> str:
         return _core_data_product_solution_class(center, content)
     except ValueError as exc:
         raise _catalog_error(exc) from None
+
+
+class Sp3ContentStartConvention(Enum):
+    """Relationship between an SP3 filename epoch and its first content epoch."""
+
+    FILENAME_EPOCH = "filename_epoch"
+    FILENAME_EPOCH_MINUS_ONE_DAY = "filename_epoch_minus_one_day"
+
+    @property
+    def content_start_offset_s(self) -> int:
+        """Seconds added to the filename epoch to obtain the content start."""
+        if self is Sp3ContentStartConvention.FILENAME_EPOCH:
+            return 0
+        return -86_400
+
+
+def sp3_content_start_convention(
+    center: str, date: _dt.date, issue: Optional[str] = None
+) -> Sp3ContentStartConvention:
+    """Cataloged first-content convention for one exact SP3 product issue.
+
+    ``issue`` is required for ultra-rapid centers, must be one of that center's
+    published issues, and must be omitted for product lines without issue times.
+    """
+    try:
+        code, offset_s = _core_data_sp3_content_start_convention(
+            center, date.year, date.month, date.day, issue
+        )
+    except (AttributeError, ValueError) as exc:
+        raise _catalog_error(ValueError(str(exc))) from None
+
+    try:
+        convention = Sp3ContentStartConvention(code)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"core returned unknown SP3 content-start code {code!r}"
+        ) from exc
+    if convention.content_start_offset_s != offset_s:
+        raise RuntimeError(
+            "core returned inconsistent SP3 content-start code and offset: "
+            f"{code!r}, {offset_s}"
+        )
+    return convention
 
 
 # --- product -------------------------------------------------------------
@@ -1117,34 +1197,13 @@ def _classify(path: str, expected_sha256: Optional[str]) -> tuple[str, object]:
 
 
 def _gunzip(compressed: bytes, max_bytes: int) -> bytes:
-    """Decompress gzip bytes, aborting if the output would exceed max_bytes."""
-    decompressor = _zlib.decompressobj(16 + 15)
-    out = bytearray()
+    """Decompress a complete gzip member sequence under one output cap."""
     try:
-        out += decompressor.decompress(compressed, max_bytes + 1)
-        if len(out) > max_bytes:
-            raise DecompressError(
-                f"decompressed output exceeded cap of {max_bytes} bytes"
-            )
-        while decompressor.unconsumed_tail:
-            chunk = decompressor.decompress(decompressor.unconsumed_tail, max_bytes + 1)
-            out += chunk
-            if len(out) > max_bytes:
-                raise DecompressError(
-                    f"decompressed output exceeded cap of {max_bytes} bytes"
-                )
-        out += decompressor.flush()
-    except _zlib.error as exc:
-        raise DecompressError(f"corrupt gzip: {exc}") from exc
-    if len(out) > max_bytes:
-        raise DecompressError(f"decompressed output exceeded cap of {max_bytes} bytes")
-    # A truncated gzip stream decompresses without raising but never reaches the
-    # end-of-stream trailer; refuse to cache a partial product.
-    if not decompressor.eof:
-        raise DecompressError("truncated gzip stream (no end-of-stream marker)")
-    if decompressor.unused_data:
-        raise DecompressError("trailing bytes after gzip end-of-stream")
-    return bytes(out)
+        return _gunzip_members(compressed, max_bytes)
+    except _GzipSizeLimitError as exc:
+        raise DecompressError(str(exc)) from None
+    except _GzipIntegrityError as exc:
+        raise DecompressError(str(exc)) from None
 
 
 def _ensure_dir(directory: str) -> None:
@@ -1315,9 +1374,8 @@ def _download_once(url: str, timeout: float, max_bytes: int) -> bytes:
                 status = response.status_code
                 if status == 200:
                     buf = bytearray()
-                    for chunk in response.iter_bytes():
-                        buf += chunk
-                        if len(buf) > max_bytes:
+                    for chunk in response.iter_bytes(chunk_size=_STREAM_CHUNK_BYTES):
+                        if _append_bounded(buf, chunk, max_bytes):
                             response.close()
                             raise DownloadSizeExceeded(
                                 f"compressed payload exceeded {max_bytes} bytes"
@@ -2530,22 +2588,11 @@ def _sp3_products_for_issue(
             span=span,
             pattern=pattern,
             filename=filename,
-            cache_filename=_candidate_cache_filename(
-                pattern, center, date, issue, filename
-            ),
             url=url,
             compression=compression,
         )
         for pattern, span, candidate_sample, filename, url, compression in locations
     ]
-
-
-def _candidate_cache_filename(
-    pattern: str, center: str, date: _dt.date, issue: str, filename: str
-) -> Optional[str]:
-    if pattern.startswith("alias_"):
-        return f"{center}_{date:%Y%m%d}_{issue}_{filename}"
-    return None
 
 
 def _fetch_center_sp3(
@@ -3985,8 +4032,9 @@ def fetch_merged_sp3(
     parsed merged :class:`sidereon.Sp3` and a :class:`MergeReport`. Raises
     :class:`NoProducts` when no center contributes and
     :class:`IncompatibleSources` when the fetched sources cannot be combined.
-    Ultra-rapid centers probe current primary, alternate, and documented alias
-    patterns after archive misses. Pass a complete :class:`Sp3MergeOptions` as
+    Ultra-rapid centers probe only officially cataloged dated variants after
+    archive misses. A second candidate exists only for an explicitly evidenced
+    publication overlap. Pass a complete :class:`Sp3MergeOptions` as
     ``merge_options``; single contributors follow the same merge path.
     """
     if not isinstance(centers, (list, tuple)):
