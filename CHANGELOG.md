@@ -4,6 +4,37 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-07-24
+
+### Added
+
+- Observation QC reports now expose their compact core lint findings through
+  `ObservationQcReport.lint_findings` and `ObservationQcFinding`, matching the
+  lint information already present in the serialized report.
+
+### Fixed
+
+- Default observation QC now treats a RINEX `INTERVAL` of zero as the
+  standards-defined unavailable value, reports `OBS-H19` at informational
+  severity, and infers cadence from body epochs when possible. Negative parsed
+  values, and non-finite values in programmatically constructed core headers,
+  report `OBS-H20` as invalid metadata. Neither kind is used for calculations;
+  an unresolved cadence remains explicit when the body cannot supply one.
+  Explicit caller interval overrides must still be finite and positive.
+- Opt-in interval repair replaces unavailable or invalid source metadata when
+  cadence can be inferred and removes it when cadence is unresolved. Default
+  repair continues to preserve source `INTERVAL` metadata.
+
+### Changed
+
+- Updated `sidereon` and `sidereon-core` to 0.35.0.
+
+### Compatibility
+
+- This is an additive report surface and a source-metadata compatibility fix.
+  Existing Python call signatures and explicit option validation are unchanged.
+  Positioning, orbit, and other solver numerical kernels are unaffected.
+
 ## [0.34.0] - 2026-07-21
 
 ### Added

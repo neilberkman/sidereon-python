@@ -2505,6 +2505,8 @@ fn finding_kind(finding: &CoreRinexFinding) -> &'static str {
         CoreRinexFinding::ObsTimeOfFirstMismatch { .. } => "ObsTimeOfFirstMismatch",
         CoreRinexFinding::ObsTimeOfLastMismatch { .. } => "ObsTimeOfLastMismatch",
         CoreRinexFinding::ObsIntervalMismatch { .. } => "ObsIntervalMismatch",
+        CoreRinexFinding::ObsIntervalUnavailable { .. } => "ObsIntervalUnavailable",
+        CoreRinexFinding::ObsInvalidInterval { .. } => "ObsInvalidInterval",
         CoreRinexFinding::ObsSatelliteCountMismatch { .. } => "ObsSatelliteCountMismatch",
         CoreRinexFinding::ObsPrnObsCountMismatch { .. } => "ObsPrnObsCountMismatch",
         CoreRinexFinding::ObsGlonassSlotIssue { .. } => "ObsGlonassSlotIssue",

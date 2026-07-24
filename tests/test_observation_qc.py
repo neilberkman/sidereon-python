@@ -19,6 +19,25 @@ def _row_for_system(rows, system):
     return next(row for row in rows if row.system == system)
 
 
+def _with_interval(text, interval_s):
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line[60:].strip() == "INTERVAL":
+            lines[index] = f"{interval_s:10.3f}".ljust(60) + "INTERVAL"
+            return "\n".join(lines) + "\n"
+    raise AssertionError("fixture has no INTERVAL record")
+
+
+def _header_only(text):
+    lines = text.splitlines()
+    end = next(
+        index
+        for index, line in enumerate(lines)
+        if line[60:].strip() == "END OF HEADER"
+    )
+    return "\n".join(lines[: end + 1]) + "\n"
+
+
 def test_observation_qc_matches_real_oracle_summary():
     oracle_path = os.path.join(CORE_FIXTURES, "qc", "observation_qc_real_oracles.json")
     with open(oracle_path, encoding="utf-8") as fh:
@@ -128,3 +147,103 @@ def test_rinex_obs_lint_and_repair_are_exposed():
     assert (
         repair.to_crinex_string().splitlines()[0][60:].strip() == "CRINEX VERS   / TYPE"
     )
+
+
+@pytest.mark.parametrize("zero", [0.0, -0.0], ids=["positive-zero", "negative-zero"])
+def test_unavailable_zero_source_interval_is_linted_inferred_and_repaired(zero):
+    text = _with_interval(
+        _fixture_text("tests/fixtures/obs/ESBC00DNK_R_20201770000_01D_30S_MO_trim.rnx"),
+        zero,
+    )
+    obs = sidereon.parse_rinex_obs(text)
+    assert obs.header.interval_s == 0.0
+
+    lint = sidereon.lint_rinex_obs(text)
+    unavailable = [finding for finding in lint.findings if finding.code == "OBS-H19"]
+    assert len(unavailable) == 1
+    assert unavailable[0].kind == "ObsIntervalUnavailable"
+    assert unavailable[0].severity == sidereon.RinexLintSeverity.INFO
+    assert unavailable[0].is_repairable
+
+    report = sidereon.observation_qc(obs)
+    assert report.interval_s == pytest.approx(30.0)
+    assert report.interval_source == sidereon.IntervalSource.INFERRED
+    assert [finding.code for finding in report.lint_findings].count("OBS-H19") == 1
+    assert report.notes == []
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        sidereon.observation_qc(obs, interval_override_s=0.0)
+    with pytest.raises(ValueError, match="finite and positive"):
+        sidereon.observation_qc(obs, interval_override_s=float("nan"))
+
+    preserved = sidereon.repair_rinex_obs(text)
+    assert preserved.repaired.header.interval_s == 0.0
+    assert "A6" not in [action.id for action in preserved.actions]
+    assert "OBS-H19" in [finding.code for finding in preserved.remaining.findings]
+
+    repaired = sidereon.repair_rinex_obs(
+        text, sidereon.RinexRepairOptions(set_interval=True)
+    )
+    assert repaired.repaired.header.interval_s == pytest.approx(30.0)
+    assert "A6" in [action.id for action in repaired.actions]
+    assert "OBS-H19" not in [finding.code for finding in repaired.remaining.findings]
+
+
+def test_unavailable_zero_interval_is_unresolved_and_removed_when_requested():
+    text = _header_only(
+        _with_interval(
+            _fixture_text(
+                "tests/fixtures/obs/ESBC00DNK_R_20201770000_01D_30S_MO_trim.rnx"
+            ),
+            0.0,
+        )
+    )
+    obs = sidereon.parse_rinex_obs(text)
+
+    report = sidereon.observation_qc(obs)
+    assert report.interval_s is None
+    assert report.interval_source == sidereon.IntervalSource.UNRESOLVED
+    assert [note.kind for note in report.notes] == ["interval_unresolved"]
+    assert [finding.code for finding in report.lint_findings].count("OBS-H19") == 1
+
+    preserved = sidereon.repair_rinex_obs(text)
+    assert preserved.repaired.header.interval_s == 0.0
+    assert "A6" not in [action.id for action in preserved.actions]
+
+    repaired = sidereon.repair_rinex_obs(
+        text, sidereon.RinexRepairOptions(set_interval=True)
+    )
+    assert repaired.repaired.header.interval_s is None
+    assert "A6" in [action.id for action in repaired.actions]
+    assert "OBS-H19" not in [finding.code for finding in repaired.remaining.findings]
+
+
+def test_negative_source_interval_is_linted_ignored_and_repaired():
+    text = _with_interval(
+        _fixture_text("tests/fixtures/obs/ESBC00DNK_R_20201770000_01D_30S_MO_trim.rnx"),
+        -30.0,
+    )
+    obs = sidereon.parse_rinex_obs(text)
+
+    lint = sidereon.lint_rinex_obs(text)
+    invalid = [finding for finding in lint.findings if finding.code == "OBS-H20"]
+    assert len(invalid) == 1
+    assert invalid[0].kind == "ObsInvalidInterval"
+    assert invalid[0].severity == sidereon.RinexLintSeverity.ERROR
+    assert invalid[0].is_repairable
+
+    report = sidereon.observation_qc(obs)
+    assert report.interval_s == pytest.approx(30.0)
+    assert report.interval_source == sidereon.IntervalSource.INFERRED
+    assert [finding.code for finding in report.lint_findings].count("OBS-H20") == 1
+
+    preserved = sidereon.repair_rinex_obs(text)
+    assert "A6" not in [action.id for action in preserved.actions]
+    assert "OBS-H20" in [finding.code for finding in preserved.remaining.findings]
+
+    repaired = sidereon.repair_rinex_obs(
+        text, sidereon.RinexRepairOptions(set_interval=True)
+    )
+    assert repaired.repaired.header.interval_s == pytest.approx(30.0)
+    assert "A6" in [action.id for action in repaired.actions]
+    assert "OBS-H20" not in [finding.code for finding in repaired.remaining.findings]

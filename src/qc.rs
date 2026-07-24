@@ -22,9 +22,9 @@ use sidereon_core::qc_obs::{
     observation_qc_with_options as core_observation_qc_with_options,
     render_html as core_observation_qc_render_html, render_text as core_observation_qc_render_text,
     ClockJump, CycleSlipQc, IntervalSource, MpStats, MultipathReport, ObservationDataGap,
-    ObservationQcNote, ObservationQcOptions, ObservationQcReport, SatelliteMultipathQc,
-    SatelliteObservationQc, SatelliteSignalQc, SnrStats, SsiHistogram, SystemCycleSlipQc,
-    SystemMultipathQc, SystemSignalQc,
+    ObservationQcFinding, ObservationQcNote, ObservationQcOptions, ObservationQcReport,
+    SatelliteMultipathQc, SatelliteObservationQc, SatelliteSignalQc, SnrStats, SsiHistogram,
+    SystemCycleSlipQc, SystemMultipathQc, SystemSignalQc,
 };
 use sidereon_core::quality::{
     self, fde_spp, raim_fde_design as core_raim_fde_design,
@@ -35,7 +35,7 @@ use sidereon_core::quality::{
 };
 
 use crate::marshal::PyGnssSystem;
-use crate::rinex::{PyBroadcastEphemeris, PyObsEpochTime, PyRinexObs};
+use crate::rinex::{PyBroadcastEphemeris, PyObsEpochTime, PyRinexLintSeverity, PyRinexObs};
 use crate::spp::{PySppConfig, PySppRobustConfig, PySppSolution};
 use crate::{np_array, PySp3, SolveError};
 
@@ -1456,6 +1456,16 @@ impl PyObservationQcReport {
     }
 
     #[getter]
+    fn lint_findings(&self) -> Vec<PyObservationQcFinding> {
+        self.inner
+            .lint_findings
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect()
+    }
+
+    #[getter]
     fn notes(&self) -> Vec<PyObservationQcNote> {
         self.inner.notes.iter().copied().map(Into::into).collect()
     }
@@ -1477,6 +1487,44 @@ impl PyObservationQcReport {
             "ObservationQcReport(observation_epochs={}, satellites={})",
             self.inner.observation_epochs,
             self.inner.satellites.len()
+        )
+    }
+}
+
+/// Compact RINEX lint finding retained by an observation QC report.
+#[pyclass(module = "sidereon._sidereon", name = "ObservationQcFinding")]
+#[derive(Clone)]
+pub struct PyObservationQcFinding {
+    inner: ObservationQcFinding,
+}
+
+impl From<ObservationQcFinding> for PyObservationQcFinding {
+    fn from(inner: ObservationQcFinding) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyObservationQcFinding {
+    #[getter]
+    fn code(&self) -> &str {
+        &self.inner.code
+    }
+
+    #[getter]
+    fn severity(&self) -> PyRinexLintSeverity {
+        self.inner.severity.into()
+    }
+
+    #[getter]
+    fn spec_ref(&self) -> &str {
+        &self.inner.spec_ref
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ObservationQcFinding(code={}, severity={:?})",
+            self.inner.code, self.inner.severity
         )
     }
 }
@@ -1523,6 +1571,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMultipathReport>()?;
     m.add_class::<PySystemCycleSlipQc>()?;
     m.add_class::<PyCycleSlipQc>()?;
+    m.add_class::<PyObservationQcFinding>()?;
     m.add_class::<PyObservationQcNote>()?;
     m.add_class::<PyObservationQcReport>()?;
     m.add_function(wrap_pyfunction!(qc_raim, m)?)?;

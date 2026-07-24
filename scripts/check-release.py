@@ -126,7 +126,7 @@ def main() -> None:
         "ocean.rs": "6bd72d6647b634f979b670040d8c0b659e1f581fa41fdeec41b74b85d8c26c01",
         "pole.rs": "b4cc4c16bdd8ce1d8f04073602ab47dfb85a002b946ab192e8d4d2d600f0a1f8",
     }
-    tide_root = ROOT / "third_party_source" / "sidereon-core-0.34.0" / "tides"
+    tide_root = ROOT / "third_party_source" / "sidereon-core-0.35.0" / "tides"
     for filename, expected_digest in tide_sources.items():
         source = tide_root / filename
         if not source.is_file():
@@ -135,7 +135,7 @@ def main() -> None:
         if digest != expected_digest:
             raise SystemExit(
                 f"IERS-derived source disclosure {source} has digest {digest}, "
-                f"expected {expected_digest} from sidereon-core 0.34.0"
+                f"expected {expected_digest} from sidereon-core 0.35.0"
             )
 
     if args.tag is not None and args.tag != f"v{python_version}":
