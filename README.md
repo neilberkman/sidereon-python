@@ -23,6 +23,7 @@ pip install sidereon
 
 ```python
 import sidereon
+
 print(sidereon.__version__)
 ```
 
@@ -73,8 +74,8 @@ config = sidereon.SppConfig(
 )
 
 solution = sidereon.solve_spp(sp3, config)
-print(solution.position)     # numpy [x, y, z] ECEF metres
-print(solution.rx_clock_s)   # receiver clock bias, seconds
+print(solution.position)  # numpy [x, y, z] ECEF metres
+print(solution.rx_clock_s)  # receiver clock bias, seconds
 ```
 
 PROJ-compatible EGM96 vertical-grid interpolation is available when bit-level
@@ -206,7 +207,14 @@ import sidereon
 
 used_sats = ["G01", "G02", "G03", "G04", "G05", "G06"]
 residuals_m = [0.4, -0.6, 0.3, 0.1, -0.2, 0.5]
-elevation_deg = {"G01": 72.0, "G02": 42.0, "G03": 35.0, "G04": 64.0, "G05": 50.0, "G06": 28.0}
+elevation_deg = {
+    "G01": 72.0,
+    "G02": 42.0,
+    "G03": 35.0,
+    "G04": 64.0,
+    "G05": 50.0,
+    "G06": 28.0,
+}
 base_sigma_m = 0.8
 variances_m2 = {
     sat: (base_sigma_m / max(math.sin(math.radians(el)), 0.2)) ** 2

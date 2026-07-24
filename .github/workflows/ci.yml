@@ -42,6 +42,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.19"
+          enable-cache: true
       - uses: dtolnay/rust-toolchain@stable
       - name: Determine sidereon-core version
         id: core-version
@@ -72,32 +76,22 @@ jobs:
           repository: neilberkman/sidereon
           ref: v${{ steps.core-version.outputs.version }}
           path: .core-checkout
-      - name: Create venv + install tooling
-        run: |
-          python -m venv .venv
-          . .venv/bin/activate
-          python -m pip install --upgrade pip maturin ruff pytest
+      - name: Install locked environment
+        run: uv sync --locked --extra test --group dev
       - name: ruff check
-        run: |
-          . .venv/bin/activate
-          ruff check .
+        run: uv run --locked --extra test --group dev ruff check .
       - name: ruff format --check
-        run: |
-          . .venv/bin/activate
-          ruff format --check .
+        run: uv run --locked --extra test --group dev ruff format --check .
+      - name: mypy
+        run: uv run --locked --extra test --group dev mypy
       - name: Build the extension (maturin develop)
-        run: |
-          . .venv/bin/activate
-          maturin develop --features exact-cache-test-failpoints
+        run: uv run --locked --extra test --group dev maturin develop --features exact-cache-test-failpoints
       - name: stub accuracy
-        run: |
-          . .venv/bin/activate
-          pytest tests/test_stub_accuracy.py
+        run: uv run --locked --extra test --group dev pytest tests/test_stub_accuracy.py
       - name: pytest
         env:
           SIDEREON_CORE_FIXTURES: ${{ github.workspace }}/.core-checkout/crates/sidereon-core/tests/fixtures
         run: |
-          . .venv/bin/activate
           # The published sidereon-core crate omits test fixtures, so CI checks
           # out the matching release tag and points the test resolver at them.
-          pytest
+          uv run --locked --extra test --group dev pytest
