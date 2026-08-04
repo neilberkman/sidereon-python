@@ -4,6 +4,24 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.36.2] - 2026-08-04
+
+### Added
+
+- Anonymous-FTP transport (stdlib `ftplib`, no new dependency) for cataloged
+  `ftp://` archives, at parity with the Elixir interface: the same bounded
+  semantics as HTTP (connect timeout, streamed byte cap surfacing as the
+  same typed validation failure, FTP 550 mapped to archive absence like an
+  HTTP 404), directory URLs fetching `LIST` text for the core's
+  closed-dialect listing parser, and the same retry policy. This makes the
+  Wuhan `wum_nrt` hourly line acquirable from Python through the exact
+  cache-first acquisition path, with full provenance.
+
+### Changed
+
+- Updated `sidereon` and `sidereon-core` to 0.36.2 (version-alignment engine
+  release; no engine changes).
+
 ## [0.36.1] - 2026-08-04
 
 ### Fixed

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import ftplib
 import hashlib
 import io
 import json
@@ -968,6 +969,81 @@ def _validate_requested_identity(value: ProductIdentity) -> None:
         raise ProductValidationFailure("invalid requested product identity") from None
 
 
+# Anonymous-FTP connection factory. Module-level so tests substitute a fake
+# duck-typed client (login/voidcmd/retrbinary/retrlines/quit) without a
+# network; the transport semantics below stay under test either way.
+_ftp_connect = ftplib.FTP
+
+
+def _download_ftp_once(
+    original_url: str, timeout_s: float, max_bytes: int
+) -> _Download:
+    """Bounded anonymous-FTP fetch for cataloged `ftp://` archives.
+
+    Mirrors the Elixir interface's transport semantics: connect timeout, a
+    streamed byte cap, an FTP 550 mapped to archive absence exactly like an
+    HTTP 404, and a URL ending in `/` fetching the directory `LIST` text
+    (interpreted by the core's closed-dialect listing parser).
+    """
+    parts = urlsplit(original_url)
+    host = parts.hostname or ""
+    path = parts.path or "/"
+    sanitized = _sanitize_url(original_url)
+    try:
+        client = _ftp_connect(host, timeout=timeout_s)
+    except OSError as error:
+        raise TransportFailure("connection", sanitized) from error
+    try:
+        client.login()
+        chunks: list[bytes] = []
+        received = 0
+
+        def sink(chunk: bytes) -> None:
+            nonlocal received
+            received += len(chunk)
+            if received > max_bytes:
+                raise _data.DownloadSizeExceeded(
+                    f"archive payload exceeded {max_bytes} bytes"
+                )
+            chunks.append(chunk)
+
+        if path.endswith("/"):
+            lines: list[str] = []
+
+            def collect(line: str) -> None:
+                nonlocal received
+                received += len(line) + 1
+                if received > max_bytes:
+                    raise _data.DownloadSizeExceeded(
+                        f"listing exceeded {max_bytes} bytes"
+                    )
+                lines.append(line)
+
+            client.retrlines(f"LIST {path}", collect)
+            archive = ("\n".join(lines) + "\n").encode()
+        else:
+            client.voidcmd("TYPE I")
+            client.retrbinary(f"RETR {path}", sink)
+            archive = b"".join(chunks)
+    except _data.DownloadSizeExceeded:
+        raise
+    except ftplib.error_perm as error:
+        message = str(error)
+        if message.startswith("550"):
+            raise ProductNotPublished(
+                404, sanitized, "exact product is not published"
+            ) from error
+        raise TransportFailure("ftp_perm", sanitized) from error
+    except (OSError, EOFError, *ftplib.all_errors) as error:
+        raise TransportFailure("connection", sanitized) from error
+    finally:
+        try:
+            client.quit()
+        except Exception:  # noqa: BLE001 - closing best effort after transfer
+            client.close()
+    return _Download(archive, original_url, original_url, None, None, None)
+
+
 def _download_http(
     original_url: str,
     source: DistributionSource,
@@ -979,6 +1055,17 @@ def _download_http(
     supplied_client: Optional[httpx.Client],
 ) -> _Download:
     last_error: Optional[AcquisitionError] = None
+    if urlsplit(original_url).scheme == "ftp":
+        for attempt in range(retries):
+            try:
+                return _download_ftp_once(original_url, timeout_s, max_bytes)
+            except AcquisitionError as error:
+                last_error = error
+                if not _retryable(error) or attempt + 1 == retries:
+                    raise
+                if backoff_s:
+                    time.sleep(backoff_s * (2**attempt))
+        raise last_error or TransportFailure("other", original_url)
     own_client = supplied_client is None
     client = supplied_client or httpx.Client(follow_redirects=False)
     try:
@@ -1126,7 +1213,9 @@ def _auth_headers(
 def _validate_url(url: str, source: DistributionSource) -> None:
     parts = urlsplit(url)
     allowed_schemes = (
-        {"https"} if source is DistributionSource.NASA_CDDIS else {"http", "https"}
+        {"https"}
+        if source is DistributionSource.NASA_CDDIS
+        else {"http", "https", "ftp"}
     )
     if (
         parts.scheme not in allowed_schemes
