@@ -82,6 +82,7 @@ pub(crate) fn identity(json: &str) -> PyResult<ProductIdentity> {
             "COD" => ProductPublisher::Code,
             "ESA" => ProductPublisher::Esa,
             "GFZ" => ProductPublisher::Gfz,
+            "WUM" => ProductPublisher::Whu,
             _ => return Err(value_error("unknown product publisher")),
         },
         solution: match value.solution_class.as_str() {
@@ -90,6 +91,7 @@ pub(crate) fn identity(json: &str) -> PyResult<ProductIdentity> {
             "ultra_rapid" => SolutionClass::UltraRapid,
             "predicted" => SolutionClass::Predicted,
             "broadcast" => SolutionClass::Broadcast,
+            "near_real_time" => SolutionClass::NearRealTime,
             _ => return Err(value_error("unknown solution class")),
         },
         campaign: match value.campaign.as_str() {

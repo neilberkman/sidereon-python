@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "sidereon-py"
-version = "0.36.0"
+version = "0.36.1"
 dependencies = [
  "nalgebra",
  "numpy",

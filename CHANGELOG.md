@@ -4,6 +4,15 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-08-04
+
+### Fixed
+
+- Caller-built product identities now accept the `WUM` publisher token and
+  the `near_real_time` solution class introduced by core 0.36.0, so
+  `wum_nrt` artifacts round-trip through exact acquisition and merge
+  provenance. 0.36.0 rejected them at identity parsing.
+
 ## [0.36.0] - 2026-08-04
 
 ### Added
