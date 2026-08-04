@@ -4,6 +4,34 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-08-04
+
+### Added
+
+- Publication-lag resilience surface over core 0.36.0:
+  `data.predicted_ionex_line_candidates` (the opt-in CODE `P1`/`P2`
+  cross-line walk for one map date, never a neighboring day's map, each
+  candidate keeping its own line identity), `data.parse_archive_listing`
+  (closed dialect detection - an unrecognizable listing body raises rather
+  than reading as "nothing published"), `data.newest_published_product`,
+  `data.publication_listing_urls`, `data.published_issue_age`,
+  `data.resolve_first_published`, and the `PublishedObject` /
+  `PublishedProduct` dataclasses. `observed_at` is the archive-reported
+  modification text, verbatim.
+- `data.fetch_ionex(..., cross_line=True)` walks the sibling predicted line
+  for the same map date before falling back a day, cache-first, with
+  provenance naming the line actually served. Off by default; the
+  single-line request stays fail-closed.
+- The Wuhan MGEX near-real-time orbit line (`wum_nrt`, hourly
+  `WUM0MGXNRT` 02D/05M over anonymous FTP, archive-verified from
+  2024-07-03) flows through the catalog surface: `centers()`,
+  `ops_ultra_sp3`, ultra-issue selection, and the `near_real_time`
+  solution class.
+
+### Changed
+
+- Updated `sidereon` and `sidereon-core` to 0.36.0.
+
 ## [0.35.0] - 2026-07-24
 
 ### Added

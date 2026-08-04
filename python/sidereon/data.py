@@ -115,16 +115,34 @@ from sidereon._sidereon import (
     data_hgt_to_dted as _core_data_hgt_to_dted,
 )
 from sidereon._sidereon import (
+    data_newest_published_product as _core_data_newest_published_product,
+)
+from sidereon._sidereon import (
+    data_parse_archive_listing as _core_data_parse_archive_listing,
+)
+from sidereon._sidereon import (
     data_parse_skadi_tile_id as _core_data_parse_skadi_tile_id,
 )
 from sidereon._sidereon import (
     data_predicted_day_offset as _core_data_predicted_day_offset,
 )
 from sidereon._sidereon import (
+    data_predicted_ionex_line_candidates as _core_data_predicted_ionex_line_candidates,
+)
+from sidereon._sidereon import (
     data_product_sample as _core_data_product_sample,
 )
 from sidereon._sidereon import (
     data_product_solution_class as _core_data_product_solution_class,
+)
+from sidereon._sidereon import (
+    data_publication_listing_urls as _core_data_publication_listing_urls,
+)
+from sidereon._sidereon import (
+    data_published_issue_age_minutes as _core_data_published_issue_age_minutes,
+)
+from sidereon._sidereon import (
+    data_resolve_first_published as _core_data_resolve_first_published,
 )
 from sidereon._sidereon import (
     data_skadi_archive_url as _core_data_skadi_archive_url,
@@ -221,6 +239,14 @@ __all__ = [
     "mgex_ionex",
     "rapid_ionex",
     "predicted_ionex",
+    "predicted_ionex_line_candidates",
+    "PublishedObject",
+    "PublishedProduct",
+    "parse_archive_listing",
+    "newest_published_product",
+    "publication_listing_urls",
+    "published_issue_age",
+    "resolve_first_published",
     "ops_ultra_sp3",
     "mgex_sp3",
     "product",
@@ -931,6 +957,174 @@ def predicted_ionex(
         )
     target = date + _dt.timedelta(days=predicted_day_offset(center))
     return product(center, "ionex", target, sample)
+
+
+def predicted_ionex_line_candidates(
+    map_date: _dt.date, *, sample: Optional[str] = None
+) -> list[Product]:
+    """Ordered cross-line candidates for one predicted IONEX map date.
+
+    Both CODE predicted lines publish the same official filename for a map
+    date, but the two-day line is produced a day earlier, so ``cod_prd2`` is
+    routinely published while ``cod_prd1`` is still absent when CODE runs
+    behind. Candidates are ordered ``cod_prd1`` first, cover the SAME map
+    date (never a neighboring day's map), and keep their distinct line
+    identities so resolved provenance names the line actually served. The
+    walk is opt-in; :func:`predicted_ionex` keeps its fail-closed single-line
+    behavior.
+    """
+    try:
+        rows = _core_data_predicted_ionex_line_candidates(
+            map_date.year, map_date.month, map_date.day, sample
+        )
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
+    return [
+        Product(
+            center=center,
+            content="ionex",
+            date=_dt.date(year, month, day),
+            sample=row_sample,
+            issue=issue or None,
+        )
+        for (center, year, month, day, row_sample, issue, _filename, _url) in rows
+    ]
+
+
+@dataclass(frozen=True)
+class PublishedObject:
+    """One object observed in an archive listing.
+
+    ``observed_at`` is the archive-reported modification text, verbatim;
+    archives disagree on format and time zone, so it is never reinterpreted.
+    """
+
+    path: str
+    observed_at: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PublishedProduct:
+    """Newest published issue of one center + product line."""
+
+    date: _dt.date
+    issue: str
+    filename: str
+    observed_at: Optional[str] = None
+
+
+def parse_archive_listing(body: str) -> list[PublishedObject]:
+    """Parse the object entries out of an archive listing body.
+
+    Dialect detection is closed: a body that fits none of the recognized
+    listing surfaces (Apache/XHTML autoindex, AIUB whole-tree CSV, FTP
+    ``LIST``) raises instead of returning a best-effort empty result, which
+    would be indistinguishable from "nothing published".
+    """
+    try:
+        rows = _core_data_parse_archive_listing(body)
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
+    return [PublishedObject(path=path, observed_at=observed) for path, observed in rows]
+
+
+def newest_published_product(
+    center: str, content: str, objects: Sequence[PublishedObject]
+) -> Optional[PublishedProduct]:
+    """Newest published issue for a center + product line among listed objects.
+
+    ``None`` means the listing was readable but held no object of this line -
+    distinct from an unreachable archive, which surfaces as a transport error
+    in the caller's fetch layer.
+    """
+    try:
+        row = _core_data_newest_published_product(
+            center,
+            content,
+            [(objekt.path, objekt.observed_at) for objekt in objects],
+        )
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
+    if row is None:
+        return None
+    year, month, day, issue, filename, observed_at = row
+    return PublishedProduct(
+        date=_dt.date(year, month, day),
+        issue=issue,
+        filename=filename,
+        observed_at=observed_at,
+    )
+
+
+def publication_listing_urls(center: str, content: str, around: _dt.date) -> list[str]:
+    """Bounded archive listing URLs answering "newest published issue".
+
+    At most two URLs, newest directory first; never a polling loop.
+    """
+    try:
+        return _core_data_publication_listing_urls(
+            center, content, around.year, around.month, around.day
+        )
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
+
+
+def published_issue_age(
+    published: PublishedProduct, now: _dt.datetime
+) -> _dt.timedelta:
+    """Time from a published issue's nominal epoch to ``now``.
+
+    This is the "N hours behind nominal" lag number: the newest published
+    issue's filename epoch against the caller's clock. The verbatim
+    ``observed_at`` text carries the archive's own modification claim where
+    one exists.
+    """
+    now = _as_naive_datetime(now)
+    try:
+        minutes = _core_data_published_issue_age_minutes(
+            published.date.year,
+            published.date.month,
+            published.date.day,
+            published.issue,
+            published.filename,
+            now.year,
+            now.month,
+            now.day,
+            now.hour,
+            now.minute,
+            now.second,
+        )
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
+    return _dt.timedelta(minutes=minutes)
+
+
+def resolve_first_published(
+    candidates: Sequence[Product], objects: Sequence[PublishedObject]
+) -> Optional[int]:
+    """Index of the first candidate whose exact archive object is listed.
+
+    Candidates stay in preference order and keep their own identities, so
+    the resolved index preserves the line actually served in provenance.
+    """
+    try:
+        return _core_data_resolve_first_published(
+            [
+                (
+                    candidate.center,
+                    candidate.content,
+                    candidate.date.year,
+                    candidate.date.month,
+                    candidate.date.day,
+                    candidate.sample,
+                    candidate.issue,
+                )
+                for candidate in candidates
+            ],
+            [(objekt.path, objekt.observed_at) for objekt in objects],
+        )
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
 
 
 def mgex_sp3(center: str, date: _dt.date, *, sample: Optional[str] = None) -> Product:
@@ -1962,6 +2156,7 @@ def fetch_ionex(
     offline: bool = False,
     sample: Optional[str] = None,
     lookback: int = 2,
+    cross_line: bool = False,
     **fetch_opts,
 ) -> "sidereon.Ionex":
     """Fetch the newest available IONEX map for a target day, parsed.
@@ -1971,8 +2166,21 @@ def fetch_ionex(
     uses the exact-identity acquisition path, including semantic date/cadence
     validation and source-specific cache isolation. Raises the last absence
     when every explicitly permitted lookback candidate misses.
+
+    ``cross_line=True`` (CODE predicted centers only) additionally walks the
+    sibling predicted line for the SAME map date before falling back a day:
+    the two-day line is produced earlier, so its map for a given day is
+    routinely published while the one-day line's is still absent. Each line
+    keeps its own exact identity and cache path, so provenance names the
+    line actually served; the map date itself is never substituted by this
+    step. Off by default: the single-line request stays fail-closed.
     """
     from sidereon import distribution
+
+    if cross_line and center not in ("cod_prd1", "cod_prd2"):
+        raise UnsupportedProduct(
+            f"cross_line applies to CODE predicted centers, got {center!r}"
+        )
 
     dates = _gim_date_candidates(center, target, lookback)
     last_error: Optional[DataError] = None
@@ -1982,21 +2190,31 @@ def fetch_ionex(
     if "max_decompressed_bytes" in acquire_opts:
         acquire_opts["max_product_bytes"] = acquire_opts.pop("max_decompressed_bytes")
     for date in dates:
-        prod = product(center, "ionex", date, sample)
-        exact = distribution.request(prod, [distribution.Distribution.direct()])
-        try:
-            acquired = distribution.acquire(
-                exact,
-                cache_dir=cache_dir,
-                offline=offline,
-                **acquire_opts,
-            )
-        except (distribution.ProductNotPublished, OfflineCacheMiss) as exc:
-            # This API explicitly permits lookback. Integrity, cache, and
-            # transport failures remain terminal instead of becoming absence.
-            last_error = exc
-            continue
-        return sidereon.load_ionex(acquired.path)
+        if cross_line:
+            # ``dates`` are file/map dates for the requested line; the walk
+            # enumerates both lines for that same map date, preferred line
+            # first.
+            candidates = predicted_ionex_line_candidates(date, sample=sample)
+            if center == "cod_prd2":
+                candidates = [candidates[1], candidates[0]]
+        else:
+            candidates = [product(center, "ionex", date, sample)]
+        for prod in candidates:
+            exact = distribution.request(prod, [distribution.Distribution.direct()])
+            try:
+                acquired = distribution.acquire(
+                    exact,
+                    cache_dir=cache_dir,
+                    offline=offline,
+                    **acquire_opts,
+                )
+            except (distribution.ProductNotPublished, OfflineCacheMiss) as exc:
+                # This API explicitly permits lookback. Integrity, cache, and
+                # transport failures remain terminal instead of becoming
+                # absence.
+                last_error = exc
+                continue
+            return sidereon.load_ionex(acquired.path)
     if last_error is not None:
         raise last_error
     raise UnsupportedProduct("no candidate IONEX days to try")

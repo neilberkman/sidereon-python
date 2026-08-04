@@ -486,6 +486,153 @@ fn data_latest_ultra_issue(
         .map_err(to_data_err)
 }
 
+type PredictedLineCandidateTuple = (String, i32, u8, u8, String, String, String, String);
+
+#[pyfunction]
+fn data_predicted_ionex_line_candidates(
+    year: i32,
+    month: u8,
+    day: u8,
+    sample: Option<&str>,
+) -> PyResult<Vec<PredictedLineCandidateTuple>> {
+    core::predicted_ionex_line_candidates(date(year, month, day)?, sample)
+        .map_err(to_data_err)?
+        .into_iter()
+        .map(|candidate| {
+            let filename = candidate.canonical_filename().map_err(to_data_err)?;
+            let url = candidate.archive_url().map_err(to_data_err)?;
+            Ok((
+                candidate.center.code().to_string(),
+                candidate.date.year,
+                candidate.date.month,
+                candidate.date.day,
+                candidate.sample.clone(),
+                candidate.issue.clone().unwrap_or_default(),
+                filename,
+                url,
+            ))
+        })
+        .collect()
+}
+
+#[pyfunction]
+fn data_publication_listing_urls(
+    center_code: &str,
+    product_code: &str,
+    year: i32,
+    month: u8,
+    day: u8,
+) -> PyResult<Vec<String>> {
+    core::publication_listing_urls(
+        center(center_code)?,
+        product_type(product_code)?,
+        date(year, month, day)?,
+    )
+    .map_err(to_data_err)
+}
+
+#[pyfunction]
+fn data_parse_archive_listing(body: &str) -> PyResult<Vec<(String, Option<String>)>> {
+    core::parse_archive_listing(body)
+        .map(|objects| {
+            objects
+                .into_iter()
+                .map(|object| (object.path, object.observed_at))
+                .collect()
+        })
+        .map_err(to_data_err)
+}
+
+type PublishedProductTuple = (i32, u8, u8, String, String, Option<String>);
+
+fn published_objects(rows: Vec<(String, Option<String>)>) -> Vec<core::PublishedObject> {
+    rows.into_iter()
+        .map(|(path, observed_at)| core::PublishedObject { path, observed_at })
+        .collect()
+}
+
+#[pyfunction]
+fn data_newest_published_product(
+    center_code: &str,
+    product_code: &str,
+    objects: Vec<(String, Option<String>)>,
+) -> PyResult<Option<PublishedProductTuple>> {
+    core::newest_published_product(
+        center(center_code)?,
+        product_type(product_code)?,
+        &published_objects(objects),
+    )
+    .map(|newest| {
+        newest.map(|product| {
+            (
+                product.date.year,
+                product.date.month,
+                product.date.day,
+                product.issue,
+                product.filename,
+                product.observed_at,
+            )
+        })
+    })
+    .map_err(to_data_err)
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)] // Mirrors the core timestamp signature used by the Python API.
+fn data_published_issue_age_minutes(
+    year: i32,
+    month: u8,
+    day: u8,
+    issue: &str,
+    filename: &str,
+    now_year: i32,
+    now_month: u8,
+    now_day: u8,
+    now_hour: u8,
+    now_minute: u8,
+    now_second: u8,
+) -> PyResult<i64> {
+    let published = core::PublishedProduct {
+        date: date(year, month, day)?,
+        issue: issue.to_string(),
+        filename: filename.to_string(),
+        observed_at: None,
+    };
+    let now = ProductDateTime::new(
+        date(now_year, now_month, now_day)?,
+        now_hour,
+        now_minute,
+        now_second,
+    )
+    .map_err(to_data_err)?;
+    core::published_issue_age_minutes(&published, now).map_err(to_data_err)
+}
+
+type CandidateSpecTuple = (String, String, i32, u8, u8, Option<String>, Option<String>);
+
+#[pyfunction]
+fn data_resolve_first_published(
+    candidates: Vec<CandidateSpecTuple>,
+    objects: Vec<(String, Option<String>)>,
+) -> PyResult<Option<usize>> {
+    let specs = candidates
+        .into_iter()
+        .map(
+            |(center_code, product_code, year, month, day, sample, issue)| {
+                core::product(
+                    center(&center_code)?,
+                    product_type(&product_code)?,
+                    date(year, month, day)?,
+                    sample.as_deref(),
+                    issue.as_deref(),
+                )
+                .map_err(to_data_err)
+            },
+        )
+        .collect::<PyResult<Vec<_>>>()?;
+    core::resolve_first_published(&specs, &published_objects(objects)).map_err(to_data_err)
+}
+
 #[pyfunction]
 fn data_gim_date_candidates(
     center_code: &str,
@@ -544,5 +691,11 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(data_ultra_sp3_locations, m)?)?;
     m.add_function(wrap_pyfunction!(data_latest_ultra_issue, m)?)?;
     m.add_function(wrap_pyfunction!(data_gim_date_candidates, m)?)?;
+    m.add_function(wrap_pyfunction!(data_predicted_ionex_line_candidates, m)?)?;
+    m.add_function(wrap_pyfunction!(data_publication_listing_urls, m)?)?;
+    m.add_function(wrap_pyfunction!(data_parse_archive_listing, m)?)?;
+    m.add_function(wrap_pyfunction!(data_newest_published_product, m)?)?;
+    m.add_function(wrap_pyfunction!(data_published_issue_age_minutes, m)?)?;
+    m.add_function(wrap_pyfunction!(data_resolve_first_published, m)?)?;
     Ok(())
 }
