@@ -4,6 +4,15 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.36.3] - 2026-08-04
+
+### Fixed
+
+- Updated `sidereon` and `sidereon-core` to 0.36.3: `parse_archive_listing`
+  accepts AIUB whole-tree CSV rows with spaces in unrelated object paths
+  instead of rejecting the entire live 426k-row listing over one such row.
+  Found by downstream 0.36.1 verification.
+
 ## [0.36.2] - 2026-08-04
 
 ### Added
