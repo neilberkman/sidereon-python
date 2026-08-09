@@ -21,6 +21,9 @@ use sidereon_core::astro::time::{Instant, InstantRepr, JulianDateSplit};
 use sidereon_core::constants::J2000_JD;
 use sidereon_core::data::ProductDate;
 use sidereon_core::ephemeris::{
+    check_continuity, ContinuityDefect, ContinuityOptions, OrbitClass, SpeedBound,
+};
+use sidereon_core::ephemeris::{
     align_clock_reference as core_align_clock_reference,
     clock_reference_offset as core_clock_reference_offset,
     observable_states_at_j2000_s as core_observable_states_at_j2000_s,
@@ -164,6 +167,117 @@ impl PySp3 {
     /// This is the exact query axis [`Sp3.interpolate`] consumes; read it, form
     /// query times on it (e.g. midpoints, a finer grid), and pass them straight
     /// back without a Julian-date round-trip.
+    /// Attest that this product is physically continuous, or report each
+    /// violation.
+    ///
+    /// A merged product is assembled per satellite and epoch from several
+    /// analysis centers, which is exactly the operation that can splice two
+    /// physically inconsistent arcs together while every input stays
+    /// individually well-formed. Two checks run, with different jobs: a
+    /// physical earth-fixed speed gate whose bound is a true upper bound for
+    /// the orbit class, so it cannot false-positive and catches gross
+    /// corruption; and a hold-out interpolation residual, which supplies the
+    /// sensitivity a speed gate structurally cannot (adjacent GNSS MEO epochs
+    /// are hundreds of kilometres apart, so a metre-scale splice moves the
+    /// implied speed by a fraction of a percent).
+    ///
+    /// `orbit_class` is one of `"meo_gnss"` (default), `"geosynchronous"`,
+    /// `"leo"`, or `None` to disable the speed gate.
+    /// `residual_tolerance_m` enables the residual check; `None` disables it.
+    ///
+    /// Returns a dict with `defects`, `attested`, and the counts of what was
+    /// examined, so "checked and clean" stays distinguishable from "not
+    /// checked". This reports rather than refuses: whether a product with
+    /// defects is acceptable is the caller's decision.
+    #[pyo3(signature = (orbit_class = "meo_gnss", residual_tolerance_m = Some(1.0)))]
+    fn check_continuity(
+        &self,
+        py: Python<'_>,
+        orbit_class: Option<&str>,
+        residual_tolerance_m: Option<f64>,
+    ) -> PyResult<PyObject> {
+        let speed_bound = match orbit_class {
+            None => None,
+            Some("meo_gnss") => Some(SpeedBound::OrbitClass(OrbitClass::MeoGnss)),
+            Some("geosynchronous") => Some(SpeedBound::OrbitClass(OrbitClass::Geosynchronous)),
+            Some("leo") => Some(SpeedBound::OrbitClass(OrbitClass::Leo)),
+            Some(other) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown orbit class: {other}"
+                )))
+            }
+        };
+        let report = check_continuity(
+            &self.inner.precise_ephemeris_samples(),
+            &ContinuityOptions {
+                speed_bound,
+                residual_tolerance_m,
+            },
+        );
+
+        let defects = pyo3::types::PyList::empty(py);
+        for defect in &report.defects {
+            let entry = pyo3::types::PyDict::new(py);
+            let (kind, from_s, to_s, magnitude, bound) = match defect {
+                ContinuityDefect::DuplicateEpoch {
+                    epoch_j2000_s,
+                    occurrences,
+                    ..
+                } => (
+                    "duplicate_epoch",
+                    Some(*epoch_j2000_s),
+                    Some(*epoch_j2000_s),
+                    Some(*occurrences as f64),
+                    None,
+                ),
+                ContinuityDefect::SingleSampleSeries { .. } => {
+                    ("single_sample_series", None, None, None, None)
+                }
+                ContinuityDefect::SpeedBound {
+                    from_j2000_s,
+                    to_j2000_s,
+                    implied_speed_m_s,
+                    bound_m_s,
+                    ..
+                } => (
+                    "speed_bound",
+                    Some(*from_j2000_s),
+                    Some(*to_j2000_s),
+                    Some(*implied_speed_m_s),
+                    Some(*bound_m_s),
+                ),
+                ContinuityDefect::HoldOutResidual {
+                    preceding_j2000_s,
+                    epoch_j2000_s,
+                    residual_m,
+                    tolerance_m,
+                    ..
+                } => (
+                    "hold_out_residual",
+                    Some(*preceding_j2000_s),
+                    Some(*epoch_j2000_s),
+                    Some(*residual_m),
+                    Some(*tolerance_m),
+                ),
+            };
+            entry.set_item("kind", kind)?;
+            entry.set_item("satellite", defect.satellite().to_string())?;
+            entry.set_item("from_j2000_s", from_s)?;
+            entry.set_item("to_j2000_s", to_s)?;
+            entry.set_item("magnitude", magnitude)?;
+            entry.set_item("bound", bound)?;
+            defects.append(entry)?;
+        }
+
+        let out = pyo3::types::PyDict::new(py);
+        out.set_item("attested", report.attested())?;
+        out.set_item("defects", defects)?;
+        out.set_item("pairs_checked", report.pairs_checked)?;
+        out.set_item("residuals_checked", report.residuals_checked)?;
+        out.set_item("residuals_skipped", report.residuals_skipped)?;
+        Ok(out.into())
+    }
+
     #[getter]
     fn epochs_j2000_seconds<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         np_array(py, &self.inner.epochs_j2000_seconds())

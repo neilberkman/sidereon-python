@@ -768,6 +768,11 @@ impl PySp3MergeOptions {
                     .collect(),
                 helmert: self.helmert,
             },
+            // Per-epoch provenance and the continuity post-condition are not yet
+            // surfaced on the Python options object; both default to off, which
+            // is exactly the behavior this binding had before they existed.
+            provenance: None,
+            verify_continuity: None,
         }
     }
 }

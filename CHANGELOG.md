@@ -4,6 +4,24 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-08-09
+
+### Added
+
+- `Sp3.check_continuity()` attests that a parsed or merged product is
+  physically continuous, or reports each violation with its epochs and
+  magnitude. Two checks with different jobs: a physical earth-fixed speed
+  gate whose bound is a true upper bound for the orbit class, so it cannot
+  false-positive and catches gross corruption; and a hold-out
+  interpolation residual, which supplies the sensitivity a speed gate
+  structurally cannot - adjacent GNSS MEO epochs are hundreds of
+  kilometres apart, so a metre-scale splice moves the implied speed by a
+  fraction of a percent. Reports rather than refuses.
+
+### Changed
+
+- Engine pinned to `sidereon-core` 0.37.0.
+
 ## [0.36.3] - 2026-08-04
 
 ### Fixed
