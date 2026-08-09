@@ -21,9 +21,6 @@ use sidereon_core::astro::time::{Instant, InstantRepr, JulianDateSplit};
 use sidereon_core::constants::J2000_JD;
 use sidereon_core::data::ProductDate;
 use sidereon_core::ephemeris::{
-    check_continuity, ContinuityDefect, ContinuityOptions, OrbitClass, SpeedBound,
-};
-use sidereon_core::ephemeris::{
     align_clock_reference as core_align_clock_reference,
     clock_reference_offset as core_clock_reference_offset,
     observable_states_at_j2000_s as core_observable_states_at_j2000_s,
@@ -34,6 +31,9 @@ use sidereon_core::ephemeris::{
     ObservableEphemerisSource, ObservableStateBatch, ObservableStateElementStatus,
     ObservablesError, PreciseEphemerisInterpolant, PreciseEphemerisSample, PreciseEphemerisSamples,
     PreciseInterpolantStoreError, Sp3, OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
+};
+use sidereon_core::ephemeris::{
+    check_continuity, ContinuityDefect, ContinuityOptions, OrbitClass, SpeedBound,
 };
 use sidereon_core::Error as CoreError;
 use sidereon_core::GnssSatelliteId;
