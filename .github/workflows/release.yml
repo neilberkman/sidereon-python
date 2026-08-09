@@ -14,6 +14,13 @@ permissions:
   contents: read
 
 jobs:
+  # The full CI bar (rustfmt, clippy, ruff, pytest), run against the tagged
+  # commit. Release used to run only wheel builds and an installed-wheel
+  # smoke, so a tag could publish from a commit that never passed those
+  # gates - which is what happened for 0.37.0.
+  gate:
+    uses: ./.github/workflows/ci.yml
+
   preflight:
     name: release metadata
     runs-on: ubuntu-latest
@@ -185,7 +192,7 @@ jobs:
   publish:
     name: Publish to PyPI (keyless OIDC + attestations)
     runs-on: ubuntu-latest
-    needs: [verify]
+    needs: [verify, gate]
     environment: pypi
     permissions:
       contents: read
