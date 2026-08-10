@@ -4,6 +4,22 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-08-09
+
+### Changed
+
+- `MmapTerrain.from_path()` and `PreciseInterpolantArtifact.from_path()`
+  now memory-map the file read-only instead of reading it into memory, so
+  opening a 30+ GB terrain store no longer costs its size in process
+  memory. No API change: existing callers get this by upgrading. Verified
+  to return identical heights to the byte-based constructors.
+
+  `from_bytes()` still copies, and deliberately so: a `#[pyclass]` cannot
+  borrow from an object whose lifetime Python controls. For a large
+  artifact, use `from_path()`.
+
+- Engine pinned to `sidereon-core` 0.38.0 with its `mmap` feature enabled.
+
 ## [0.37.0] - 2026-08-09
 
 ### Added

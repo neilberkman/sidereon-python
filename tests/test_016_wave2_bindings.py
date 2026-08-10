@@ -8,6 +8,26 @@ import numpy as np
 import pytest
 import sidereon
 
+
+def _engine_dep_is_registry_versioned(manifest: str, name: str) -> bool:
+    """Whether `name` is a registry dependency with a stated version.
+
+    Accepts both `name = "X.Y.Z"` and `name = { version = "X.Y.Z", ... }`; the
+    table form is required to enable a dependency feature. Rejects any path or
+    git dependency, which is the invariant these tests exist to protect: the
+    published wheel must build from the registry, not from a local checkout.
+    """
+    line = re.search(rf'^{re.escape(name)} = (.+)$', manifest, re.M)
+    if line is None:
+        return False
+    value = line.group(1)
+    if "path" in value or "git" in value:
+        return False
+    return re.search(r'version = "\d+\.\d+\.\d+"', value) is not None or re.fullmatch(
+        r'"\d+\.\d+\.\d+"', value.strip()
+    ) is not None
+
+
 FIXTURES = Path(__file__).with_name("fixtures")
 REPO = Path(__file__).resolve().parents[1]
 
@@ -239,6 +259,6 @@ def test_016_wtest_noncentrality_uses_core_delta_and_manifest_has_no_path_deps()
     assert "lambda0.sqrt" not in (REPO / "src" / "reliability.rs").read_text()
 
     manifest = (REPO / "Cargo.toml").read_text()
-    assert re.search(r'sidereon = "\d+\.\d+\.\d+"', manifest)
-    assert re.search(r'sidereon-core = "\d+\.\d+\.\d+"', manifest)
+    assert _engine_dep_is_registry_versioned(manifest, "sidereon")
+    assert _engine_dep_is_registry_versioned(manifest, "sidereon-core")
     assert "path =" not in manifest

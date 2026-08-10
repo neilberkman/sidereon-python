@@ -8,6 +8,26 @@ import struct
 import numpy as np
 import sidereon
 
+
+def _engine_dep_is_registry_versioned(manifest: str, name: str) -> bool:
+    """Whether `name` is a registry dependency with a stated version.
+
+    Accepts both `name = "X.Y.Z"` and `name = { version = "X.Y.Z", ... }`; the
+    table form is required to enable a dependency feature. Rejects any path or
+    git dependency, which is the invariant these tests exist to protect: the
+    published wheel must build from the registry, not from a local checkout.
+    """
+    line = re.search(rf'^{re.escape(name)} = (.+)$', manifest, re.M)
+    if line is None:
+        return False
+    value = line.group(1)
+    if "path" in value or "git" in value:
+        return False
+    return re.search(r'version = "\d+\.\d+\.\d+"', value) is not None or re.fullmatch(
+        r'"\d+\.\d+\.\d+"', value.strip()
+    ) is not None
+
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_SCENARIO_SEED = 0x515C_1E7E_0B5E_A11D
 
@@ -124,8 +144,8 @@ def test_manifest_has_no_cargo_path_deps():
     # the releasable invariant is that the manifest itself carries version-only
     # dependencies.
     cargo_toml = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
-    assert re.search(r'sidereon = "\d+\.\d+\.\d+"', cargo_toml)
-    assert re.search(r'sidereon-core = "\d+\.\d+\.\d+"', cargo_toml)
+    assert _engine_dep_is_registry_versioned(cargo_toml, "sidereon")
+    assert _engine_dep_is_registry_versioned(cargo_toml, "sidereon-core")
     assert "sidereon = { path" not in cargo_toml
     assert "sidereon-core = { path" not in cargo_toml
 

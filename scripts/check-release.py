@@ -34,18 +34,30 @@ def main() -> None:
             "trust-region-least-squares dependency must be the compliant "
             f"0.9.2 patch, found {trust_region_version!r}"
         )
-    non_registry_pins = {
-        name: value
+    # What this guard is for: the engine must come from the registry at a
+    # stated version, never from a path or git checkout the published wheel
+    # cannot reach. A table form is required to enable a dependency feature
+    # (the engine's `mmap`), so accept it and test the property instead of one
+    # spelling of it.
+    def registry_version(name, value):
+        if isinstance(value, str):
+            return value
+        if not isinstance(value, dict):
+            raise SystemExit(f"{name} dependency has an unrecognized form: {value!r}")
+        for disallowed in ("path", "git"):
+            if disallowed in value:
+                raise SystemExit(
+                    f"{name} must be a registry dependency, found {disallowed}="
+                    f"{value[disallowed]!r}"
+                )
+        if "version" not in value:
+            raise SystemExit(f"{name} must state a registry version, found {value!r}")
+        return value["version"]
+
+    engine_dependencies = {
+        name: registry_version(name, value)
         for name, value in engine_dependencies.items()
-        if not isinstance(value, str)
     }
-    if non_registry_pins:
-        details = ", ".join(
-            f"{name}={value!r}" for name, value in non_registry_pins.items()
-        )
-        raise SystemExit(
-            "engine dependencies must be plain registry version pins; " + details
-        )
 
     uv_project_versions = [
         package["version"]
