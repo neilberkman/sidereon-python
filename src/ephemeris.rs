@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1};
-use pyo3::exceptions::{PyIndexError, PyKeyError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyKeyError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyByteArray, PyBytes, PyModule};
 
@@ -35,6 +35,7 @@ use sidereon_core::ephemeris::{
 use sidereon_core::ephemeris::{
     check_continuity, ContinuityDefect, ContinuityOptions, OrbitClass, SpeedBound,
 };
+use sidereon_core::DigestProvenance;
 use sidereon_core::Error as CoreError;
 use sidereon_core::GnssSatelliteId;
 
@@ -42,8 +43,9 @@ use crate::frames::PyTimeScale;
 use crate::marshal::rows3_to_array;
 use crate::rinex::PyBroadcastEphemeris;
 use crate::{
-    np_array, to_solve_err, to_sp3_err, PreciseInterpolantArtifactCorruptError,
-    PreciseInterpolantArtifactError, PreciseInterpolantArtifactTruncatedError,
+    np_array, parse_claimed_checksum64, to_solve_err, to_sp3_err,
+    PreciseInterpolantArtifactCorruptError, PreciseInterpolantArtifactError,
+    PreciseInterpolantArtifactTruncatedError,
 };
 
 /// Seconds in one day, for the J2000-second <-> split-Julian-date reconstruction.
@@ -1155,6 +1157,19 @@ impl PyPreciseInterpolantArtifact {
         Self::from_vec(bytes)
     }
 
+    /// Open an artifact from disk using a caller-attested checksum.
+    ///
+    /// The claim must fit an unsigned 64-bit integer and match the checksum in
+    /// the artifact header. The payload is not hashed; call [`Self.verify`] to
+    /// escalate the handle to verified provenance.
+    #[staticmethod]
+    fn from_path_attested(path: PathBuf, claimed_checksum64: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let claimed_checksum64 = parse_claimed_checksum64(claimed_checksum64)?;
+        MmapPreciseEphemerisInterpolant::from_path_attested(path, claimed_checksum64)
+            .map(|inner| Self { inner })
+            .map_err(precise_artifact_path_error)
+    }
+
     /// Artifact byte length.
     #[getter]
     fn byte_len(&self) -> usize {
@@ -1165,6 +1180,25 @@ impl PyPreciseInterpolantArtifact {
     #[getter]
     fn checksum64(&self) -> u64 {
         self.inner.checksum64()
+    }
+
+    /// Whether the checksum was measured by the library or attested by the
+    /// caller.
+    #[getter]
+    fn digest_provenance(&self) -> &'static str {
+        match self.inner.digest_provenance() {
+            DigestProvenance::Verified => "verified",
+            DigestProvenance::Attested => "attested",
+        }
+    }
+
+    /// Verify file-level and per-satellite payload checksums for this handle.
+    ///
+    /// Success changes [`Self.digest_provenance`] to `"verified"`.
+    fn verify(&mut self) -> PyResult<()> {
+        self.inner
+            .verify()
+            .map_err(precise_artifact_error_without_bytes)
     }
 
     /// Time scale of the stored epoch axis.
@@ -1280,6 +1314,13 @@ fn artifact_looks_truncated(bytes: &[u8]) -> bool {
 
 fn precise_artifact_error_without_bytes(err: PreciseInterpolantStoreError) -> PyErr {
     precise_artifact_error(err, false)
+}
+
+fn precise_artifact_path_error(err: PreciseInterpolantStoreError) -> PyErr {
+    match err {
+        PreciseInterpolantStoreError::Io { .. } => PyOSError::new_err(err.to_string()),
+        other => precise_artifact_error_without_bytes(other),
+    }
 }
 
 fn precise_artifact_error(err: PreciseInterpolantStoreError, truncated: bool) -> PyErr {

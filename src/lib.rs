@@ -17,7 +17,7 @@ use numpy::PyArray1;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyAny, PyModule};
 
 mod almanac;
 mod angles;
@@ -336,6 +336,14 @@ create_exception!(
 /// to Python as numpy arrays rather than Rust through a keyhole.
 pub(crate) fn np_array<'py>(py: Python<'py>, values: &[f64]) -> Bound<'py, PyArray1<f64>> {
     PyArray1::from_slice(py, values)
+}
+
+/// Parse a Python checksum claim without allowing extraction failures to leak
+/// implementation-specific `TypeError` or `OverflowError` exceptions.
+pub(crate) fn parse_claimed_checksum64(value: &Bound<'_, PyAny>) -> PyResult<u64> {
+    value.extract::<u64>().map_err(|_| {
+        PyValueError::new_err("claimed_checksum64 must be an integer in range 0 <= value < 2**64")
+    })
 }
 
 /// Map an SP3 parse failure into [`Sp3ParseError`], preserving the engine

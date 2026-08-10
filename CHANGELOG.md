@@ -4,6 +4,23 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-08-10
+
+### Added
+
+- `MmapTerrain.from_path_attested()` and
+  `PreciseInterpolantArtifact.from_path_attested()`: open a large mapped
+  artifact with a caller-attested content checksum instead of the
+  O(payload) hash pass, for callers who already hold a trustworthy
+  measurement (fs-verity, signed manifest, content-addressed store).
+  `digest_provenance()` reports `"verified"` or `"attested"` and
+  `verify()` escalates to the full hash on demand. A malformed claim
+  raises `ValueError`; it never silently falls back to hashing.
+
+### Changed
+
+- Engine pinned to `sidereon-core` 0.39.0.
+
 ## [0.38.0] - 2026-08-09
 
 ### Changed

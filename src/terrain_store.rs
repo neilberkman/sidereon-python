@@ -18,9 +18,10 @@ use sidereon_core::terrain_store::{
     TerrainDatumError, TerrainGeoidModel, TerrainStoreError, TerrainStoreTileIndex, TerrainTileId,
     VerticalDatum,
 };
+use sidereon_core::DigestProvenance;
 
-use crate::np_array;
 use crate::terrain::PyDtedLookupOptions;
+use crate::{np_array, parse_claimed_checksum64};
 
 fn points_lon_lat(name: &str, points: &PyReadonlyArray2<'_, f64>) -> PyResult<Vec<(f64, f64)>> {
     let view = points.as_array();
@@ -576,6 +577,12 @@ impl From<TerrainStoreError> for PyTerrainStoreError {
                 path: None,
                 remediation: None,
             },
+            TerrainStoreError::AttestedChecksumMismatch { .. } => Self {
+                kind: "AttestedChecksumMismatch".to_string(),
+                message,
+                path: None,
+                remediation: None,
+            },
         }
     }
 }
@@ -757,6 +764,19 @@ impl PyMmapTerrain {
     #[staticmethod]
     fn from_path(path: PathBuf) -> PyResult<Self> {
         MmapTerrain::from_path(path)
+            .map(|inner| Self { inner })
+            .map_err(to_store_err)
+    }
+
+    /// Open a terrain store from disk using a caller-attested checksum.
+    ///
+    /// The claim must fit an unsigned 64-bit integer. This validates the store
+    /// layout without hashing its payload; call [`MmapTerrain.verify`] to
+    /// escalate the handle to verified provenance.
+    #[staticmethod]
+    fn from_path_attested(path: PathBuf, claimed_checksum64: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let claimed_checksum64 = parse_claimed_checksum64(claimed_checksum64)?;
+        MmapTerrain::from_path_attested(path, claimed_checksum64)
             .map(|inner| Self { inner })
             .map_err(to_store_err)
     }
@@ -955,6 +975,22 @@ impl PyMmapTerrain {
     /// FNV-1a checksum of the full terrain store byte span.
     fn checksum64(&self) -> u64 {
         self.inner.checksum64()
+    }
+
+    /// Return `"verified"` when the library measured the checksum, otherwise
+    /// `"attested"` when the caller supplied it.
+    fn digest_provenance(&self) -> &'static str {
+        match self.inner.digest_provenance() {
+            DigestProvenance::Verified => "verified",
+            DigestProvenance::Attested => "attested",
+        }
+    }
+
+    /// Verify payload and full-store checksums for this handle.
+    ///
+    /// Success changes [`MmapTerrain.digest_provenance`] to `"verified"`.
+    fn verify(&mut self) -> PyResult<()> {
+        self.inner.verify().map_err(to_store_err)
     }
 
     /// Return the store bytes accepted by this reader.
