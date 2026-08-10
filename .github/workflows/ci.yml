@@ -53,6 +53,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # shared-key so the tag-triggered release gate reuses this cache instead
+      # of recompiling the extension cold; the runner OS is part of the key
+      # automatically.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
       - name: cargo fmt --check
         run: cargo fmt --check
       - name: cargo clippy -D warnings
@@ -73,6 +79,9 @@ jobs:
           version: "0.11.19"
           enable-cache: true
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
       - name: Determine sidereon-core version
         id: core-version
         shell: bash
