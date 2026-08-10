@@ -17,15 +17,16 @@ def _engine_dep_is_registry_versioned(manifest: str, name: str) -> bool:
     git dependency, which is the invariant these tests exist to protect: the
     published wheel must build from the registry, not from a local checkout.
     """
-    line = re.search(rf'^{re.escape(name)} = (.+)$', manifest, re.M)
+    line = re.search(rf"^{re.escape(name)} = (.+)$", manifest, re.M)
     if line is None:
         return False
     value = line.group(1)
     if "path" in value or "git" in value:
         return False
-    return re.search(r'version = "\d+\.\d+\.\d+"', value) is not None or re.fullmatch(
-        r'"\d+\.\d+\.\d+"', value.strip()
-    ) is not None
+    return (
+        re.search(r'version = "\d+\.\d+\.\d+"', value) is not None
+        or re.fullmatch(r'"\d+\.\d+\.\d+"', value.strip()) is not None
+    )
 
 
 FIXTURES = Path(__file__).with_name("fixtures")

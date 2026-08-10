@@ -34,6 +34,7 @@ def main() -> None:
             "trust-region-least-squares dependency must be the compliant "
             f"0.9.2 patch, found {trust_region_version!r}"
         )
+
     # What this guard is for: the engine must come from the registry at a
     # stated version, never from a path or git checkout the published wheel
     # cannot reach. A table form is required to enable a dependency feature
