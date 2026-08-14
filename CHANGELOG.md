@@ -4,6 +4,20 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [0.39.1] - 2026-08-11
+
+### Fixed
+
+- DTED terrain lookups compute the grid cell and intra-cell fraction in
+  exact integer arithmetic (engine fix): the binary64 scaling product
+  rounded away up to 4096 ULP of the fraction and could flip a
+  coordinate strictly below a posting into the next cell's stencil.
+  No API change; heights at dyadic-exact coordinates are byte-identical.
+
+### Changed
+
+- Engine pinned to `sidereon-core` 0.39.1.
+
 ## [0.39.0] - 2026-08-10
 
 ### Added
