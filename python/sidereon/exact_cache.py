@@ -14,17 +14,23 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Union
 
 from ._exact_cache import (
     CONTROL_DIRECTORY,
     CacheFiles,
     CacheFormatError,
     CacheLockTimeout,
+    CacheSingleFlightTimeout,
+    ExactCacheOwner,
+    SingleFlightOptions,
     committed_files,
 )
 from ._exact_cache import (
     ExactCache as _ExactCache,
+)
+from ._exact_cache import (
+    open_single_flight as _open_single_flight,
 )
 
 
@@ -47,6 +53,18 @@ def entry_lock(
         cache.close()
 
 
+@contextlib.contextmanager
+def open_single_flight(
+    path: Path,
+    identity,
+    source,
+    options: Optional[SingleFlightOptions] = None,
+) -> Iterator[Union[CacheFiles, ExactCacheOwner]]:
+    """Return a verified hit or hold ownership of one cache miss."""
+    with _open_single_flight(path, identity, source, options) as opened:
+        yield opened
+
+
 def read(path: Path, identity, source) -> Optional[CacheFiles]:
     """Read a complete digest-verified entry without taking the writer lock."""
     return committed_files(path, identity, source)
@@ -57,7 +75,11 @@ __all__ = [
     "CacheFiles",
     "CacheFormatError",
     "CacheLockTimeout",
+    "CacheSingleFlightTimeout",
+    "ExactCacheOwner",
     "ExactProductCache",
+    "SingleFlightOptions",
     "entry_lock",
+    "open_single_flight",
     "read",
 ]

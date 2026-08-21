@@ -6,6 +6,7 @@ from .distribution import DistributionSource, ProductIdentity
 CONTROL_DIRECTORY: str
 
 class CacheLockTimeout(OSError): ...
+class CacheSingleFlightTimeout(CacheLockTimeout): ...
 class CacheFormatError(OSError): ...
 
 class CacheFiles:
@@ -16,6 +17,26 @@ class CacheFiles:
     product_bytes: bytes
     archive_bytes: bytes
     provenance_bytes: bytes
+
+class SingleFlightOptions:
+    poll_interval_s: float
+    heartbeat_interval_s: float
+    liveness_timeout_s: float
+    wait_timeout_s: float
+    def __init__(
+        self,
+        poll_interval_s: float = ...,
+        heartbeat_interval_s: float = ...,
+        liveness_timeout_s: float = ...,
+        wait_timeout_s: float = ...,
+    ) -> None: ...
+
+class ExactCacheOwner:
+    def heartbeat(self) -> None: ...
+    def publish(
+        self, product: bytes, archive: bytes, provenance: bytes
+    ) -> CacheFiles: ...
+    def close(self) -> None: ...
 
 class ExactProductCache:
     def __init__(
@@ -38,6 +59,12 @@ def entry_lock(
     source: DistributionSource,
     timeout_s: float = ...,
 ) -> ContextManager[ExactProductCache]: ...
+def open_single_flight(
+    path: Path,
+    identity: ProductIdentity,
+    source: DistributionSource,
+    options: SingleFlightOptions | None = ...,
+) -> ContextManager[CacheFiles | ExactCacheOwner]: ...
 def read(
     path: Path, identity: ProductIdentity, source: DistributionSource
 ) -> CacheFiles | None: ...

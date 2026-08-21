@@ -46,6 +46,104 @@ def test_public_exact_cache_surface_round_trips_authenticated_bytes(tmp_path):
     assert read.provenance_bytes == b"provenance"
 
 
+def test_single_flight_hit_returns_committed_entry_without_fetch(tmp_path):
+    request = _sp3_request(distribution.Distribution.in_memory(_sp3_bytes()))
+    stable = tmp_path / request.identity.key / request.identity.official_filename
+    with public_exact_cache.entry_lock(
+        stable,
+        request.identity,
+        distribution.DistributionSource.IN_MEMORY,
+    ) as cache:
+        committed = cache.publish(b"product", b"archive", b"provenance")
+
+    fetch_calls = 0
+
+    def fetch_if_owner(opened):
+        nonlocal fetch_calls
+        if isinstance(opened, public_exact_cache.ExactCacheOwner):
+            fetch_calls += 1
+
+    with public_exact_cache.open_single_flight(
+        stable,
+        request.identity,
+        distribution.DistributionSource.IN_MEMORY,
+    ) as opened:
+        fetch_if_owner(opened)
+        assert isinstance(opened, public_exact_cache.CacheFiles)
+        assert opened.entry_id == committed.entry_id
+        assert opened.product_bytes == b"product"
+    assert fetch_calls == 0
+
+
+def test_single_flight_owner_publishes_then_next_open_is_a_hit(tmp_path):
+    request = _sp3_request(distribution.Distribution.in_memory(_sp3_bytes()))
+    stable = tmp_path / request.identity.key / request.identity.official_filename
+    with public_exact_cache.open_single_flight(
+        stable,
+        request.identity,
+        distribution.DistributionSource.IN_MEMORY,
+    ) as opened:
+        assert isinstance(opened, public_exact_cache.ExactCacheOwner)
+        opened.heartbeat()
+        published = opened.publish(b"product", b"archive", b"provenance")
+
+    with public_exact_cache.open_single_flight(
+        stable,
+        request.identity,
+        distribution.DistributionSource.IN_MEMORY,
+    ) as reopened:
+        assert isinstance(reopened, public_exact_cache.CacheFiles)
+        assert reopened.entry_id == published.entry_id
+        assert reopened.product_bytes == b"product"
+
+
+def test_single_flight_live_owner_wait_timeout_is_typed(tmp_path):
+    request = _sp3_request(distribution.Distribution.in_memory(_sp3_bytes()))
+    stable = tmp_path / request.identity.key / request.identity.official_filename
+    owner_options = public_exact_cache.SingleFlightOptions(
+        poll_interval_s=0.005,
+        heartbeat_interval_s=0.02,
+        liveness_timeout_s=0.2,
+        wait_timeout_s=1.0,
+    )
+    waiter_options = public_exact_cache.SingleFlightOptions(
+        poll_interval_s=0.005,
+        heartbeat_interval_s=0.02,
+        liveness_timeout_s=0.2,
+        wait_timeout_s=0.03,
+    )
+    with public_exact_cache.open_single_flight(
+        stable,
+        request.identity,
+        distribution.DistributionSource.IN_MEMORY,
+        owner_options,
+    ) as owner:
+        assert isinstance(owner, public_exact_cache.ExactCacheOwner)
+        with pytest.raises(public_exact_cache.CacheSingleFlightTimeout):
+            with public_exact_cache.open_single_flight(
+                stable,
+                request.identity,
+                distribution.DistributionSource.IN_MEMORY,
+                waiter_options,
+            ):
+                pytest.fail("a waiter must not become owner while the first is live")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"poll_interval_s": 0.0},
+        {"heartbeat_interval_s": -1.0},
+        {"liveness_timeout_s": float("nan")},
+        {"wait_timeout_s": float("inf")},
+        {"heartbeat_interval_s": 1.0, "liveness_timeout_s": 1.0},
+    ],
+)
+def test_single_flight_options_reject_invalid_durations(kwargs):
+    with pytest.raises(ValueError):
+        public_exact_cache.SingleFlightOptions(**kwargs)
+
+
 def _process_acquire(source_kind, source_path, cache_dir, ready, start, results):
     if source_kind == "local_file":
         source = distribution.Distribution.local_file(source_path)

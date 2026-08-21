@@ -9,7 +9,8 @@ use sidereon_core::data::{
     ProductPublisher, ProductType, SolutionClass,
 };
 use sidereon_core::exact_cache::{
-    ExactCacheError, ExactCacheGuard, ExactProductCache, EXACT_CACHE_CONTROL_DIRECTORY,
+    ExactCacheError, ExactCacheGuard, ExactCacheOpen, ExactCacheOwner,
+    ExactCacheSingleFlightOptions, ExactProductCache, EXACT_CACHE_CONTROL_DIRECTORY,
 };
 use std::time::Duration;
 
@@ -37,9 +38,21 @@ fn value_error(message: impl ToString) -> PyErr {
 
 fn cache_error(error: ExactCacheError) -> PyErr {
     match error {
-        ExactCacheError::LockTimeout => PyTimeoutError::new_err(error.to_string()),
+        ExactCacheError::LockTimeout | ExactCacheError::SingleFlightTimeout => {
+            PyTimeoutError::new_err(error.to_string())
+        }
+        ExactCacheError::InvalidSingleFlightOptions => value_error(error),
         _ => PyOSError::new_err(error.to_string()),
     }
+}
+
+fn positive_duration(name: &str, seconds: f64) -> PyResult<Duration> {
+    let duration = Duration::try_from_secs_f64(seconds)
+        .map_err(|_| value_error(format!("{name} must be finite and positive")))?;
+    if duration.is_zero() {
+        return Err(value_error(format!("{name} must be finite and positive")));
+    }
+    Ok(duration)
 }
 
 pub(crate) fn source(value: &str) -> PyResult<DistributionSource> {
@@ -132,6 +145,12 @@ struct PyExactProductCache {
     guard: Option<ExactCacheGuard>,
 }
 
+/// Native single-flight ownership retained until publish or close.
+#[pyclass(name = "_ExactCacheOwner")]
+struct PyExactCacheOwner {
+    owner: Option<ExactCacheOwner>,
+}
+
 type CacheRead<'py> = (
     String,
     String,
@@ -173,6 +192,39 @@ fn data_exact_cache_read<'py>(
     .read()
     .map(|entry| entry.map(|entry| entry_to_python(py, entry)))
     .map_err(cache_error)
+}
+
+#[pyfunction]
+fn data_exact_cache_open_single_flight<'py>(
+    py: Python<'py>,
+    stable_path: String,
+    identity_json: &str,
+    distribution_source: &str,
+    timing_s: (f64, f64, f64, f64),
+) -> PyResult<(Option<CacheRead<'py>>, Option<Py<PyExactCacheOwner>>)> {
+    let (poll_interval_s, heartbeat_interval_s, liveness_timeout_s, wait_timeout_s) = timing_s;
+    let options = ExactCacheSingleFlightOptions {
+        poll_interval: positive_duration("poll_interval_s", poll_interval_s)?,
+        heartbeat_interval: positive_duration("heartbeat_interval_s", heartbeat_interval_s)?,
+        liveness_timeout: positive_duration("liveness_timeout_s", liveness_timeout_s)?,
+        wait_timeout: positive_duration("wait_timeout_s", wait_timeout_s)?,
+    };
+    let cache = ExactProductCache::new(
+        stable_path,
+        identity(identity_json)?,
+        source(distribution_source)?,
+    )
+    .map_err(cache_error)?;
+    match py
+        .allow_threads(|| cache.open_single_flight(options))
+        .map_err(cache_error)?
+    {
+        ExactCacheOpen::Hit(entry) => Ok((Some(entry_to_python(py, entry)), None)),
+        ExactCacheOpen::Owner(owner) => Ok((
+            None,
+            Some(Py::new(py, PyExactCacheOwner { owner: Some(owner) })?),
+        )),
+    }
 }
 
 #[pyfunction]
@@ -240,6 +292,35 @@ impl PyExactProductCache {
     }
 }
 
+#[pymethods]
+impl PyExactCacheOwner {
+    fn heartbeat(&self, py: Python<'_>) -> PyResult<()> {
+        let owner = self.require_open()?;
+        py.allow_threads(|| owner.heartbeat()).map_err(cache_error)
+    }
+
+    fn publish<'py>(
+        &mut self,
+        py: Python<'py>,
+        product: &[u8],
+        archive: &[u8],
+        provenance: &[u8],
+    ) -> PyResult<CacheRead<'py>> {
+        let owner = self
+            .owner
+            .take()
+            .ok_or_else(|| PyOSError::new_err("exact-cache single-flight owner is closed"))?;
+        let entry = py
+            .allow_threads(|| owner.publish(product, archive, provenance))
+            .map_err(cache_error)?;
+        Ok(entry_to_python(py, entry))
+    }
+
+    fn close(&mut self) {
+        self.owner.take();
+    }
+}
+
 impl PyExactProductCache {
     fn require_open(&self) -> PyResult<&ExactCacheGuard> {
         self.guard
@@ -248,9 +329,19 @@ impl PyExactProductCache {
     }
 }
 
+impl PyExactCacheOwner {
+    fn require_open(&self) -> PyResult<&ExactCacheOwner> {
+        self.owner
+            .as_ref()
+            .ok_or_else(|| PyOSError::new_err("exact-cache single-flight owner is closed"))
+    }
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyExactProductCache>()?;
+    m.add_class::<PyExactCacheOwner>()?;
     m.add_function(wrap_pyfunction!(data_exact_cache_read, m)?)?;
+    m.add_function(wrap_pyfunction!(data_exact_cache_open_single_flight, m)?)?;
     m.add_function(wrap_pyfunction!(data_validate_product_identity, m)?)?;
     m.add(
         "_EXACT_CACHE_CONTROL_DIRECTORY",
