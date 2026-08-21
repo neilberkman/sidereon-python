@@ -744,36 +744,35 @@ impl PySp3MergeOptions {
 
 impl PySp3MergeOptions {
     fn to_core(&self) -> MergeOptions {
-        MergeOptions {
-            position_tolerance_m: self.position_tolerance_m,
-            clock_tolerance_s: self.clock_tolerance_s,
-            min_agree: self.min_agree,
-            clock_min_common: self.clock_min_common,
-            combine: self.combine.into(),
-            precedence_scope: self.precedence_scope.into(),
-            outlier_reject: self
-                .outlier_reject
-                .as_ref()
-                .map(|options| OutlierRejectOptions {
-                    position_tolerance_m: options.position_tolerance_m,
-                    clock_tolerance_s: options.clock_tolerance_s,
-                }),
-            target_epoch_interval_s: self.target_epoch_interval_s,
-            systems: self.systems.clone(),
-            frame_reconciliation: Sp3FrameReconciliationOptions {
-                asserted_equivalent_label_sets: self
-                    .asserted_frame_label_sets
-                    .iter()
-                    .map(|labels| Sp3FrameLabelSet::new(labels.iter().cloned()))
-                    .collect(),
-                helmert: self.helmert,
-            },
-            // Per-epoch provenance and the continuity post-condition are not yet
-            // surfaced on the Python options object; both default to off, which
-            // is exactly the behavior this binding had before they existed.
-            provenance: None,
-            verify_continuity: None,
-        }
+        // Mutate-a-default rather than a struct literal: MergeOptions is
+        // non-exhaustive, so per-epoch provenance, the continuity
+        // post-condition, and any future option the core learns stay at their
+        // defaults (off) without this conversion having to name them.
+        let mut options = MergeOptions::default();
+        options.position_tolerance_m = self.position_tolerance_m;
+        options.clock_tolerance_s = self.clock_tolerance_s;
+        options.min_agree = self.min_agree;
+        options.clock_min_common = self.clock_min_common;
+        options.combine = self.combine.into();
+        options.precedence_scope = self.precedence_scope.into();
+        options.outlier_reject = self
+            .outlier_reject
+            .as_ref()
+            .map(|options| OutlierRejectOptions {
+                position_tolerance_m: options.position_tolerance_m,
+                clock_tolerance_s: options.clock_tolerance_s,
+            });
+        options.target_epoch_interval_s = self.target_epoch_interval_s;
+        options.systems = self.systems.clone();
+        options.frame_reconciliation = Sp3FrameReconciliationOptions {
+            asserted_equivalent_label_sets: self
+                .asserted_frame_label_sets
+                .iter()
+                .map(|labels| Sp3FrameLabelSet::new(labels.iter().cloned()))
+                .collect(),
+            helmert: self.helmert,
+        };
+        options
     }
 }
 
