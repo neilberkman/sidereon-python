@@ -608,6 +608,57 @@ fn data_published_issue_age_minutes(
     core::published_issue_age_minutes(&published, now).map_err(to_data_err)
 }
 
+type ProductDateTimeTuple = (i32, u8, u8, u8, u8, u8);
+type NominalCoverageIntervalTuple = (ProductDateTimeTuple, ProductDateTimeTuple);
+type NominalIssueTuple = (
+    String,
+    ProductDateTimeTuple,
+    Option<NominalCoverageIntervalTuple>,
+    Option<NominalCoverageIntervalTuple>,
+);
+
+fn product_datetime_tuple(value: ProductDateTime) -> ProductDateTimeTuple {
+    (
+        value.date.year,
+        value.date.month,
+        value.date.day,
+        value.hour,
+        value.minute,
+        value.second,
+    )
+}
+
+fn coverage_interval_tuple(value: core::NominalCoverageInterval) -> NominalCoverageIntervalTuple {
+    (
+        product_datetime_tuple(value.from),
+        product_datetime_tuple(value.until),
+    )
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)] // Mirrors the core's second-resolution UTC timestamp.
+fn data_next_issue_due(
+    center_code: &str,
+    product_code: &str,
+    year: i32,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+) -> PyResult<NominalIssueTuple> {
+    let now =
+        ProductDateTime::new(date(year, month, day)?, hour, minute, second).map_err(to_data_err)?;
+    let issue = core::next_issue_due(center(center_code)?, product_type(product_code)?, now)
+        .map_err(to_data_err)?;
+    Ok((
+        identity_json(&issue.identity)?,
+        product_datetime_tuple(issue.due_at),
+        issue.covers.observed.map(coverage_interval_tuple),
+        issue.covers.predicted.map(coverage_interval_tuple),
+    ))
+}
+
 type CandidateSpecTuple = (String, String, i32, u8, u8, Option<String>, Option<String>);
 
 #[pyfunction]
@@ -696,6 +747,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(data_parse_archive_listing, m)?)?;
     m.add_function(wrap_pyfunction!(data_newest_published_product, m)?)?;
     m.add_function(wrap_pyfunction!(data_published_issue_age_minutes, m)?)?;
+    m.add_function(wrap_pyfunction!(data_next_issue_due, m)?)?;
     m.add_function(wrap_pyfunction!(data_resolve_first_published, m)?)?;
     Ok(())
 }

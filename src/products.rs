@@ -19,12 +19,14 @@ use sidereon_core::astro::time::{Instant, InstantRepr};
 use sidereon_core::constants::J2000_JD;
 use sidereon_core::data::ArchiveCompression;
 use sidereon_core::ephemeris::{
-    merge, AgreementMetric, EpochAgreement, MergeCombine, MergeFlag, MergeOptions,
-    MergePrecedenceScope, MergeReport, OutlierRejectOptions, Sp3ArtifactIdentity, Sp3FrameLabelSet,
-    Sp3FrameReconciliation, Sp3FrameReconciliationOptions, Sp3MergeInputIdentity,
+    merge, AgreementMetric, EpochAgreement, EpochWindow, MergeCombine, MergeContinuityReport,
+    MergeFlag, MergeOptions, MergePrecedenceScope, MergeReport, OutlierRejectOptions,
+    Sp3ArtifactIdentity, Sp3FrameLabelSet, Sp3FrameReconciliation, Sp3FrameReconciliationOptions,
+    Sp3MergeInputIdentity, StencilExtent,
 };
 use sidereon_core::GnssSystem;
 
+use crate::ephemeris::continuity_verdict_to_py;
 use crate::marshal::option_py_or_default;
 use crate::{np_array, to_antex_err, PySp3};
 
@@ -1132,6 +1134,7 @@ pub struct PySp3MergeReport {
     clock_agreement_rms_s: Option<f64>,
     clock_agreement_max_s: Option<f64>,
     agreement_epochs: Vec<PySp3EpochAgreement>,
+    continuity: Option<MergeContinuityReport>,
 }
 
 #[pymethods]
@@ -1258,6 +1261,31 @@ impl PySp3MergeReport {
         self.agreement_epochs.clone()
     }
 
+    /// Decide whether the optional merge continuity post-condition can
+    /// influence an inclusive evaluation window through `merged`'s derived
+    /// interpolation stencil.
+    ///
+    /// `None` means continuity verification was not requested for the merge.
+    /// A present verdict retains both the influencing findings and the complete
+    /// defect and contributor-changing splice lists.
+    fn continuity_verdict(
+        &self,
+        py: Python<'_>,
+        merged: &PySp3,
+        from_j2000_s: f64,
+        through_j2000_s: f64,
+    ) -> PyResult<Option<PyObject>> {
+        let Some(report) = &self.continuity else {
+            return Ok(None);
+        };
+        let window = EpochWindow::new(from_j2000_s, through_j2000_s)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let stencil = StencilExtent::for_sp3(&merged.inner)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let verdict = report.verdict_for_window(window, stencil);
+        continuity_verdict_to_py(py, verdict).map(Some)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Sp3MergeReport(frame_reconciliations={}, quarantined={}, single_source={}, position_outliers={}, clock_outliers={}, \
@@ -1319,6 +1347,7 @@ impl From<MergeReport> for PySp3MergeReport {
             clock_agreement_rms_s,
             clock_agreement_max_s,
             agreement_epochs,
+            continuity: value.continuity,
         }
     }
 }

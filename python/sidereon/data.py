@@ -118,6 +118,9 @@ from sidereon._sidereon import (
     data_newest_published_product as _core_data_newest_published_product,
 )
 from sidereon._sidereon import (
+    data_next_issue_due as _core_data_next_issue_due,
+)
+from sidereon._sidereon import (
     data_parse_archive_listing as _core_data_parse_archive_listing,
 )
 from sidereon._sidereon import (
@@ -242,10 +245,12 @@ __all__ = [
     "predicted_ionex_line_candidates",
     "PublishedObject",
     "PublishedProduct",
+    "NominalIssue",
     "parse_archive_listing",
     "newest_published_product",
     "publication_listing_urls",
     "published_issue_age",
+    "next_issue_due",
     "resolve_first_published",
     "ops_ultra_sp3",
     "mgex_sp3",
@@ -1013,6 +1018,20 @@ class PublishedProduct:
     observed_at: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class NominalIssue:
+    """The next product issue nominally due at or after a UTC instant.
+
+    ``covers`` has ``"observed"`` and ``"predicted"`` entries. Each is either
+    ``None`` or a half-open interval with UTC ``"from"`` and ``"until"``
+    datetimes.
+    """
+
+    identity: "ProductIdentity"
+    due_at: _dt.datetime
+    covers: Mapping[str, Optional[Mapping[str, _dt.datetime]]]
+
+
 def parse_archive_listing(body: str) -> list[PublishedObject]:
     """Parse the object entries out of an archive listing body.
 
@@ -1097,6 +1116,66 @@ def published_issue_age(
     except ValueError as exc:
         raise _catalog_error(exc) from None
     return _dt.timedelta(minutes=minutes)
+
+
+def _utc_product_datetime(row: tuple[int, int, int, int, int, int]) -> _dt.datetime:
+    return _dt.datetime(*row, tzinfo=_dt.timezone.utc)
+
+
+def _nominal_coverage_interval(
+    row: Optional[
+        tuple[
+            tuple[int, int, int, int, int, int],
+            tuple[int, int, int, int, int, int],
+        ]
+    ],
+) -> Optional[Mapping[str, _dt.datetime]]:
+    if row is None:
+        return None
+    start, until = row
+    return {
+        "from": _utc_product_datetime(start),
+        "until": _utc_product_datetime(until),
+    }
+
+
+def next_issue_due(center: str, content: str, now: _dt.datetime) -> NominalIssue:
+    """Return the next catalog issue nominally due at or after ``now``.
+
+    This is a network-free schedule query and does not claim the archive has
+    published the issue. A timezone-aware input is converted to UTC; a naive
+    input is interpreted as UTC. Because the catalog works at whole-second
+    resolution, a fractional input second advances to the next whole second.
+    """
+    if not isinstance(now, _dt.datetime):
+        raise UnsupportedProduct(f"now must be a datetime, got {now!r}")
+    if now.tzinfo is not None and now.utcoffset() is not None:
+        normalized = now.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+    else:
+        normalized = now
+    if normalized.microsecond:
+        normalized = (normalized + _dt.timedelta(seconds=1)).replace(microsecond=0)
+    try:
+        identity_json, due_at, observed, predicted = _core_data_next_issue_due(
+            center,
+            content,
+            normalized.year,
+            normalized.month,
+            normalized.day,
+            normalized.hour,
+            normalized.minute,
+            normalized.second,
+        )
+    except ValueError as exc:
+        raise _catalog_error(exc) from None
+    return NominalIssue(
+        identity=_exact_product_identity(_json.loads(identity_json)),
+        due_at=_utc_product_datetime(due_at),
+        covers={
+            "observed": _nominal_coverage_interval(observed),
+            "predicted": _nominal_coverage_interval(predicted),
+        },
+    )
 
 
 def resolve_first_published(

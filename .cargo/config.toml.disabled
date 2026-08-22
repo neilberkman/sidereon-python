@@ -1,3 +1,3 @@
 [patch.crates-io]
-sidereon = { path = "/Users/neil/xuku/sidereon/crates/sidereon" }
-sidereon-core = { path = "/Users/neil/xuku/sidereon/crates/sidereon-core" }
+sidereon = { path = "/private/tmp/claude-501/-Users-neil-xuku-sidereon/533ff098-5f65-49d6-a22e-7e73188f122d/scratchpad/window-continuity-clone/crates/sidereon" }
+sidereon-core = { path = "/private/tmp/claude-501/-Users-neil-xuku-sidereon/533ff098-5f65-49d6-a22e-7e73188f122d/scratchpad/window-continuity-clone/crates/sidereon-core" }

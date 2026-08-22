@@ -4,6 +4,25 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-21
+
+Sidereon 1.0.0 across every interface; additions arrive without breaking
+existing callers from here.
+
+### Added
+
+- Exact-cache single-flight coalescing on the cache surface: Hit/Owner
+  outcomes, owner heartbeat and publish, typed timeout errors.
+- Window-scoped continuity verdicts: `Sp3.stencil_extent()`,
+  `Sp3.continuity_verdict(...)`, and the merge-report equivalent, with
+  the stencil reach derived from the interpolator itself.
+- `sidereon.data.next_issue_due()`: network-free next nominal issue for
+  cataloged product lines.
+
+### Changed
+
+- Engine pinned to `sidereon-core` 1.0.0.
+
 ## [0.39.1] - 2026-08-11
 
 ### Fixed

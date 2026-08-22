@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1};
 use pyo3::exceptions::{PyIndexError, PyKeyError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyByteArray, PyBytes, PyModule};
+use pyo3::types::{PyAny, PyByteArray, PyBytes, PyDict, PyList, PyModule};
 
 use sidereon_core::astro::time::civil::seconds_between_splits;
 use sidereon_core::astro::time::{Instant, InstantRepr, JulianDateSplit};
@@ -33,7 +33,8 @@ use sidereon_core::ephemeris::{
     PreciseInterpolantStoreError, Sp3, OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
 };
 use sidereon_core::ephemeris::{
-    check_continuity, ContinuityDefect, ContinuityOptions, OrbitClass, SpeedBound,
+    check_continuity, ContinuityDefect, ContinuityOptions, EpochWindow, MergeContinuityViolation,
+    OrbitClass, SpeedBound, StencilExtent, WindowContinuityDecision, WindowContinuityVerdict,
 };
 use sidereon_core::DigestProvenance;
 use sidereon_core::Error as CoreError;
@@ -133,6 +134,149 @@ fn parse_sat(token: &str) -> PyResult<GnssSatelliteId> {
         .map_err(|e| PyValueError::new_err(format!("invalid satellite token {token:?}: {e}")))
 }
 
+fn continuity_options(
+    orbit_class: Option<&str>,
+    residual_tolerance_m: Option<f64>,
+) -> PyResult<ContinuityOptions> {
+    let speed_bound = match orbit_class {
+        None => None,
+        Some("meo_gnss") => Some(SpeedBound::OrbitClass(OrbitClass::MeoGnss)),
+        Some("geosynchronous") => Some(SpeedBound::OrbitClass(OrbitClass::Geosynchronous)),
+        Some("leo") => Some(SpeedBound::OrbitClass(OrbitClass::Leo)),
+        Some(other) => {
+            return Err(PyValueError::new_err(format!(
+                "unknown orbit class: {other}"
+            )))
+        }
+    };
+    Ok(ContinuityOptions {
+        speed_bound,
+        residual_tolerance_m,
+    })
+}
+
+fn continuity_defect_to_dict<'py>(
+    py: Python<'py>,
+    defect: &ContinuityDefect,
+) -> PyResult<Bound<'py, PyDict>> {
+    let entry = PyDict::new(py);
+    let (kind, from_s, to_s, magnitude, bound) = match defect {
+        ContinuityDefect::DuplicateEpoch {
+            epoch_j2000_s,
+            occurrences,
+            ..
+        } => (
+            "duplicate_epoch",
+            Some(*epoch_j2000_s),
+            Some(*epoch_j2000_s),
+            Some(*occurrences as f64),
+            None,
+        ),
+        ContinuityDefect::SingleSampleSeries { .. } => {
+            ("single_sample_series", None, None, None, None)
+        }
+        ContinuityDefect::SpeedBound {
+            from_j2000_s,
+            to_j2000_s,
+            implied_speed_m_s,
+            bound_m_s,
+            ..
+        } => (
+            "speed_bound",
+            Some(*from_j2000_s),
+            Some(*to_j2000_s),
+            Some(*implied_speed_m_s),
+            Some(*bound_m_s),
+        ),
+        ContinuityDefect::HoldOutResidual {
+            preceding_j2000_s,
+            epoch_j2000_s,
+            residual_m,
+            tolerance_m,
+            ..
+        } => (
+            "hold_out_residual",
+            Some(*preceding_j2000_s),
+            Some(*epoch_j2000_s),
+            Some(*residual_m),
+            Some(*tolerance_m),
+        ),
+    };
+    entry.set_item("kind", kind)?;
+    entry.set_item("satellite", defect.satellite().to_string())?;
+    entry.set_item("from_j2000_s", from_s)?;
+    entry.set_item("to_j2000_s", to_s)?;
+    entry.set_item("magnitude", magnitude)?;
+    entry.set_item("bound", bound)?;
+    Ok(entry)
+}
+
+fn continuity_defects_to_list<'py, 'a>(
+    py: Python<'py>,
+    defects: impl IntoIterator<Item = &'a ContinuityDefect>,
+) -> PyResult<Bound<'py, PyList>> {
+    let out = PyList::empty(py);
+    for defect in defects {
+        out.append(continuity_defect_to_dict(py, defect)?)?;
+    }
+    Ok(out)
+}
+
+fn continuity_violation_to_dict<'py>(
+    py: Python<'py>,
+    violation: &MergeContinuityViolation,
+) -> PyResult<Bound<'py, PyDict>> {
+    let entry = PyDict::new(py);
+    entry.set_item("defect", continuity_defect_to_dict(py, &violation.defect)?)?;
+    entry.set_item("from_sources", &violation.from_sources)?;
+    entry.set_item("to_sources", &violation.to_sources)?;
+    entry.set_item("crosses_contributors", violation.crosses_contributors)?;
+    Ok(entry)
+}
+
+fn continuity_violations_to_list<'py, 'a>(
+    py: Python<'py>,
+    violations: impl IntoIterator<Item = &'a MergeContinuityViolation>,
+) -> PyResult<Bound<'py, PyList>> {
+    let out = PyList::empty(py);
+    for violation in violations {
+        out.append(continuity_violation_to_dict(py, violation)?)?;
+    }
+    Ok(out)
+}
+
+pub(crate) fn continuity_verdict_to_py(
+    py: Python<'_>,
+    verdict: WindowContinuityVerdict<'_>,
+) -> PyResult<PyObject> {
+    let out = PyDict::new(py);
+    out.set_item(
+        "decision",
+        match verdict.decision {
+            WindowContinuityDecision::Accept => "accept",
+            WindowContinuityDecision::Refuse => "refuse",
+        },
+    )?;
+    out.set_item("accepted", verdict.accepted())?;
+    out.set_item(
+        "influencing_defects",
+        continuity_defects_to_list(py, verdict.influencing_defects)?,
+    )?;
+    out.set_item(
+        "influencing_splices",
+        continuity_violations_to_list(py, verdict.influencing_splices)?,
+    )?;
+    out.set_item(
+        "all_defects",
+        continuity_defects_to_list(py, verdict.all_defects)?,
+    )?;
+    out.set_item(
+        "all_splices",
+        continuity_violations_to_list(py, verdict.all_splices)?,
+    )?;
+    Ok(out.into())
+}
+
 #[pymethods]
 impl PySp3 {
     /// Number of epochs in the product.
@@ -198,78 +342,12 @@ impl PySp3 {
         orbit_class: Option<&str>,
         residual_tolerance_m: Option<f64>,
     ) -> PyResult<PyObject> {
-        let speed_bound = match orbit_class {
-            None => None,
-            Some("meo_gnss") => Some(SpeedBound::OrbitClass(OrbitClass::MeoGnss)),
-            Some("geosynchronous") => Some(SpeedBound::OrbitClass(OrbitClass::Geosynchronous)),
-            Some("leo") => Some(SpeedBound::OrbitClass(OrbitClass::Leo)),
-            Some(other) => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown orbit class: {other}"
-                )))
-            }
-        };
         let report = check_continuity(
             &self.inner.precise_ephemeris_samples(),
-            &ContinuityOptions {
-                speed_bound,
-                residual_tolerance_m,
-            },
+            &continuity_options(orbit_class, residual_tolerance_m)?,
         );
 
-        let defects = pyo3::types::PyList::empty(py);
-        for defect in &report.defects {
-            let entry = pyo3::types::PyDict::new(py);
-            let (kind, from_s, to_s, magnitude, bound) = match defect {
-                ContinuityDefect::DuplicateEpoch {
-                    epoch_j2000_s,
-                    occurrences,
-                    ..
-                } => (
-                    "duplicate_epoch",
-                    Some(*epoch_j2000_s),
-                    Some(*epoch_j2000_s),
-                    Some(*occurrences as f64),
-                    None,
-                ),
-                ContinuityDefect::SingleSampleSeries { .. } => {
-                    ("single_sample_series", None, None, None, None)
-                }
-                ContinuityDefect::SpeedBound {
-                    from_j2000_s,
-                    to_j2000_s,
-                    implied_speed_m_s,
-                    bound_m_s,
-                    ..
-                } => (
-                    "speed_bound",
-                    Some(*from_j2000_s),
-                    Some(*to_j2000_s),
-                    Some(*implied_speed_m_s),
-                    Some(*bound_m_s),
-                ),
-                ContinuityDefect::HoldOutResidual {
-                    preceding_j2000_s,
-                    epoch_j2000_s,
-                    residual_m,
-                    tolerance_m,
-                    ..
-                } => (
-                    "hold_out_residual",
-                    Some(*preceding_j2000_s),
-                    Some(*epoch_j2000_s),
-                    Some(*residual_m),
-                    Some(*tolerance_m),
-                ),
-            };
-            entry.set_item("kind", kind)?;
-            entry.set_item("satellite", defect.satellite().to_string())?;
-            entry.set_item("from_j2000_s", from_s)?;
-            entry.set_item("to_j2000_s", to_s)?;
-            entry.set_item("magnitude", magnitude)?;
-            entry.set_item("bound", bound)?;
-            defects.append(entry)?;
-        }
+        let defects = continuity_defects_to_list(py, &report.defects)?;
 
         let out = pyo3::types::PyDict::new(py);
         out.set_item("attested", report.attested())?;
@@ -278,6 +356,45 @@ impl PySp3 {
         out.set_item("residuals_checked", report.residuals_checked)?;
         out.set_item("residuals_skipped", report.residuals_skipped)?;
         Ok(out.into())
+    }
+
+    /// Time reach of the SP3 position interpolator before and after a query.
+    ///
+    /// The values are derived by the core from this product's declared epoch
+    /// interval and interpolation-node count; callers do not supply a stencil
+    /// duration.
+    fn stencil_extent(&self) -> PyResult<(f64, f64)> {
+        let stencil = StencilExtent::for_sp3(&self.inner)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok((stencil.before_s(), stencil.after_s()))
+    }
+
+    /// Decide whether product-wide continuity findings can influence an
+    /// inclusive evaluation window through this product's interpolation
+    /// stencil.
+    #[pyo3(signature = (
+        from_j2000_s,
+        through_j2000_s,
+        orbit_class = "meo_gnss",
+        residual_tolerance_m = Some(1.0),
+    ))]
+    fn continuity_verdict(
+        &self,
+        py: Python<'_>,
+        from_j2000_s: f64,
+        through_j2000_s: f64,
+        orbit_class: Option<&str>,
+        residual_tolerance_m: Option<f64>,
+    ) -> PyResult<PyObject> {
+        let window = EpochWindow::new(from_j2000_s, through_j2000_s)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let stencil = StencilExtent::for_sp3(&self.inner)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let report = check_continuity(
+            &self.inner.precise_ephemeris_samples(),
+            &continuity_options(orbit_class, residual_tolerance_m)?,
+        );
+        continuity_verdict_to_py(py, report.verdict_for_window(window, stencil))
     }
 
     #[getter]
