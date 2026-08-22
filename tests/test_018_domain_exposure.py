@@ -160,7 +160,10 @@ def test_scenario_simulator_deterministic_bytes_and_core_term_bits():
 
     assert bytes_a == bytes_b
     assert output.as_json_bytes() == bytes_a
-    assert len(bytes_a) == 3998
+    # The output embeds the engine version string, so the total length moves
+    # with the version's width; pin the version-independent remainder instead
+    # of a literal that breaks on every release whose version changes width.
+    assert len(bytes_a) == 3992 + len(sidereon.__version__)
     assert bytes_a.startswith(b'{"schema_version":1,"engine_version":"')
     assert output.schema_version == 1
     assert re.fullmatch(r"\d+\.\d+\.\d+:scenario-observables-v1", output.engine_version)
