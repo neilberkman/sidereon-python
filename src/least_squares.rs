@@ -39,7 +39,9 @@ use crate::SolveError;
 /// [`SolveError`].
 fn to_trf_err(err: TrfError) -> PyErr {
     match err {
-        TrfError::Backend(_) | TrfError::InvalidSvdOutput(_) => SolveError::new_err(err.to_string()),
+        TrfError::Backend(_) | TrfError::InvalidSvdOutput(_) => {
+            SolveError::new_err(err.to_string())
+        }
         other => PyValueError::new_err(other.to_string()),
     }
 }
