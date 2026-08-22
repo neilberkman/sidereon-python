@@ -29,10 +29,10 @@ def main() -> None:
         name: cargo["dependencies"][name] for name in ("sidereon", "sidereon-core")
     }
     trust_region_version = cargo["dependencies"]["trust-region-least-squares"]
-    if trust_region_version != "0.9.2":
+    if trust_region_version != "0.10.0":
         raise SystemExit(
             "trust-region-least-squares dependency must be the compliant "
-            f"0.9.2 patch, found {trust_region_version!r}"
+            f"0.10.0 release, found {trust_region_version!r}"
         )
 
     # What this guard is for: the engine must come from the registry at a
