@@ -10,9 +10,10 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
 use sidereon_core::source_localization::{
-    chan_ho_initial_guess as core_chan_ho_initial_guess, locate_source as core_locate_source,
-    source_crlb as core_source_crlb, source_dop as core_source_dop, Loss, Sensor, SourceCovariance,
-    SourceCrlb, SourceInitialGuess, SourceLocalizationError as CoreSourceLocalizationError,
+    closed_form_initial_guess as core_closed_form_initial_guess,
+    locate_source_with as core_locate_source, source_crlb as core_source_crlb,
+    source_dop as core_source_dop, Loss, Sensor, SourceCovariance, SourceCrlb, SourceInitialGuess,
+    SourceLocalizationError as CoreSourceLocalizationError, SourceLocateConfig,
     SourceLocateOptions, SourceResidual, SourceSensorInfluence, SourceSolution, SourceSolveMode,
 };
 
@@ -200,12 +201,14 @@ impl PySourceSolveMode {
 #[pyclass(module = "sidereon._sidereon", name = "SourceLocateOptions")]
 #[derive(Clone)]
 pub struct PySourceLocateOptions {
-    inner: SourceLocateOptions,
+    inner: SourceLocateConfig,
 }
 
 impl From<SourceLocateOptions> for PySourceLocateOptions {
     fn from(inner: SourceLocateOptions) -> Self {
-        Self { inner }
+        Self {
+            inner: inner.into(),
+        }
     }
 }
 
@@ -215,6 +218,8 @@ impl PySourceLocateOptions {
     ///
     /// `timing_sigma_s` and `f_scale_s` are seconds. The optional tolerances and
     /// `max_nfev` are passed to the trust-region least-squares solver.
+    /// `include_influence` controls whether per-sensor leave-one-out diagnostics
+    /// are computed.
     #[new]
     #[pyo3(signature = (
         mode=None,
@@ -225,6 +230,7 @@ impl PySourceLocateOptions {
         xtol=None,
         gtol=None,
         max_nfev=None,
+        include_influence=true,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -237,80 +243,86 @@ impl PySourceLocateOptions {
         xtol: Option<f64>,
         gtol: Option<f64>,
         max_nfev: Option<usize>,
+        include_influence: bool,
     ) -> Self {
         let mode = mode
             .as_ref()
             .map(|mode| mode.borrow(py).inner)
             .unwrap_or(SourceSolveMode::Toa);
-        Self {
-            inner: SourceLocateOptions {
-                mode,
-                timing_sigma_s,
-                loss: loss_from_py(loss),
-                f_scale_s,
-                ftol,
-                xtol,
-                gtol,
-                max_nfev,
-            },
-        }
+        let mut inner = SourceLocateConfig::default();
+        inner.options.mode = mode;
+        inner.options.timing_sigma_s = timing_sigma_s;
+        inner.options.loss = loss_from_py(loss);
+        inner.options.f_scale_s = f_scale_s;
+        inner.options.ftol = ftol;
+        inner.options.xtol = xtol;
+        inner.options.gtol = gtol;
+        inner.options.max_nfev = max_nfev;
+        inner.include_influence = include_influence;
+        Self { inner }
     }
 
     /// ToA or TDOA residual mode.
     #[getter]
     fn mode(&self) -> PySourceSolveMode {
-        self.inner.mode.into()
+        self.inner.options.mode.into()
     }
 
     /// Timing standard deviation used for covariance and influence scores.
     #[getter]
     fn timing_sigma_s(&self) -> f64 {
-        self.inner.timing_sigma_s
+        self.inner.options.timing_sigma_s
     }
 
     /// Robust loss function for the trust-region solver.
     #[getter]
     fn loss(&self) -> PyLoss {
-        loss_to_py(self.inner.loss)
+        loss_to_py(self.inner.options.loss)
     }
 
     /// Robust residual scale, seconds.
     #[getter]
     fn f_scale_s(&self) -> f64 {
-        self.inner.f_scale_s
+        self.inner.options.f_scale_s
     }
 
     /// Optional function tolerance.
     #[getter]
     fn ftol(&self) -> Option<f64> {
-        self.inner.ftol
+        self.inner.options.ftol
     }
 
     /// Optional step tolerance.
     #[getter]
     fn xtol(&self) -> Option<f64> {
-        self.inner.xtol
+        self.inner.options.xtol
     }
 
     /// Optional gradient tolerance.
     #[getter]
     fn gtol(&self) -> Option<f64> {
-        self.inner.gtol
+        self.inner.options.gtol
     }
 
     /// Optional maximum residual evaluations.
     #[getter]
     fn max_nfev(&self) -> Option<usize> {
-        self.inner.max_nfev
+        self.inner.options.max_nfev
+    }
+
+    /// Whether per-sensor leave-one-out influence diagnostics are computed.
+    #[getter]
+    fn include_influence(&self) -> bool {
+        self.inner.include_influence
     }
 
     fn __repr__(&self) -> String {
         format!(
             "SourceLocateOptions(mode={}, timing_sigma_s={}, loss={}, f_scale_s={})",
             self.mode().__repr__(),
-            self.inner.timing_sigma_s,
-            loss_label(self.inner.loss),
-            self.inner.f_scale_s
+            self.inner.options.timing_sigma_s,
+            loss_label(self.inner.options.loss),
+            self.inner.options.f_scale_s
         )
     }
 }
@@ -448,7 +460,7 @@ impl PySourceSensorInfluence {
         self.inner.loss_weight
     }
 
-    /// Normalized influence score.
+    /// `max(|residual_s|, |leave_one_out_residual_s|) / timing_sigma_s`.
     #[getter]
     fn score(&self) -> f64 {
         self.inner.score
@@ -687,7 +699,7 @@ fn locate_source(
 /// Compute the closed-form seed used by `locate_source`.
 #[pyfunction]
 #[pyo3(signature = (sensors, arrival_times_s, propagation_speed_m_s, mode=None))]
-fn chan_ho_initial_guess(
+fn closed_form_initial_guess(
     py: Python<'_>,
     sensors: Vec<Py<PySensor>>,
     arrival_times_s: PyReadonlyArray1<'_, f64>,
@@ -703,7 +715,7 @@ fn chan_ho_initial_guess(
         .as_ref()
         .map(|mode| mode.borrow(py).inner)
         .unwrap_or(SourceSolveMode::Toa);
-    core_chan_ho_initial_guess(&sensors, &arrival_times_s, propagation_speed_m_s, mode)
+    core_closed_form_initial_guess(&sensors, &arrival_times_s, propagation_speed_m_s, mode)
         .map(Into::into)
         .map_err(source_error)
 }
@@ -761,7 +773,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySourceSolution>()?;
     m.add_class::<PySourceCrlb>()?;
     m.add_function(wrap_pyfunction!(locate_source, m)?)?;
-    m.add_function(wrap_pyfunction!(chan_ho_initial_guess, m)?)?;
+    m.add_function(wrap_pyfunction!(closed_form_initial_guess, m)?)?;
     m.add_function(wrap_pyfunction!(source_dop, m)?)?;
     m.add_function(wrap_pyfunction!(source_crlb, m)?)?;
     Ok(())

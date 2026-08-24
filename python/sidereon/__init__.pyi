@@ -10702,6 +10702,7 @@ class SourceLocateOptions:
         xtol: float | None = ...,
         gtol: float | None = ...,
         max_nfev: int | None = ...,
+        include_influence: bool = ...,
     ) -> None: ...
     @property
     def mode(self) -> SourceSolveMode: ...
@@ -10719,6 +10720,8 @@ class SourceLocateOptions:
     def gtol(self) -> float | None: ...
     @property
     def max_nfev(self) -> int | None: ...
+    @property
+    def include_influence(self) -> bool: ...
     def __repr__(self) -> str: ...
 
 class SourceInitialGuess:
@@ -10759,7 +10762,9 @@ class SourceSensorInfluence:
     @property
     def loss_weight(self) -> float: ...
     @property
-    def score(self) -> float: ...
+    def score(self) -> float:
+        """``max(abs(residual_s), abs(leave_one_out_residual_s)) / timing_sigma_s``."""
+        ...
     def __repr__(self) -> str: ...
 
 class SourceCovariance:
@@ -10823,12 +10828,28 @@ def locate_source(
     propagation_speed_m_s: float,
     options: SourceLocateOptions | None = ...,
 ) -> SourceSolution: ...
+def closed_form_initial_guess(
+    sensors: Sequence[Sensor],
+    arrival_times_s: npt.NDArray[np.float64],
+    propagation_speed_m_s: float,
+    mode: SourceSolveMode | None = ...,
+) -> SourceInitialGuess:
+    """Compute the closed-form source-localization seed."""
+    ...
+
 def chan_ho_initial_guess(
     sensors: Sequence[Sensor],
     arrival_times_s: npt.NDArray[np.float64],
     propagation_speed_m_s: float,
     mode: SourceSolveMode | None = ...,
-) -> SourceInitialGuess: ...
+) -> SourceInitialGuess:
+    """Compute the closed-form source-localization seed.
+
+    .. deprecated:: 1.1.0
+       Use :func:`closed_form_initial_guess` instead.
+    """
+    ...
+
 def source_dop(
     sensors: Sequence[Sensor],
     source_position_m: npt.NDArray[np.float64],

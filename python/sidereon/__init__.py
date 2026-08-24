@@ -67,6 +67,8 @@ malformed input, and :class:`SolveError` for a solve or propagation failure.
 Invalid arguments raise the built-in :class:`TypeError` / :class:`ValueError`.
 """
 
+import warnings
+
 from ._sidereon import (
     SidereonError,
     ParseError,
@@ -1037,7 +1039,7 @@ from ._sidereon import (
     SourceSolution,
     SourceCrlb,
     locate_source,
-    chan_ho_initial_guess,
+    closed_form_initial_guess,
     source_dop,
     source_crlb,
     # 0.18 domain exposure: GNSS/INS fusion
@@ -2074,6 +2076,7 @@ __all__ = [
     "SourceSolution",
     "SourceCrlb",
     "locate_source",
+    "closed_form_initial_guess",
     "chan_ho_initial_guess",
     "source_dop",
     "source_crlb",
@@ -2250,6 +2253,23 @@ from ._sidereon import (
     decode_ssr,
     ssr_store_from_rtcm,
 )
+
+
+def chan_ho_initial_guess(sensors, arrival_times_s, propagation_speed_m_s, mode=None):
+    """Compute the closed-form source-localization seed.
+
+    .. deprecated:: 1.1.0
+       Use :func:`closed_form_initial_guess` instead.
+    """
+    warnings.warn(
+        "chan_ho_initial_guess is deprecated; use closed_form_initial_guess instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return closed_form_initial_guess(
+        sensors, arrival_times_s, propagation_speed_m_s, mode
+    )
+
 
 SourceGeometryQuality = GeometryQuality
 

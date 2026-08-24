@@ -184,7 +184,7 @@ def test_source_localization_known_vectors():
     speed = 343.0
     times_3d = _arrivals(sensors_3d, source_3d, origin, speed)
 
-    seed = sidereon.chan_ho_initial_guess(sensors_3d, times_3d, speed)
+    seed = sidereon.closed_form_initial_guess(sensors_3d, times_3d, speed)
     assert np.allclose(seed.position_m, source_3d, atol=1.0e-8)
     assert seed.origin_time_s == pytest.approx(origin, abs=1.0e-10)
     assert seed.residual_rms_s < 1.0e-11
@@ -195,6 +195,7 @@ def test_source_localization_known_vectors():
         speed,
         sidereon.SourceLocateOptions(timing_sigma_s=0.001),
     )
+    assert sidereon.SourceLocateOptions().include_influence is True
     assert np.allclose(solution.position_m, source_3d, atol=1.0e-7)
     assert solution.origin_time_s == pytest.approx(origin, abs=1.0e-10)
     assert solution.covariance is not None
@@ -205,6 +206,26 @@ def test_source_localization_known_vectors():
     assert solution.geometry_quality.redundancy == 1
     assert solution.geometry_quality.raim_checkable is True
 
+    without_influence_options = sidereon.SourceLocateOptions(
+        timing_sigma_s=0.001, include_influence=False
+    )
+    assert without_influence_options.include_influence is False
+    without_influence = sidereon.locate_source(
+        sensors_3d,
+        times_3d,
+        speed,
+        without_influence_options,
+    )
+    assert without_influence.per_sensor_influence == []
+    assert [float.hex(value) for value in without_influence.position_m] == [
+        float.hex(value) for value in solution.position_m
+    ]
+    assert without_influence.origin_time_s is not None
+    assert solution.origin_time_s is not None
+    assert float.hex(without_influence.origin_time_s) == float.hex(
+        solution.origin_time_s
+    )
+
     sensors_2d = [
         sidereon.Sensor([0.0, 0.0]),
         sidereon.Sensor([1000.0, 0.0]),
@@ -212,7 +233,18 @@ def test_source_localization_known_vectors():
         sidereon.Sensor([900.0, 900.0]),
     ]
     source_2d = np.asarray([300.0, 260.0], dtype=np.float64)
-    tdoa_times = _arrivals(sensors_2d, source_2d, 4.0, 340.0)
+    origin_2d = 4.0
+    tdoa_times = _arrivals(sensors_2d, source_2d, origin_2d, 340.0)
+    seed_2d = sidereon.closed_form_initial_guess(sensors_2d, tdoa_times, 340.0)
+    assert np.allclose(seed_2d.position_m, source_2d, atol=1.0e-8)
+    assert seed_2d.origin_time_s == pytest.approx(origin_2d, abs=1.0e-10)
+
+    with pytest.warns(DeprecationWarning):
+        deprecated_seed = sidereon.chan_ho_initial_guess(sensors_2d, tdoa_times, 340.0)
+    assert np.array_equal(deprecated_seed.position_m, seed_2d.position_m)
+    assert deprecated_seed.origin_time_s == seed_2d.origin_time_s
+    assert deprecated_seed.residual_rms_s == seed_2d.residual_rms_s
+
     tdoa_solution = sidereon.locate_source(
         sensors_2d,
         tdoa_times,

@@ -4,6 +4,20 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Source localization now exposes `SourceLocateOptions(include_influence=...)`;
+  setting it to `False` skips per-sensor leave-one-out solves and returns an
+  empty influence list while preserving the primary solution exactly.
+- `closed_form_initial_guess()` names the source-localization seed accurately.
+  `chan_ho_initial_guess()` remains available as a deprecated Python alias.
+
+### Changed
+
+- `SourceSensorInfluence.score` is now the larger absolute value of the full
+  and leave-one-out residuals divided by the timing sigma; robust downweighting
+  is reported separately by `loss_weight`.
+
 ## [1.0.1] - 2026-08-22
 
 ### Changed
