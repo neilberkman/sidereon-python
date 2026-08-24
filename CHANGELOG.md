@@ -4,6 +4,8 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-24
+
 ### Added
 
 - Source localization now exposes `SourceLocateOptions(include_influence=...)`;
