@@ -4,6 +4,14 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-26
+
+### Changed
+
+- Engine update: sidereon 1.1.1 / sidereon-core 1.1.1, the coordination
+  release restoring the shared release number across the language interfaces.
+  No numerical, algorithmic, or API changes.
+
 ## [1.1.0] - 2026-08-24
 
 ### Added
