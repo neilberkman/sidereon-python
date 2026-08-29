@@ -4,6 +4,14 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-29
+
+### Changed
+
+- Engine update: sidereon 1.3.0 / sidereon-core 1.3.0. This release keeps the
+  shared release number across the language interfaces, which now include a Go
+  interface. No interface API changes.
+
 ## [1.2.0] - 2026-08-28
 
 ### Changed
