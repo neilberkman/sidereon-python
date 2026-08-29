@@ -4,6 +4,14 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-28
+
+### Changed
+
+- Engine update: sidereon 1.2.0 / sidereon-core 1.2.0, which corrects lenient
+  RINEX 4 CNAV decoding and RTKLIB SBAS wire-form preservation. No interface
+  API changes.
+
 ## [1.1.1] - 2026-08-26
 
 ### Changed

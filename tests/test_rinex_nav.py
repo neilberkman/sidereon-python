@@ -258,23 +258,28 @@ def test_rinex4_lenient_parse_lint_and_message_preference_are_exposed():
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
 
+    # Each satellite contributes its legacy record plus its CNAV-family records;
+    # nothing in this fixture is skipped.
     parsed = sidereon.parse_rinex_nav_lenient(text)
-    assert parsed.record_count == 3
-    assert parsed.skipped_count == 4
+    assert parsed.record_count == 7
+    assert parsed.skipped_count == 0
     assert [(record.satellite, record.message) for record in parsed.records] == [
         ("G01", sidereon.NavMessage.GPS_LNAV),
+        ("G01", sidereon.NavMessage.GPS_CNAV),
         ("G03", sidereon.NavMessage.GPS_LNAV),
+        ("G03", sidereon.NavMessage.GPS_CNAV),
         ("J02", sidereon.NavMessage.QZSS_LNAV),
+        ("J02", sidereon.NavMessage.QZSS_CNAV),
+        ("J02", sidereon.NavMessage.QZSS_CNAV2),
     ]
-    assert {skipped.satellite for skipped in parsed.skipped} == {"G01", "G03", "J02"}
+    assert parsed.skipped == []
 
     report = sidereon.lint_rinex_nav(text)
-    assert not report.is_clean
-    assert report.count(sidereon.RinexLintSeverity.ERROR) == 4
-    dropped = [
+    assert report.is_clean
+    assert report.count(sidereon.RinexLintSeverity.ERROR) == 0
+    assert [
         finding for finding in report.findings if finding.kind == "NavDroppedBlock"
-    ]
-    assert [finding.code for finding in dropped] == ["NAV-B01"] * 4
+    ] == []
 
     store = sidereon.parse_rinex_nav(text)
     assert store.message_preference == sidereon.NavMessagePreference.PREFER_LEGACY
