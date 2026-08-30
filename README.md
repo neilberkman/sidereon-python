@@ -236,6 +236,7 @@ the same everywhere:
 
 - [sidereon](https://github.com/neilberkman/sidereon): the Rust core and engine
 - [sidereon-c](https://github.com/neilberkman/sidereon-c): C interface
+- [sidereon-go](https://github.com/neilberkman/sidereon-go): Go interface
 - [sidereon-ex](https://github.com/neilberkman/sidereon-ex): Elixir interface
 - [sidereon-wasm](https://github.com/neilberkman/sidereon-wasm): WebAssembly interface
 
