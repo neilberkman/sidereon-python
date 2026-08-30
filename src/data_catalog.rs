@@ -531,16 +531,26 @@ fn data_publication_listing_urls(
     .map_err(to_data_err)
 }
 
+/// Archive-listing bodies are unbounded caller input: AIUB's public whole-tree
+/// CSV is ~34 MiB over ~426k rows. The parse borrows only the caller's string
+/// and returns plain Rust data, so it runs inside `Python::allow_threads` and
+/// holds no interpreter lock while it works. Without that, a large listing
+/// would stall every other thread in the process for the whole parse.
 #[pyfunction]
-fn data_parse_archive_listing(body: &str) -> PyResult<Vec<(String, Option<String>)>> {
-    core::parse_archive_listing(body)
-        .map(|objects| {
-            objects
-                .into_iter()
-                .map(|object| (object.path, object.observed_at))
-                .collect()
-        })
-        .map_err(to_data_err)
+fn data_parse_archive_listing(
+    py: Python<'_>,
+    body: &str,
+) -> PyResult<Vec<(String, Option<String>)>> {
+    py.allow_threads(|| {
+        core::parse_archive_listing(body)
+            .map(|objects| {
+                objects
+                    .into_iter()
+                    .map(|object| (object.path, object.observed_at))
+                    .collect()
+            })
+            .map_err(to_data_err)
+    })
 }
 
 type PublishedProductTuple = (i32, u8, u8, String, String, Option<String>);
