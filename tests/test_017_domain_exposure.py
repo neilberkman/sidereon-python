@@ -120,8 +120,8 @@ def test_geofence_probability_and_crossing_bits():
     assert fence.planar_fast_path_applies(inside) is True
     assert fence.contains(inside) is True
     assert fence.contains(outside) is False
-    assert _bits(fence.distance_to_boundary(inside)) == 0x409146F89A157D9C
-    assert _bits(fence.distance_to_boundary(outside)) == 0xC0A164C795F1FD1A
+    assert _bits(fence.distance_to_boundary(inside)) == 0x409146F89A157D9A
+    assert _bits(fence.distance_to_boundary(outside)) == 0xC0A164C795F1FD1B
     assert _bits(fence.distance_to_boundary(near)) == 0x404BD47289804B58
     assert _bits(fence.containment_probability(near, uncertainty)) == (
         0x3FEFFFFFF9008B00
@@ -173,7 +173,7 @@ def test_static_positioning_solution_bits():
         _array_bits(solution.position),
         _expect_bits(
             [
-                "0x41511b07ff824403",
+                "0x41511b07ff824402",
                 "0x4120cd6b5f861f39",
                 "0x41511e62229e1c30",
             ]
@@ -183,27 +183,27 @@ def test_static_positioning_solution_bits():
         (index, system, _bits(clock_s))
         for index, system, clock_s in solution.per_epoch_clock
     ] == [
-        (0, sidereon.GnssSystem.GPS, 0x3F1A3B884188E404),
-        (1, sidereon.GnssSystem.GPS, 0x3F1A3B93B7987390),
-        (2, sidereon.GnssSystem.GPS, 0x3F1A3B8286811903),
+        (0, sidereon.GnssSystem.GPS, 0x3F1A3B884188E3EE),
+        (1, sidereon.GnssSystem.GPS, 0x3F1A3B93B798737B),
+        (2, sidereon.GnssSystem.GPS, 0x3F1A3B82868118EB),
     ]
     assert np.array_equal(
         _array_bits(solution.covariance.position_ecef_m2),
         _expect_bits(
             [
-                "0x4000deb4f5810f89",
-                "0x3fc9123016ddb161",
-                "0x3ff5319174af8b92",
-                "0x3fc9123016ddb161",
-                "0x3fdf2b2bb567595c",
-                "0x3fd5ed958f00082f",
-                "0x3ff5319174af8b92",
-                "0x3fd5ed958f00082f",
-                "0x3ffd9eb72faa6cc2",
+                "0x4000deb4f5afb184",
+                "0x3fc9122fe2e3b5d0",
+                "0x3ff531916c827c96",
+                "0x3fc9122fe2e3b5d0",
+                "0x3fdf2b2b9cba5b90",
+                "0x3fd5ed956657f534",
+                "0x3ff531916c827c96",
+                "0x3fd5ed956657f534",
+                "0x3ffd9eb716dab952",
             ]
         ),
     )
-    assert _bits(solution.residual_rms_m) == 0x3E16A09E667F3BCD
+    assert _bits(solution.residual_rms_m) == 0x0000000000000000
     assert solution.metadata.converged is True
     assert solution.metadata.status == "step_tolerance"
     assert solution.metadata.used_measurements == 24

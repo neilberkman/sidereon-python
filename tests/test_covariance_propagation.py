@@ -35,12 +35,13 @@ def test_covariance_propagation_and_interpolation_are_pinned():
         rtol=0.0,
         atol=5e-9,
     )
+    covariance_diag = np.diag(eph.nodes[-1].covariance)
     np.testing.assert_allclose(
-        np.diag(eph.nodes[-1].covariance),
+        covariance_diag,
         np.array(
             [
                 2.48985214e-06,
-                4.83113781e-06,
+                4.831137920730805e-06,
                 7.24575067e-06,
                 1.03430613e-10,
                 1.96788387e-10,
@@ -50,6 +51,7 @@ def test_covariance_propagation_and_interpolation_are_pinned():
         rtol=0.0,
         atol=5e-14,
     )
+    assert float(covariance_diag[1]).hex() == "0x1.44365146e509ep-18"
     np.testing.assert_allclose(eph.covariance_at(60.0), eph.nodes[1].covariance)
 
 

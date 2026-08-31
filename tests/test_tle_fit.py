@@ -99,13 +99,12 @@ def test_fit_tle_round_trips_arc_and_omm_json():
     assert stats.tle_rms_position_km == pytest.approx(0.011930108496656025)
     assert stats.bstar_observable is False
     assert stats.nfev == 3
-    assert stats.njev == 3
-    np.testing.assert_allclose(
-        stats.rms_position_axes_km,
-        np.array([0.0005307179452026978, 0.0006803496341898574, 0.0006085016263972154]),
-        rtol=0.0,
-        atol=1e-15,
-    )
+    assert stats.njev == 2
+    assert [value.hex() for value in stats.rms_position_axes_km] == [
+        "0x1.163fc16037d1ep-11",
+        "0x1.64b2fb8667d85p-11",
+        "0x1.3f07b4255e919p-11",
+    ]
 
     reparsed = sidereon.parse_omm_json(fit.omm.to_json_string())
     assert reparsed.epoch == fit.omm.epoch

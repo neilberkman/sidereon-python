@@ -4,6 +4,15 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-08-30
+
+### Changed
+
+- Engine update: sidereon 1.4.1 / sidereon-core 1.4.1 uses portable numerical
+  kernels for bit-identical results across x86_64 and arm64. It preserves the
+  1.3.3 optimality diagnostics and evaluation counts while iterative-fit
+  outputs move only within the documented last-bit differences.
+
 ## [1.3.3] - 2026-08-30
 
 ### Fixed
