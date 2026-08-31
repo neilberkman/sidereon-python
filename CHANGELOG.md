@@ -4,6 +4,20 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-08-30
+
+### Fixed
+
+- `parse_archive_listing` no longer holds the interpreter lock while it works,
+  so other threads keep running during a large parse. Against the previous
+  engine a 400k-row body held the lock for ~183 s.
+
+### Changed
+
+- Engine update: sidereon 1.3.3 / sidereon-core 1.3.3. Archive-listing parsing
+  is no longer quadratic (154 s to 0.23 s on AIUB's ~426k-row listing), and
+  transcendental math is bit-identical across x86_64 and arm64.
+
 ## [1.3.1] - 2026-08-29
 
 ### Changed

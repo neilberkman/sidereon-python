@@ -173,9 +173,9 @@ def test_static_positioning_solution_bits():
         _array_bits(solution.position),
         _expect_bits(
             [
-                "0x41511b07ff824402",
-                "0x4120cd6b5f861f31",
-                "0x41511e62229e1c2c",
+                "0x41511b07ff824403",
+                "0x4120cd6b5f861f39",
+                "0x41511e62229e1c30",
             ]
         ),
     )
@@ -183,27 +183,27 @@ def test_static_positioning_solution_bits():
         (index, system, _bits(clock_s))
         for index, system, clock_s in solution.per_epoch_clock
     ] == [
-        (0, sidereon.GnssSystem.GPS, 0x3F1A3B884188E523),
-        (1, sidereon.GnssSystem.GPS, 0x3F1A3B93B79873AE),
-        (2, sidereon.GnssSystem.GPS, 0x3F1A3B8286811900),
+        (0, sidereon.GnssSystem.GPS, 0x3F1A3B884188E404),
+        (1, sidereon.GnssSystem.GPS, 0x3F1A3B93B7987390),
+        (2, sidereon.GnssSystem.GPS, 0x3F1A3B8286811903),
     ]
     assert np.array_equal(
         _array_bits(solution.covariance.position_ecef_m2),
         _expect_bits(
             [
-                "0x4000deb4f6cc217c",
-                "0x3fc9122ed5bf3530",
-                "0x3ff531913bfceaa7",
-                "0x3fc9122ed5bf3530",
-                "0x3fdf2b2afe84fc1d",
-                "0x3fd5ed92d1a77e9d",
-                "0x3ff531913bfceaa7",
-                "0x3fd5ed92d1a77e9d",
-                "0x3ffd9eb64f996920",
+                "0x4000deb4f5810f89",
+                "0x3fc9123016ddb161",
+                "0x3ff5319174af8b92",
+                "0x3fc9123016ddb161",
+                "0x3fdf2b2bb567595c",
+                "0x3fd5ed958f00082f",
+                "0x3ff5319174af8b92",
+                "0x3fd5ed958f00082f",
+                "0x3ffd9eb72faa6cc2",
             ]
         ),
     )
-    assert _bits(solution.residual_rms_m) == 0x3E23988E1409212E
+    assert _bits(solution.residual_rms_m) == 0x3E16A09E667F3BCD
     assert solution.metadata.converged is True
     assert solution.metadata.status == "step_tolerance"
     assert solution.metadata.used_measurements == 24
@@ -344,18 +344,24 @@ def test_velocity_covariance_and_spp_doppler_bits():
         doppler_observations,
     )
     assert combined.velocity_error is None
-    assert _bits(combined.receiver.rx_clock_drift_s_s) == 0x3B29AEA08CA6BA9C
+    # The receiver is stationary and no clock drift is injected, so the true
+    # drift is zero. The portable math kernels return exactly 0.0 here; the
+    # previous pin (1.06e-23 s/s) was cancellation residue, not a value.
+    assert _bits(combined.receiver.rx_clock_drift_s_s) == 0x0000000000000000
+    # The receiver is stationary, so the true velocity is zero. The portable
+    # math kernels return exactly 0.0 on every axis; the previous pins
+    # (~1e-14 m/s) were cancellation noise from the host libm.
     assert np.array_equal(
         _array_bits(combined.velocity.velocity_m_s),
         _expect_bits(
             [
-                "0xbd19c30b81d188ea",
-                "0xbd12da0aa87eaef9",
-                "0x3d1e8af83acabada",
+                "0x0000000000000000",
+                "0x0000000000000000",
+                "0x0000000000000000",
             ]
         ),
     )
-    assert _bits(combined.velocity.clock_drift_s_s) == 0x3B29AEA08CA6BA9C
+    assert _bits(combined.velocity.clock_drift_s_s) == 0x0000000000000000
     assert combined.velocity.used_sats == receiver.used_sats
 
 

@@ -102,7 +102,7 @@ def test_fit_tle_round_trips_arc_and_omm_json():
     assert stats.njev == 3
     np.testing.assert_allclose(
         stats.rms_position_axes_km,
-        np.array([0.0005307179320492977, 0.0006803496404922119, 0.0006085016181755988]),
+        np.array([0.0005307179452026978, 0.0006803496341898574, 0.0006085016263972154]),
         rtol=0.0,
         atol=1e-15,
     )

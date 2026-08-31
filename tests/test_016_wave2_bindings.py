@@ -146,9 +146,9 @@ def test_016_ecef_sp3_precise_orbit_fit_variants_smoke():
     stats = report.ledger.per_sat[0][1]
     assert report.fit_count == 1
     assert fit.satellite == "G01"
-    # Re-pinned after the core parsed-epoch-axis hardening.
-    assert fit.fit_rms_3d_m == pytest.approx(139.667980698503, abs=1.0e-9)
-    assert stats.rms_3d_m == pytest.approx(139.667980698503, abs=1.0e-9)
+    # Re-pinned after the core replaced host libm calls with portable kernels.
+    assert fit.fit_rms_3d_m == pytest.approx(139.6680521018954, abs=1.0e-9)
+    assert stats.rms_3d_m == pytest.approx(139.6680521018954, abs=1.0e-9)
     assert fit.covariance.kind == "estimated"
     assert stats.n == 11
     assert stats.low_sample_count is False
