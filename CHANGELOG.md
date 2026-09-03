@@ -4,7 +4,19 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
-## [1.4.1] - 2026-08-30
+## [2.0.0] - 2026-09-03
+
+### Changed
+
+- Engine update: sidereon 2.0.0 / sidereon-core 2.0.0.
+  - Core options and configuration structs are now marked `#[non_exhaustive]`;
+    all struct initializations in the Python binding now use explicit
+    constructor functions (`::new(...)` or `::default()`) followed by field
+    assignments to ensure forward compatibility against future field additions.
+  - Core error handling transitioned to typed error enums (including
+    `terrain::DtedTileError`, `ionex::tec_grid::TecGridError`, and
+    `astro::propagator::dense_output::DenseOutputError`), with error strings
+    preserved across the Python interface boundary.
 
 ### Changed
 

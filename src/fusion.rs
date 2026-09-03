@@ -726,11 +726,9 @@ impl PyEkfUpdateOptions {
     #[new]
     #[pyo3(signature = (innovation_gate=None))]
     fn new(innovation_gate: Option<&PyInnovationGate>) -> Self {
-        Self {
-            inner: EkfUpdateOptions {
-                innovation_gate: innovation_gate.map(PyInnovationGate::inner),
-            },
-        }
+        let mut inner = EkfUpdateOptions::default();
+        inner.innovation_gate = innovation_gate.map(PyInnovationGate::inner);
+        Self { inner }
     }
 
     /// Innovation gate options when screening is active.
@@ -761,9 +759,11 @@ impl PyUnscentedTransformOptions {
     #[new]
     #[pyo3(signature = (alpha=0.5, beta=2.0, kappa=0.0))]
     fn new(alpha: f64, beta: f64, kappa: f64) -> Self {
-        Self {
-            inner: UnscentedTransformOptions { alpha, beta, kappa },
-        }
+        let mut inner = UnscentedTransformOptions::default();
+        inner.alpha = alpha;
+        inner.beta = beta;
+        inner.kappa = kappa;
+        Self { inner }
     }
 
     /// Sigma-point spread around the mean.
@@ -807,14 +807,12 @@ impl PyUkfUpdateOptions {
         transform: Option<&PyUnscentedTransformOptions>,
         innovation_gate: Option<&PyInnovationGate>,
     ) -> Self {
-        Self {
-            inner: UkfUpdateOptions {
-                transform: transform
-                    .map(PyUnscentedTransformOptions::inner)
-                    .unwrap_or_default(),
-                innovation_gate: innovation_gate.map(PyInnovationGate::inner),
-            },
-        }
+        let mut inner = UkfUpdateOptions::default();
+        inner.transform = transform
+            .map(PyUnscentedTransformOptions::inner)
+            .unwrap_or_default();
+        inner.innovation_gate = innovation_gate.map(PyInnovationGate::inner);
+        Self { inner }
     }
 
     /// Unscented-transform parameters.
@@ -1058,11 +1056,14 @@ impl PyStationaryDetectorConfig {
         max_specific_force_norm_error_mps2: f64,
         max_body_rate_wrt_ecef_norm_rps: f64,
     ) -> PyResult<Self> {
-        let inner = StationaryDetectorConfig {
+        let mut inner = StationaryDetectorConfig::new(
             window_len,
             max_specific_force_norm_error_mps2,
             max_body_rate_wrt_ecef_norm_rps,
-        };
+        );
+        inner.window_len = window_len;
+        inner.max_specific_force_norm_error_mps2 = max_specific_force_norm_error_mps2;
+        inner.max_body_rate_wrt_ecef_norm_rps = max_body_rate_wrt_ecef_norm_rps;
         inner.validate().map_err(fusion_err)?;
         Ok(Self { inner })
     }
@@ -1108,11 +1109,14 @@ impl PyStationaryUpdateConfig {
         zero_velocity_sigma_mps: f64,
         zero_angular_rate_sigma_rps: f64,
     ) -> PyResult<Self> {
-        let inner = StationaryUpdateConfig {
-            detector: detector.inner(),
+        let mut inner = StationaryUpdateConfig::new(
+            detector.inner(),
             zero_velocity_sigma_mps,
             zero_angular_rate_sigma_rps,
-        };
+        );
+        inner.detector = detector.inner();
+        inner.zero_velocity_sigma_mps = zero_velocity_sigma_mps;
+        inner.zero_angular_rate_sigma_rps = zero_angular_rate_sigma_rps;
         inner.validate().map_err(fusion_err)?;
         Ok(Self { inner })
     }
@@ -1161,12 +1165,16 @@ impl PyNonHolonomicConstraintConfig {
         min_speed_mps: f64,
         max_body_rate_wrt_ecef_norm_rps: f64,
     ) -> PyResult<Self> {
-        let inner = NonHolonomicConstraintConfig {
+        let mut inner = NonHolonomicConstraintConfig::new(
             lateral_velocity_sigma_mps,
             vertical_velocity_sigma_mps,
             min_speed_mps,
             max_body_rate_wrt_ecef_norm_rps,
-        };
+        );
+        inner.lateral_velocity_sigma_mps = lateral_velocity_sigma_mps;
+        inner.vertical_velocity_sigma_mps = vertical_velocity_sigma_mps;
+        inner.min_speed_mps = min_speed_mps;
+        inner.max_body_rate_wrt_ecef_norm_rps = max_body_rate_wrt_ecef_norm_rps;
         inner.validate().map_err(fusion_err)?;
         Ok(Self { inner })
     }
@@ -1214,9 +1222,8 @@ impl PyVelocityMatchingConfig {
     /// Build endpoint velocity matching settings for a GNSS outage span.
     #[new]
     fn new(max_outage_duration_s: f64) -> PyResult<Self> {
-        let inner = VelocityMatchingConfig {
-            max_outage_duration_s,
-        };
+        let mut inner = VelocityMatchingConfig::new(max_outage_duration_s);
+        inner.max_outage_duration_s = max_outage_duration_s;
         inner.validate().map_err(fusion_err)?;
         Ok(Self { inner })
     }
@@ -1348,20 +1355,20 @@ impl PyLooseCouplingConfig {
         stationary_updates: Option<&PyStationaryUpdateConfig>,
         non_holonomic: Option<&PyNonHolonomicConstraintConfig>,
     ) -> PyResult<Self> {
-        let inner = LooseCouplingConfig {
-            lever_arm_body_m,
-            update_options: update_options
-                .map(PyEkfUpdateOptions::inner)
-                .unwrap_or_default(),
-            fix_status_weighting: fix_status_weighting
-                .map(PyGnssFixStatusWeighting::inner)
-                .unwrap_or_default(),
-            measurement_reweighting: measurement_reweighting
-                .map(PyIggIiiMeasurementReweighting::inner),
-            prediction_adaptation: prediction_adaptation.map(PyYangPredictionAdaptiveFactor::inner),
-            stationary_updates: stationary_updates.map(PyStationaryUpdateConfig::inner),
-            non_holonomic: non_holonomic.map(PyNonHolonomicConstraintConfig::inner),
-        };
+        let mut inner = LooseCouplingConfig::default();
+        inner.lever_arm_body_m = lever_arm_body_m;
+        inner.update_options = update_options
+            .map(PyEkfUpdateOptions::inner)
+            .unwrap_or_default();
+        inner.fix_status_weighting = fix_status_weighting
+            .map(PyGnssFixStatusWeighting::inner)
+            .unwrap_or_default();
+        inner.measurement_reweighting =
+            measurement_reweighting.map(PyIggIiiMeasurementReweighting::inner);
+        inner.prediction_adaptation =
+            prediction_adaptation.map(PyYangPredictionAdaptiveFactor::inner);
+        inner.stationary_updates = stationary_updates.map(PyStationaryUpdateConfig::inner);
+        inner.non_holonomic = non_holonomic.map(PyNonHolonomicConstraintConfig::inner);
         inner.validate().map_err(fusion_err)?;
         Ok(Self { inner })
     }
@@ -1459,18 +1466,17 @@ impl PyTightCouplingConfig {
         clock_drift_random_walk_m2_s3: f64,
         update_options: Option<&PyEkfUpdateOptions>,
     ) -> PyResult<Self> {
-        let inner = TightCouplingConfig {
-            lever_arm_body_m,
-            light_time,
-            sagnac,
-            initial_clock_bias_variance_m2,
-            initial_clock_drift_variance_m2_s2,
-            clock_bias_random_walk_m2_s,
-            clock_drift_random_walk_m2_s3,
-            update_options: update_options
-                .map(PyEkfUpdateOptions::inner)
-                .unwrap_or_default(),
-        };
+        let mut inner = TightCouplingConfig::default();
+        inner.lever_arm_body_m = lever_arm_body_m;
+        inner.light_time = light_time;
+        inner.sagnac = sagnac;
+        inner.initial_clock_bias_variance_m2 = initial_clock_bias_variance_m2;
+        inner.initial_clock_drift_variance_m2_s2 = initial_clock_drift_variance_m2_s2;
+        inner.clock_bias_random_walk_m2_s = clock_bias_random_walk_m2_s;
+        inner.clock_drift_random_walk_m2_s3 = clock_drift_random_walk_m2_s3;
+        inner.update_options = update_options
+            .map(PyEkfUpdateOptions::inner)
+            .unwrap_or_default();
         inner.validate().map_err(fusion_err)?;
         Ok(Self { inner })
     }

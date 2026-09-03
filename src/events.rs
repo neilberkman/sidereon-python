@@ -1089,14 +1089,14 @@ fn gnss_dop_series(
     let receiver_ecef_m = receiver_ecef_m_from_station(station)?;
     let explicit_satellites = satellites.map(parse_satellites).transpose()?;
     let systems = systems.map(parse_systems).transpose()?;
-    let options = DopOptions {
-        visibility: VisibilityOptions {
-            elevation_mask_deg,
-            systems,
-        },
-        weighting: weighting.into(),
-        light_time,
-    };
+    let mut visibility = VisibilityOptions::default();
+    visibility.elevation_mask_deg = elevation_mask_deg;
+    visibility.systems = systems;
+
+    let mut options = DopOptions::default();
+    options.visibility = visibility;
+    options.weighting = weighting.into();
+    options.light_time = light_time;
 
     let mut out = PyDopSeries {
         step_index: Vec::new(),
@@ -1215,14 +1215,15 @@ fn build_dop_options(
         return Err(PyValueError::new_err("elevation_mask_deg must be finite"));
     }
     let systems = systems.map(parse_systems).transpose()?;
-    Ok(DopOptions {
-        visibility: VisibilityOptions {
-            elevation_mask_deg,
-            systems,
-        },
-        weighting: weighting.into(),
-        light_time,
-    })
+    let mut visibility = VisibilityOptions::default();
+    visibility.elevation_mask_deg = elevation_mask_deg;
+    visibility.systems = systems;
+
+    let mut options = DopOptions::default();
+    options.visibility = visibility;
+    options.weighting = weighting.into();
+    options.light_time = light_time;
+    Ok(options)
 }
 
 fn dop_at_epoch_to_py(geometry: core_geometry::DopAtEpoch) -> PyDopAtEpoch {

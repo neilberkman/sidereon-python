@@ -757,23 +757,25 @@ impl PySp3MergeOptions {
         options.clock_min_common = self.clock_min_common;
         options.combine = self.combine.into();
         options.precedence_scope = self.precedence_scope.into();
-        options.outlier_reject = self
-            .outlier_reject
-            .as_ref()
-            .map(|options| OutlierRejectOptions {
-                position_tolerance_m: options.position_tolerance_m,
-                clock_tolerance_s: options.clock_tolerance_s,
-            });
+        options.outlier_reject = self.outlier_reject.as_ref().map(|reject_options| {
+            let mut o = OutlierRejectOptions::new(
+                reject_options.position_tolerance_m,
+                reject_options.clock_tolerance_s,
+            );
+            o.position_tolerance_m = reject_options.position_tolerance_m;
+            o.clock_tolerance_s = reject_options.clock_tolerance_s;
+            o
+        });
         options.target_epoch_interval_s = self.target_epoch_interval_s;
         options.systems = self.systems.clone();
-        options.frame_reconciliation = Sp3FrameReconciliationOptions {
-            asserted_equivalent_label_sets: self
-                .asserted_frame_label_sets
-                .iter()
-                .map(|labels| Sp3FrameLabelSet::new(labels.iter().cloned()))
-                .collect(),
-            helmert: self.helmert,
-        };
+        let mut frame_recon = Sp3FrameReconciliationOptions::default();
+        frame_recon.asserted_equivalent_label_sets = self
+            .asserted_frame_label_sets
+            .iter()
+            .map(|labels| Sp3FrameLabelSet::new(labels.iter().cloned()))
+            .collect();
+        frame_recon.helmert = self.helmert;
+        options.frame_reconciliation = frame_recon;
         options
     }
 }

@@ -133,16 +133,14 @@ impl PySiderealFilterOptions {
         min_coverage: usize,
         template_method: Option<&PySiderealTemplateMethod>,
     ) -> PyResult<Self> {
-        Ok(Self {
-            inner: SiderealFilterOptions {
-                sample_interval: duration_from_seconds("sample_interval_s", sample_interval_s)?,
-                prior_periods,
-                min_coverage,
-                template_method: template_method
-                    .map(PySiderealTemplateMethod::inner)
-                    .unwrap_or_default(),
-            },
-        })
+        let mut inner = SiderealFilterOptions::default();
+        inner.sample_interval = duration_from_seconds("sample_interval_s", sample_interval_s)?;
+        inner.prior_periods = prior_periods;
+        inner.min_coverage = min_coverage;
+        inner.template_method = template_method
+            .map(PySiderealTemplateMethod::inner)
+            .unwrap_or_default();
+        Ok(Self { inner })
     }
 
     /// Sampling interval of the residual series, seconds.

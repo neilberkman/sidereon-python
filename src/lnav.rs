@@ -373,13 +373,18 @@ fn lnav_encode(
     tlm_message: i64,
 ) -> PyResult<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let parsed = params_from_dict(params)?;
-    let opts = LnavOptions {
-        tow: LnavNumber::Int(tow),
-        alert: LnavNumber::Int(alert),
-        anti_spoof: LnavNumber::Int(anti_spoof),
-        integrity: LnavNumber::Int(integrity),
-        tlm_message: LnavNumber::Int(tlm_message),
-    };
+    let mut opts = LnavOptions::new(
+        LnavNumber::Int(tow),
+        LnavNumber::Int(alert),
+        LnavNumber::Int(anti_spoof),
+        LnavNumber::Int(integrity),
+        LnavNumber::Int(tlm_message),
+    );
+    opts.tow = LnavNumber::Int(tow);
+    opts.alert = LnavNumber::Int(alert);
+    opts.anti_spoof = LnavNumber::Int(anti_spoof);
+    opts.integrity = LnavNumber::Int(integrity);
+    opts.tlm_message = LnavNumber::Int(tlm_message);
     let [sf1, sf2, sf3] = core_encode(&parsed, &opts).map_err(lnav_err)?;
     Ok((sf1, sf2, sf3))
 }

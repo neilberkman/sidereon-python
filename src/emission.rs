@@ -224,14 +224,14 @@ fn emission_media_batch_at_j2000_s(
     let epochs = emission_epochs_j2000_s
         .as_slice()
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    let options = EmissionMediaBatchOptions {
-        carrier_hz,
-        media: ObservableMediaOptions {
-            troposphere: troposphere.then(ObservableTroposphereCorrection::default),
-            ionosphere: ionex.map(|ionex| ObservableIonosphereCorrection::Ionex(&ionex.inner)),
-        },
-        min_elevation_rad,
-    };
+    let mut media = ObservableMediaOptions::default();
+    media.troposphere = troposphere.then(ObservableTroposphereCorrection::default);
+    media.ionosphere = ionex.map(|ionex| ObservableIonosphereCorrection::Ionex(&ionex.inner));
+
+    let mut options = EmissionMediaBatchOptions::default();
+    options.carrier_hz = carrier_hz;
+    options.media = media;
+    options.min_elevation_rad = min_elevation_rad;
     with_observable_source(source, |source| {
         core_emission_media_batch_at_j2000_s(source, &satellites, epochs, receiver_ecef_m, options)
             .map(Into::into)

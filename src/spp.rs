@@ -266,14 +266,12 @@ impl PySppRobustConfig {
         outer_tol_m=RobustConfig::default().outer_tol_m,
     ))]
     fn new(huber_k: f64, scale_floor_m: f64, max_outer: usize, outer_tol_m: f64) -> Self {
-        Self {
-            inner: RobustConfig {
-                huber_k,
-                scale_floor_m,
-                max_outer,
-                outer_tol_m,
-            },
-        }
+        let mut inner = RobustConfig::default();
+        inner.huber_k = huber_k;
+        inner.scale_floor_m = scale_floor_m;
+        inner.max_outer = max_outer;
+        inner.outer_tol_m = outer_tol_m;
+        Self { inner }
     }
 
     /// Huber tuning constant `k`; residuals scaled below this keep full weight.
@@ -501,11 +499,10 @@ fn build_policy(
             ));
         }
     }
+    let mut validation = SolutionValidationOptions::default();
+    validation.max_pdop = max_pdop;
     Ok(SolvePolicy {
-        validation: SolutionValidationOptions {
-            max_pdop,
-            ..Default::default()
-        },
+        validation,
         coarse_search_seeds,
     })
 }

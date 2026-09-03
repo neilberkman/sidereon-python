@@ -510,14 +510,12 @@ fn reduced_orbit_fit_sp3_source(
         product: &sp3.inner,
         satellite,
     };
-    let fit = core_source_fit(
-        source,
-        ReducedOrbitSourceFitOptions {
-            sampling: source_sampling(t0, t1, cadence_s),
-            model: model.into(),
-        },
-    )
-    .map_err(to_solve_err)?;
+    let sampling = source_sampling(t0, t1, cadence_s);
+    let model = model.into();
+    let mut options = ReducedOrbitSourceFitOptions::new(sampling, model);
+    options.sampling = sampling;
+    options.model = model;
+    let fit = core_source_fit(source, options).map_err(to_solve_err)?;
     Ok(PyReducedOrbitSourceFit {
         orbit: PyReducedOrbit {
             inner: fit.orbit,
@@ -544,15 +542,11 @@ fn reduced_orbit_drift_sp3_source(
         product: &sp3.inner,
         satellite,
     };
-    let drift = core_source_drift(
-        &orbit.inner.elements,
-        source,
-        ReducedOrbitSourceDriftOptions {
-            sampling: source_sampling(t0, t1, cadence_s),
-            threshold_m,
-        },
-    )
-    .map_err(to_solve_err)?;
+    let sampling = source_sampling(t0, t1, cadence_s);
+    let mut options = ReducedOrbitSourceDriftOptions::new(sampling, threshold_m);
+    options.sampling = sampling;
+    options.threshold_m = threshold_m;
+    let drift = core_source_drift(&orbit.inner.elements, source, options).map_err(to_solve_err)?;
     Ok(PyReducedOrbitSourceDrift {
         report: py_drift_report(drift.report),
         requested_samples: drift.requested_samples,

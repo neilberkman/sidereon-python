@@ -134,14 +134,12 @@ impl PyObserveOptions {
         deflection: bool,
         aberration: bool,
     ) -> Self {
-        Self {
-            inner: core::ObserveOptions {
-                polar_motion: polar_motion.map(PyPolarMotion::inner),
-                refraction: refraction.map(PyRefraction::inner),
-                deflection,
-                aberration,
-            },
-        }
+        let mut inner = core::ObserveOptions::default();
+        inner.polar_motion = polar_motion.map(PyPolarMotion::inner);
+        inner.refraction = refraction.map(PyRefraction::inner);
+        inner.deflection = deflection;
+        inner.aberration = aberration;
+        Self { inner }
     }
 
     #[getter]

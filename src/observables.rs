@@ -362,15 +362,13 @@ impl PyPseudorangeVarianceOptions {
         cn0_dbhz: Option<f64>,
         cn0_scale_m2: f64,
     ) -> Self {
-        Self {
-            inner: PseudorangeVarianceOptions {
-                a_m,
-                b_m,
-                model: model.into(),
-                cn0_dbhz,
-                cn0_scale_m2,
-            },
-        }
+        let mut inner = PseudorangeVarianceOptions::default();
+        inner.a_m = a_m;
+        inner.b_m = b_m;
+        inner.model = model.into();
+        inner.cn0_dbhz = cn0_dbhz;
+        inner.cn0_scale_m2 = cn0_scale_m2;
+        Self { inner }
     }
 
     /// Zenith-floor term, metres.
@@ -770,13 +768,11 @@ impl PyCycleSlipOptions {
         min_arc_gap_s=300.0,
     ))]
     fn new(gf_threshold_m: f64, mw_threshold_cycles: f64, min_arc_gap_s: f64) -> Self {
-        Self {
-            inner: CycleSlipOptions {
-                gf_threshold_m,
-                mw_threshold_cycles,
-                min_arc_gap_s,
-            },
-        }
+        let mut inner = CycleSlipOptions::default();
+        inner.gf_threshold_m = gf_threshold_m;
+        inner.mw_threshold_cycles = mw_threshold_cycles;
+        inner.min_arc_gap_s = min_arc_gap_s;
+        Self { inner }
     }
 
     /// Geometry-free step threshold, metres.
@@ -1108,13 +1104,11 @@ impl PyVelocitySolveOptions {
         sagnac=true,
     ))]
     fn new(observable: PyVelocityObservable, light_time: bool, sagnac: bool) -> Self {
-        Self {
-            inner: VelocitySolveOptions {
-                observable: observable.into(),
-                light_time,
-                sagnac,
-            },
-        }
+        let mut inner = VelocitySolveOptions::default();
+        inner.observable = observable.into();
+        inner.light_time = light_time;
+        inner.sagnac = sagnac;
+        Self { inner }
     }
 
     /// Observation value convention.
@@ -1285,14 +1279,17 @@ impl PyReplicaOptions {
         code_phase_chips: f64,
         code_doppler_hz: f64,
     ) -> Self {
-        Self {
-            inner: ReplicaOptions {
-                sample_rate_hz,
-                num_samples,
-                code_phase_chips,
-                code_doppler_hz,
-            },
-        }
+        let mut inner = ReplicaOptions::new(
+            sample_rate_hz,
+            num_samples,
+            code_phase_chips,
+            code_doppler_hz,
+        );
+        inner.sample_rate_hz = sample_rate_hz;
+        inner.num_samples = num_samples;
+        inner.code_phase_chips = code_phase_chips;
+        inner.code_doppler_hz = code_doppler_hz;
+        Self { inner }
     }
 
     /// One C/A code period at 2.046 MHz.
@@ -1364,14 +1361,12 @@ impl PyCorrelateOptions {
         code_phase_chips: f64,
         code_doppler_hz: f64,
     ) -> Self {
-        Self {
-            inner: CorrelateOptions {
-                sample_rate_hz,
-                doppler_hz,
-                code_phase_chips,
-                code_doppler_hz,
-            },
-        }
+        let mut inner = CorrelateOptions::default();
+        inner.sample_rate_hz = sample_rate_hz;
+        inner.doppler_hz = doppler_hz;
+        inner.code_phase_chips = code_phase_chips;
+        inner.code_doppler_hz = code_doppler_hz;
+        Self { inner }
     }
 
     /// Sampling rate, hertz.
@@ -1475,14 +1470,12 @@ impl PyAcquisitionOptions {
         doppler_max_hz: f64,
         doppler_step_hz: f64,
     ) -> Self {
-        Self {
-            inner: AcquisitionOptions {
-                sample_rate_hz,
-                doppler_min_hz,
-                doppler_max_hz,
-                doppler_step_hz,
-            },
-        }
+        let mut inner = AcquisitionOptions::default();
+        inner.sample_rate_hz = sample_rate_hz;
+        inner.doppler_min_hz = doppler_min_hz;
+        inner.doppler_max_hz = doppler_max_hz;
+        inner.doppler_step_hz = doppler_step_hz;
+        Self { inner }
     }
 
     /// Sampling rate, hertz.
@@ -2166,18 +2159,12 @@ fn observe(
         &receiver_ecef_m,
         FinitePolicy::RequireFinite,
     )?;
-    let inner = predict(
-        &sp3.inner,
-        sat,
-        receiver_ecef_m,
-        t_rx_j2000_s,
-        PredictOptions {
-            carrier_hz,
-            light_time,
-            sagnac,
-        },
-    )
-    .map_err(observables_error)?;
+    let mut options = PredictOptions::default();
+    options.carrier_hz = carrier_hz;
+    options.light_time = light_time;
+    options.sagnac = sagnac;
+    let inner = predict(&sp3.inner, sat, receiver_ecef_m, t_rx_j2000_s, options)
+        .map_err(observables_error)?;
     Ok(PyPredictedObservables { inner })
 }
 
@@ -2199,16 +2186,16 @@ fn observe_broadcast(
         &receiver_ecef_m,
         FinitePolicy::RequireFinite,
     )?;
+    let mut options = PredictOptions::default();
+    options.carrier_hz = carrier_hz;
+    options.light_time = light_time;
+    options.sagnac = sagnac;
     let inner = predict(
         &broadcast.inner,
         sat,
         receiver_ecef_m,
         t_rx_j2000_s,
-        PredictOptions {
-            carrier_hz,
-            light_time,
-            sagnac,
-        },
+        options,
     )
     .map_err(observables_error)?;
     Ok(PyPredictedObservables { inner })
@@ -2231,13 +2218,12 @@ impl PyRangePredictionRequest {
     /// epoch in seconds since J2000.
     #[new]
     fn new(satellite: &str, receiver_ecef_m: [f64; 3], t_rx_j2000_s: f64) -> PyResult<Self> {
-        Ok(Self {
-            inner: RangePredictionRequest {
-                sat: parse_satellite(satellite)?,
-                receiver_ecef_m,
-                t_rx_j2000_s,
-            },
-        })
+        let sat = parse_satellite(satellite)?;
+        let mut inner = RangePredictionRequest::new(sat, receiver_ecef_m, t_rx_j2000_s);
+        inner.sat = sat;
+        inner.receiver_ecef_m = receiver_ecef_m;
+        inner.t_rx_j2000_s = t_rx_j2000_s;
+        Ok(Self { inner })
     }
 
     /// Satellite token, e.g. `"G01"`.
@@ -2357,11 +2343,9 @@ fn predict_ranges_py(
 ) -> PyResult<Vec<PyRangePrediction>> {
     let requests: Vec<RangePredictionRequest> =
         requests.iter().map(|r| r.borrow(py).inner).collect();
-    let options = PredictOptions {
-        light_time,
-        sagnac,
-        ..PredictOptions::default()
-    };
+    let mut options = PredictOptions::default();
+    options.light_time = light_time;
+    options.sagnac = sagnac;
     let mut out = vec![
         RangePrediction {
             geometric_range_m: 0.0,
@@ -2444,11 +2428,10 @@ fn observe_batch(
     for (index, token) in satellite_ids.iter().enumerate() {
         requests.push((parse_satellite(token)?, receivers[index], epochs[index]));
     }
-    let options = PredictOptions {
-        carrier_hz,
-        light_time,
-        sagnac,
-    };
+    let mut options = PredictOptions::default();
+    options.carrier_hz = carrier_hz;
+    options.light_time = light_time;
+    options.sagnac = sagnac;
     let results = if parallel {
         predict_batch_parallel(&sp3.inner, &requests, options)
     } else {

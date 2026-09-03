@@ -195,18 +195,16 @@ impl PyNtripConfig {
                 ))
             }
         };
-        let default = NtripConfig::default();
-        Ok(Self {
-            inner: NtripConfig {
-                host,
-                port,
-                mountpoint,
-                version: parse_version(version)?,
-                credentials,
-                user_agent_product: user_agent_product.unwrap_or(default.user_agent_product),
-                gga_interval_s,
-            },
-        })
+        let mut inner = NtripConfig::default();
+        let default_user_agent = inner.user_agent_product.clone();
+        inner.host = host;
+        inner.port = port;
+        inner.mountpoint = mountpoint;
+        inner.version = parse_version(version)?;
+        inner.credentials = credentials;
+        inner.user_agent_product = user_agent_product.unwrap_or(default_user_agent);
+        inner.gga_interval_s = gga_interval_s;
+        Ok(Self { inner })
     }
 
     fn request_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {

@@ -435,13 +435,11 @@ impl PyAllanOptions {
         tau_grid: Option<&PyTauGrid>,
         gap_policy: PyGapPolicy,
     ) -> Self {
-        Self {
-            inner: AllanOptions {
-                estimators: estimators.map(|value| value.inner()).unwrap_or_default(),
-                tau_grid: tau_grid.map(|value| value.inner()).unwrap_or_default(),
-                gap_policy: gap_policy.into(),
-            },
-        }
+        let mut inner = AllanOptions::default();
+        inner.estimators = estimators.map(|value| value.inner()).unwrap_or_default();
+        inner.tau_grid = tau_grid.map(|value| value.inner()).unwrap_or_default();
+        inner.gap_policy = gap_policy.into();
+        Self { inner }
     }
 
     /// Selected estimators.

@@ -197,13 +197,11 @@ impl PyStaticSolveOptions {
         with_geodetic: bool,
         robust: Option<&PySppRobustConfig>,
     ) -> Self {
-        Self {
-            inner: StaticSolveOptions {
-                initial_position_m,
-                with_geodetic,
-                robust: robust.map(PySppRobustConfig::inner),
-            },
-        }
+        let mut inner = StaticSolveOptions::default();
+        inner.initial_position_m = initial_position_m;
+        inner.with_geodetic = with_geodetic;
+        inner.robust = robust.map(PySppRobustConfig::inner);
+        Self { inner }
     }
 
     /// Initial shared receiver ECEF position, metres.
