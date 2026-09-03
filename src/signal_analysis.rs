@@ -240,15 +240,19 @@ impl PyDllTrackingOptions {
         correlator_spacing_chips: f64,
         receiver_bandwidth_hz: f64,
     ) -> Self {
-        Self {
-            inner: DllTrackingOptions {
-                cn0_db_hz,
-                loop_bandwidth_hz,
-                integration_time_s,
-                correlator_spacing_chips,
-                receiver_bandwidth_hz,
-            },
-        }
+        let mut inner = DllTrackingOptions::new(
+            cn0_db_hz,
+            loop_bandwidth_hz,
+            integration_time_s,
+            correlator_spacing_chips,
+            receiver_bandwidth_hz,
+        );
+        inner.cn0_db_hz = cn0_db_hz;
+        inner.loop_bandwidth_hz = loop_bandwidth_hz;
+        inner.integration_time_s = integration_time_s;
+        inner.correlator_spacing_chips = correlator_spacing_chips;
+        inner.receiver_bandwidth_hz = receiver_bandwidth_hz;
+        Self { inner }
     }
 
     /// Carrier-to-noise-density ratio in decibel-hertz.
@@ -344,13 +348,15 @@ impl PyMultipathOptions {
         correlator_spacing_chips: f64,
         receiver_bandwidth_hz: f64,
     ) -> Self {
-        Self {
-            inner: MultipathOptions {
-                multipath_to_direct_ratio,
-                correlator_spacing_chips,
-                receiver_bandwidth_hz,
-            },
-        }
+        let mut inner = MultipathOptions::new(
+            multipath_to_direct_ratio,
+            correlator_spacing_chips,
+            receiver_bandwidth_hz,
+        );
+        inner.multipath_to_direct_ratio = multipath_to_direct_ratio;
+        inner.correlator_spacing_chips = correlator_spacing_chips;
+        inner.receiver_bandwidth_hz = receiver_bandwidth_hz;
+        Self { inner }
     }
 
     /// Reflected-path amplitude divided by direct-path amplitude.

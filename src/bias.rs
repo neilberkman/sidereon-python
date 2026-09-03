@@ -60,15 +60,14 @@ impl PyCodeDcbOptions {
         time_scale: PyTimeScale,
         receiver_system: Option<PyGnssSystem>,
     ) -> Self {
-        Self {
-            inner: CodeDcbOptions {
-                pair: (obs1, obs2),
-                year,
-                month,
-                time_scale: time_scale.into(),
-                receiver_system: receiver_system.map(Into::into),
-            },
-        }
+        let mut inner =
+            CodeDcbOptions::new((obs1.clone(), obs2.clone()), year, month, time_scale.into());
+        inner.pair = (obs1, obs2);
+        inner.year = year;
+        inner.month = month;
+        inner.time_scale = time_scale.into();
+        inner.receiver_system = receiver_system.map(Into::into);
+        Self { inner }
     }
 
     fn __repr__(&self) -> String {

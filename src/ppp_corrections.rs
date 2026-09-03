@@ -148,14 +148,12 @@ impl PyPppCodeBiasOptions {
         let clock_reference = clock_reference.map(|rows| ClockReferenceObservables {
             per_system: system_pairs(rows),
         });
-        Ok(Self {
-            inner: CodeBiasOptions {
-                bias_set: bias_set.inner(),
-                used_observables_per_sat,
-                used_observables_default: system_pairs(used_observables_default),
-                clock_reference,
-            },
-        })
+        let mut inner = CodeBiasOptions::new(bias_set.inner());
+        inner.bias_set = bias_set.inner();
+        inner.used_observables_per_sat = used_observables_per_sat;
+        inner.used_observables_default = system_pairs(used_observables_default);
+        inner.clock_reference = clock_reference;
+        Ok(Self { inner })
     }
 
     #[getter]
@@ -292,17 +290,24 @@ impl PySatelliteAntennaOptions {
 
 impl PySatelliteAntennaOptions {
     fn to_core(&self) -> PyResult<SatelliteAntennaOptions> {
-        Ok(SatelliteAntennaOptions {
-            freq1_label: self.freq1_label.clone(),
-            freq1_hz: self.freq1_hz,
-            freq2_label: self.freq2_label.clone(),
-            freq2_hz: self.freq2_hz,
-            antennas: self
-                .antennas
-                .iter()
-                .map(PySatelliteAntenna::to_core)
-                .collect::<PyResult<_>>()?,
-        })
+        let antennas: Vec<SatelliteAntenna> = self
+            .antennas
+            .iter()
+            .map(PySatelliteAntenna::to_core)
+            .collect::<PyResult<_>>()?;
+        let mut options = SatelliteAntennaOptions::new(
+            self.freq1_label.clone(),
+            self.freq1_hz,
+            self.freq2_label.clone(),
+            self.freq2_hz,
+            antennas.clone(),
+        );
+        options.freq1_label = self.freq1_label.clone();
+        options.freq1_hz = self.freq1_hz;
+        options.freq2_label = self.freq2_label.clone();
+        options.freq2_hz = self.freq2_hz;
+        options.antennas = antennas;
+        Ok(options)
     }
 }
 
@@ -329,10 +334,10 @@ impl PyPoleTideOptions {
 
 impl From<&PyPoleTideOptions> for PoleTideOptions {
     fn from(o: &PyPoleTideOptions) -> Self {
-        PoleTideOptions {
-            xp_arcsec: o.xp_arcsec,
-            yp_arcsec: o.yp_arcsec,
-        }
+        let mut opts = PoleTideOptions::new(o.xp_arcsec, o.yp_arcsec);
+        opts.xp_arcsec = o.xp_arcsec;
+        opts.yp_arcsec = o.yp_arcsec;
+        opts
     }
 }
 
@@ -500,17 +505,16 @@ fn ppp_corrections(
         .iter()
         .map(PyPppCorrectionEpoch::to_core)
         .collect::<PyResult<_>>()?;
-    let options = PppCorrectionsOptions {
-        solid_earth_tide,
-        pole_tide: pole_tide.as_ref().map(PoleTideOptions::from),
-        ocean_loading: ocean_loading.as_ref().map(OceanLoadingBlq::from),
-        phase_windup,
-        satellite_antenna: satellite_antenna
-            .as_ref()
-            .map(PySatelliteAntennaOptions::to_core)
-            .transpose()?,
-        code_bias: code_bias.as_ref().map(PyPppCodeBiasOptions::to_core),
-    };
+    let mut options = PppCorrectionsOptions::new();
+    options.solid_earth_tide = solid_earth_tide;
+    options.pole_tide = pole_tide.as_ref().map(PoleTideOptions::from);
+    options.ocean_loading = ocean_loading.as_ref().map(OceanLoadingBlq::from);
+    options.phase_windup = phase_windup;
+    options.satellite_antenna = satellite_antenna
+        .as_ref()
+        .map(PySatelliteAntennaOptions::to_core)
+        .transpose()?;
+    options.code_bias = code_bias.as_ref().map(PyPppCodeBiasOptions::to_core);
     let inner = build(&sp3.inner, &core_epochs, receiver_ecef_m, &options)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     Ok(PyPppCorrections { inner })

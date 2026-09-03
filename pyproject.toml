@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "sidereon"
-version = "1.4.1"
-description = "Python bindings for the Sidereon GNSS positioning engine (SP3 loading and SPP/RTK/PPP solves)"
+version = "2.0.0"
+description = "Python (PyO3) bindings over the sidereon engine: SP3 loading and SPP/RTK/PPP positioning solves"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"

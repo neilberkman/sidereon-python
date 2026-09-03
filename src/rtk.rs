@@ -1693,20 +1693,29 @@ impl PyRtkArcConfig {
             |value| value.inner.clone(),
             RtkArcPreprocessing::default,
         );
-        Self {
-            inner: RtkArcConfig {
-                base_m: base,
-                reference,
-                model: model.inner,
-                baseline_prior_sigma_m,
-                ambiguity_prior_sigma_m,
-                initial_baseline_m,
-                wavelengths_m,
-                offsets_m,
-                update_opts,
-                preprocessing,
-            },
-        }
+        let mut inner = RtkArcConfig::new(
+            base,
+            reference.clone(),
+            model.inner,
+            baseline_prior_sigma_m,
+            ambiguity_prior_sigma_m,
+            initial_baseline_m,
+            wavelengths_m.clone(),
+            offsets_m.clone(),
+            update_opts.clone(),
+            preprocessing.clone(),
+        );
+        inner.base_m = base;
+        inner.reference = reference;
+        inner.model = model.inner;
+        inner.baseline_prior_sigma_m = baseline_prior_sigma_m;
+        inner.ambiguity_prior_sigma_m = ambiguity_prior_sigma_m;
+        inner.initial_baseline_m = initial_baseline_m;
+        inner.wavelengths_m = wavelengths_m;
+        inner.offsets_m = offsets_m;
+        inner.update_opts = update_opts;
+        inner.preprocessing = preprocessing;
+        Self { inner }
     }
 
     #[getter]
@@ -2220,12 +2229,10 @@ impl PyRtkStaticArcConfig {
             fixed_options.as_ref(),
             residual_options.as_ref(),
         );
-        Self {
-            inner: RtkStaticArcConfig {
-                arc: arc.inner.clone(),
-                opts,
-            },
-        }
+        let mut inner = RtkStaticArcConfig::new(arc.inner.clone(), opts);
+        inner.arc = arc.inner.clone();
+        inner.opts = opts;
+        Self { inner }
     }
 
     #[getter]
@@ -2414,14 +2421,17 @@ impl PyRtkRinexArcOptions {
                     .collect()
             })
             .unwrap_or_else(|| CoreRtkRinexArcOptions::gps_l1_c().signal_pairs);
-        Self {
-            inner: CoreRtkRinexArcOptions {
-                signal_pairs,
-                max_epochs,
-                min_common_satellites,
-                include_prediction_time,
-            },
-        }
+        let mut inner = CoreRtkRinexArcOptions::new(
+            signal_pairs.clone(),
+            max_epochs,
+            min_common_satellites,
+            include_prediction_time,
+        );
+        inner.signal_pairs = signal_pairs;
+        inner.max_epochs = max_epochs;
+        inner.min_common_satellites = min_common_satellites;
+        inner.include_prediction_time = include_prediction_time;
+        Self { inner }
     }
 
     /// GPS `C1C` plus `L1C` defaults.
@@ -2617,14 +2627,17 @@ impl PyRtkRinexDualArcOptions {
                     .collect()
             })
             .unwrap_or_else(|| RtkRinexDualArcOptions::gps_l1_l2_cw().signal_pairs);
-        Self {
-            inner: RtkRinexDualArcOptions {
-                signal_pairs,
-                max_epochs,
-                min_common_satellites,
-                include_prediction_time,
-            },
-        }
+        let mut inner = RtkRinexDualArcOptions::new(
+            signal_pairs.clone(),
+            max_epochs,
+            min_common_satellites,
+            include_prediction_time,
+        );
+        inner.signal_pairs = signal_pairs;
+        inner.max_epochs = max_epochs;
+        inner.min_common_satellites = min_common_satellites;
+        inner.include_prediction_time = include_prediction_time;
+        Self { inner }
     }
 
     /// GPS `C1C`/`L1C` plus `C2W`/`L2W` defaults.
@@ -2768,26 +2781,41 @@ fn static_arc_config_from_parts(
     fixed_options: Option<Py<PyRtkFixedOptions>>,
     residual_options: Option<Py<PyRtkResidualValidationOptions>>,
 ) -> RtkStaticArcConfig {
-    RtkStaticArcConfig {
-        arc: RtkArcConfig {
-            base_m: base,
-            reference: BaselineReferenceSelection::Auto,
-            model,
-            baseline_prior_sigma_m,
-            ambiguity_prior_sigma_m,
-            initial_baseline_m,
-            wavelengths_m,
-            offsets_m,
-            update_opts: arc_update_options_from_optional(py, update_options),
-            preprocessing: preprocessing_from_optional(py, preprocessing),
-        },
-        opts: validated_fixed_opts_from_py(
-            py,
-            float_options.as_ref(),
-            fixed_options.as_ref(),
-            residual_options.as_ref(),
-        ),
-    }
+    let update_opts = arc_update_options_from_optional(py, update_options);
+    let preprocessing = preprocessing_from_optional(py, preprocessing);
+    let mut arc = RtkArcConfig::new(
+        base,
+        BaselineReferenceSelection::Auto,
+        model,
+        baseline_prior_sigma_m,
+        ambiguity_prior_sigma_m,
+        initial_baseline_m,
+        wavelengths_m.clone(),
+        offsets_m.clone(),
+        update_opts.clone(),
+        preprocessing.clone(),
+    );
+    arc.base_m = base;
+    arc.reference = BaselineReferenceSelection::Auto;
+    arc.model = model;
+    arc.baseline_prior_sigma_m = baseline_prior_sigma_m;
+    arc.ambiguity_prior_sigma_m = ambiguity_prior_sigma_m;
+    arc.initial_baseline_m = initial_baseline_m;
+    arc.wavelengths_m = wavelengths_m;
+    arc.offsets_m = offsets_m;
+    arc.update_opts = update_opts;
+    arc.preprocessing = preprocessing;
+
+    let opts = validated_fixed_opts_from_py(
+        py,
+        float_options.as_ref(),
+        fixed_options.as_ref(),
+        residual_options.as_ref(),
+    );
+    let mut static_arc = RtkStaticArcConfig::new(arc.clone(), opts);
+    static_arc.arc = arc;
+    static_arc.opts = opts;
+    static_arc
 }
 
 /// Build single-frequency RTK arc records from parsed RINEX OBS products.
@@ -3453,18 +3481,22 @@ fn solve_static_reference_station_rinex(
             fixed_options,
             residual_options,
         );
-        Some(StaticReferenceCarrierRinexOptions {
-            arc_options,
-            static_config,
-        })
+        let mut carrier =
+            StaticReferenceCarrierRinexOptions::new(arc_options.clone(), static_config.clone());
+        carrier.arc_options = arc_options;
+        carrier.static_config = static_config;
+        Some(carrier)
     } else {
         None
     };
-    let options = StaticReferenceStationRinexOptions {
-        code_options,
-        carrier_options,
+    let mut options = StaticReferenceStationRinexOptions::new(
+        code_options.clone(),
+        carrier_options.clone(),
         with_geodetic,
-    };
+    );
+    options.code_options = code_options;
+    options.carrier_options = carrier_options;
+    options.with_geodetic = with_geodetic;
     let inner = core_solve_static_reference_station_rinex(
         &sp3.inner,
         reference_obs.inner(),
@@ -3644,28 +3676,47 @@ fn solve_wide_lane_fixed_rinex_rtk_baseline(
             fixed_options,
             residual_options,
         );
-        let config = RtkWideLaneFixedArcConfig {
-            wide_lane: RtkWideLaneArcConfig {
-                base_m: base,
-                reference: BaselineReferenceSelection::Auto,
-                options: WideLaneOptions {
-                    min_epochs: 2,
-                    tolerance_cycles: 0.5,
-                    skip_short_fragments: false,
-                },
-                cycle_slip: Some(RtkDualCycleSlipConfig {
-                    policy: CycleSlipPolicy::DropSatellite,
-                    options: CycleSlipOptions::default(),
-                }),
-            },
-            ionosphere_free: RtkIonosphereFreeArcConfig {
-                base_m: base,
-                initial_baseline_m,
-                reference: BaselineReferenceSelection::Auto,
-                apply_troposphere,
-            },
-            solve: RtkWideLaneFixedArcSolveConfig::Static(static_config),
-        };
+        let mut wl_options = WideLaneOptions::new(2, 0.5);
+        wl_options.min_epochs = 2;
+        wl_options.tolerance_cycles = 0.5;
+        wl_options.skip_short_fragments = false;
+
+        let cs_options = CycleSlipOptions::default();
+        let mut cs_config = RtkDualCycleSlipConfig::new(CycleSlipPolicy::DropSatellite, cs_options);
+        cs_config.policy = CycleSlipPolicy::DropSatellite;
+        cs_config.options = cs_options;
+
+        let mut wide_lane = RtkWideLaneArcConfig::new(
+            base,
+            BaselineReferenceSelection::Auto,
+            wl_options,
+            Some(cs_config),
+        );
+        wide_lane.base_m = base;
+        wide_lane.reference = BaselineReferenceSelection::Auto;
+        wide_lane.options = wl_options;
+        wide_lane.cycle_slip = Some(cs_config);
+
+        let mut ionosphere_free = RtkIonosphereFreeArcConfig::new(
+            base,
+            initial_baseline_m,
+            BaselineReferenceSelection::Auto,
+            apply_troposphere,
+        );
+        ionosphere_free.base_m = base;
+        ionosphere_free.initial_baseline_m = initial_baseline_m;
+        ionosphere_free.reference = BaselineReferenceSelection::Auto;
+        ionosphere_free.apply_troposphere = apply_troposphere;
+
+        let solve = RtkWideLaneFixedArcSolveConfig::Static(static_config);
+        let mut config = RtkWideLaneFixedArcConfig::new(
+            wide_lane.clone(),
+            ionosphere_free.clone(),
+            solve.clone(),
+        );
+        config.wide_lane = wide_lane;
+        config.ionosphere_free = ionosphere_free;
+        config.solve = solve;
         let inner =
             core_solve_wide_lane_fixed_rtk_arc(&arc.epochs, &config).map_err(to_solve_err)?;
         match inner {
@@ -3950,13 +4001,11 @@ impl PyRtkWideLaneOptions {
     #[new]
     #[pyo3(signature = (min_epochs, tolerance_cycles, skip_short_fragments=false))]
     fn new(min_epochs: usize, tolerance_cycles: f64, skip_short_fragments: bool) -> Self {
-        Self {
-            inner: WideLaneOptions {
-                min_epochs,
-                tolerance_cycles,
-                skip_short_fragments,
-            },
-        }
+        let mut inner = WideLaneOptions::new(min_epochs, tolerance_cycles);
+        inner.min_epochs = min_epochs;
+        inner.tolerance_cycles = tolerance_cycles;
+        inner.skip_short_fragments = skip_short_fragments;
+        Self { inner }
     }
 
     #[getter]
@@ -4006,16 +4055,16 @@ impl PyRtkDualCycleSlipConfig {
         mw_threshold_cycles: f64,
         min_arc_gap_s: f64,
     ) -> PyResult<Self> {
-        Ok(Self {
-            inner: RtkDualCycleSlipConfig {
-                policy: extract_cycle_slip_policy(&policy)?,
-                options: CycleSlipOptions {
-                    gf_threshold_m,
-                    mw_threshold_cycles,
-                    min_arc_gap_s,
-                },
-            },
-        })
+        let policy = extract_cycle_slip_policy(&policy)?;
+        let mut options = CycleSlipOptions::default();
+        options.gf_threshold_m = gf_threshold_m;
+        options.mw_threshold_cycles = mw_threshold_cycles;
+        options.min_arc_gap_s = min_arc_gap_s;
+
+        let mut inner = RtkDualCycleSlipConfig::new(policy, options);
+        inner.policy = policy;
+        inner.options = options;
+        Ok(Self { inner })
     }
 
     #[getter]
@@ -4072,14 +4121,14 @@ impl PyRtkWideLaneArcConfig {
         cycle_slip: Option<Py<PyRtkDualCycleSlipConfig>>,
     ) -> Self {
         let cycle_slip = cycle_slip.as_ref().map(|config| config.borrow(py).inner);
-        Self {
-            inner: RtkWideLaneArcConfig {
-                base_m: base,
-                reference: reference_selection(reference_satellite, reference_per_system),
-                options: options.inner,
-                cycle_slip,
-            },
-        }
+        let reference = reference_selection(reference_satellite, reference_per_system);
+        let mut inner =
+            RtkWideLaneArcConfig::new(base, reference.clone(), options.inner, cycle_slip);
+        inner.base_m = base;
+        inner.reference = reference;
+        inner.options = options.inner;
+        inner.cycle_slip = cycle_slip;
+        Self { inner }
     }
 
     #[getter]
@@ -4209,14 +4258,18 @@ impl PyRtkIonosphereFreeArcConfig {
         reference_per_system: Option<BTreeMap<String, String>>,
         apply_troposphere: bool,
     ) -> Self {
-        Self {
-            inner: RtkIonosphereFreeArcConfig {
-                base_m: base,
-                initial_baseline_m,
-                reference: reference_selection(reference_satellite, reference_per_system),
-                apply_troposphere,
-            },
-        }
+        let reference = reference_selection(reference_satellite, reference_per_system);
+        let mut inner = RtkIonosphereFreeArcConfig::new(
+            base,
+            initial_baseline_m,
+            reference.clone(),
+            apply_troposphere,
+        );
+        inner.base_m = base;
+        inner.initial_baseline_m = initial_baseline_m;
+        inner.reference = reference;
+        inner.apply_troposphere = apply_troposphere;
+        Self { inner }
     }
 
     #[getter]

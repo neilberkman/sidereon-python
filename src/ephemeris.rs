@@ -149,10 +149,10 @@ fn continuity_options(
             )))
         }
     };
-    Ok(ContinuityOptions {
-        speed_bound,
-        residual_tolerance_m,
-    })
+    let mut options = ContinuityOptions::new(speed_bound, residual_tolerance_m);
+    options.speed_bound = speed_bound;
+    options.residual_tolerance_m = residual_tolerance_m;
+    Ok(options)
 }
 
 fn continuity_defect_to_dict<'py>(

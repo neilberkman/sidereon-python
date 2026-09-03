@@ -179,10 +179,10 @@ fn visibility_options(
     elevation_mask_deg: f64,
     systems: Option<Vec<String>>,
 ) -> PyResult<VisibilityOptions> {
-    Ok(VisibilityOptions {
-        elevation_mask_deg,
-        systems: system_filter(systems)?,
-    })
+    let mut options = VisibilityOptions::default();
+    options.elevation_mask_deg = elevation_mask_deg;
+    options.systems = system_filter(systems)?;
+    Ok(options)
 }
 
 /// Satellites visible from a static receiver at one epoch.

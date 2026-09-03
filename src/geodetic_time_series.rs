@@ -203,13 +203,11 @@ impl PyMidasOptions {
         min_pairs=3,
     ))]
     fn new(dominant_period_years: f64, period_tolerance_years: f64, min_pairs: usize) -> Self {
-        Self {
-            inner: MidasOptions {
-                dominant_period_years,
-                period_tolerance_years,
-                min_pairs,
-            },
-        }
+        let mut inner = MidasOptions::default();
+        inner.dominant_period_years = dominant_period_years;
+        inner.period_tolerance_years = period_tolerance_years;
+        inner.min_pairs = min_pairs;
+        Self { inner }
     }
 
     /// Dominant period used for pair selection, years.
@@ -449,13 +447,11 @@ impl PyTrajectoryFitOptions {
     #[new]
     #[pyo3(signature = (loss=PyLoss::LINEAR, f_scale_m=1.0, max_nfev=None))]
     fn new(loss: PyLoss, f_scale_m: f64, max_nfev: Option<usize>) -> Self {
-        Self {
-            inner: TrajectoryFitOptions {
-                loss: loss.to_trf_loss(),
-                f_scale_m,
-                max_nfev,
-            },
-        }
+        let mut inner = TrajectoryFitOptions::default();
+        inner.loss = loss.to_trf_loss();
+        inner.f_scale_m = f_scale_m;
+        inner.max_nfev = max_nfev;
+        Self { inner }
     }
 
     /// Robust-loss scale in metres.
@@ -697,16 +693,14 @@ impl PyStepDetectionOptions {
         min_separation_years: f64,
         midas: Option<&PyMidasOptions>,
     ) -> Self {
-        Self {
-            inner: StepDetectionOptions {
-                window_years,
-                score_threshold,
-                min_offset_m,
-                min_samples_each_side,
-                min_separation_years,
-                midas: midas.map(PyMidasOptions::inner).unwrap_or_default(),
-            },
-        }
+        let mut inner = StepDetectionOptions::default();
+        inner.window_years = window_years;
+        inner.score_threshold = score_threshold;
+        inner.min_offset_m = min_offset_m;
+        inner.min_samples_each_side = min_samples_each_side;
+        inner.min_separation_years = min_separation_years;
+        inner.midas = midas.map(PyMidasOptions::inner).unwrap_or_default();
+        Self { inner }
     }
 }
 

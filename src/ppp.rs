@@ -473,14 +473,15 @@ impl PyPppTroposphereOptions {
                     }
                     None => TropoMapping::Niell,
                 };
-                TroposphereOptions {
-                    enabled: true,
-                    estimate_ztd,
-                    estimate_tropo_gradients,
-                    met: Met::new(pressure_hpa, temperature_k, relative_humidity)
-                        .map_err(|err| PyValueError::new_err(err.to_string()))?,
-                    mapping,
-                }
+                let met = Met::new(pressure_hpa, temperature_k, relative_humidity)
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                let mut tropo = TroposphereOptions::new(met);
+                tropo.enabled = true;
+                tropo.estimate_ztd = estimate_ztd;
+                tropo.estimate_tropo_gradients = estimate_tropo_gradients;
+                tropo.met = met;
+                tropo.mapping = mapping;
+                tropo
             } else {
                 TroposphereOptions::disabled()
             },
@@ -569,15 +570,13 @@ impl PyPppFloatOptions {
         ambiguity_tolerance_m: f64,
         ztd_tolerance_m: f64,
     ) -> Self {
-        Self {
-            inner: FloatSolveOptions {
-                max_iterations,
-                position_tolerance_m,
-                clock_tolerance_m,
-                ambiguity_tolerance_m,
-                ztd_tolerance_m,
-            },
-        }
+        let mut inner = FloatSolveOptions::default();
+        inner.max_iterations = max_iterations;
+        inner.position_tolerance_m = position_tolerance_m;
+        inner.clock_tolerance_m = clock_tolerance_m;
+        inner.ambiguity_tolerance_m = ambiguity_tolerance_m;
+        inner.ztd_tolerance_m = ztd_tolerance_m;
+        Self { inner }
     }
 
     #[getter]
@@ -670,17 +669,24 @@ impl PyPppFloatConfig {
             |value| value.inner,
             || PyPppFloatOptions::default().inner,
         );
-        Self {
-            inner: FloatSolveConfig {
-                weights,
-                tropo,
-                corrections: RangeCorrections::disabled(),
-                opts,
-                elevation_cutoff_deg,
-                residual_screen,
-                estimate_residual_ionosphere,
-            },
-        }
+        let corrections = RangeCorrections::disabled();
+        let mut inner = FloatSolveConfig::new(
+            weights,
+            tropo,
+            corrections.clone(),
+            opts,
+            elevation_cutoff_deg,
+            residual_screen,
+            estimate_residual_ionosphere,
+        );
+        inner.weights = weights;
+        inner.tropo = tropo;
+        inner.corrections = corrections;
+        inner.opts = opts;
+        inner.elevation_cutoff_deg = elevation_cutoff_deg;
+        inner.residual_screen = residual_screen;
+        inner.estimate_residual_ionosphere = estimate_residual_ionosphere;
+        Self { inner }
     }
 
     #[getter]
@@ -722,13 +728,11 @@ impl PyPppFixedAmbiguityOptions {
         offsets_m: BTreeMap<String, f64>,
         ratio_threshold: f64,
     ) -> Self {
-        Self {
-            inner: FixedAmbiguityOptions {
-                wavelengths_m,
-                offsets_m,
-                ratio_threshold,
-            },
-        }
+        let mut inner = FixedAmbiguityOptions::new(ratio_threshold);
+        inner.wavelengths_m = wavelengths_m;
+        inner.offsets_m = offsets_m;
+        inner.ratio_threshold = ratio_threshold;
+        Self { inner }
     }
 
     #[getter]
@@ -800,17 +804,24 @@ impl PyPppFixedConfig {
             |value| value.inner,
             || PyPppFloatOptions::default().inner,
         );
-        Self {
-            inner: FixedSolveConfig {
-                weights,
-                tropo,
-                corrections: RangeCorrections::disabled(),
-                opts,
-                elevation_cutoff_deg,
-                ambiguity: ambiguity.inner.clone(),
-                estimate_residual_ionosphere,
-            },
-        }
+        let corrections = RangeCorrections::disabled();
+        let mut inner = FixedSolveConfig::new(
+            weights,
+            tropo,
+            corrections.clone(),
+            opts,
+            elevation_cutoff_deg,
+            ambiguity.inner.clone(),
+            estimate_residual_ionosphere,
+        );
+        inner.weights = weights;
+        inner.tropo = tropo;
+        inner.corrections = corrections;
+        inner.opts = opts;
+        inner.elevation_cutoff_deg = elevation_cutoff_deg;
+        inner.ambiguity = ambiguity.inner.clone();
+        inner.estimate_residual_ionosphere = estimate_residual_ionosphere;
+        Self { inner }
     }
 
     #[getter]
@@ -1302,18 +1313,16 @@ impl PyPppAutoInitOptions {
             position_m,
             clock_m: initial_guess_clock_m,
         });
-        Self {
-            inner: PppAutoInitOptions {
-                initial_guess,
-                spp_initial_guess,
-                spp_troposphere,
-                spp_met: SurfaceMet {
-                    pressure_hpa,
-                    temperature_k,
-                    relative_humidity,
-                },
-            },
-        }
+        let mut inner = PppAutoInitOptions::default();
+        inner.initial_guess = initial_guess;
+        inner.spp_initial_guess = spp_initial_guess;
+        inner.spp_troposphere = spp_troposphere;
+        inner.spp_met = SurfaceMet {
+            pressure_hpa,
+            temperature_k,
+            relative_humidity,
+        };
+        Self { inner }
     }
 
     #[getter]

@@ -308,15 +308,15 @@ fn find_moon_elevation_crossings(
     time_tolerance_seconds: f64,
 ) -> PyResult<Vec<PyMoonElevationCrossing>> {
     let station = station(latitude_deg, longitude_deg, altitude_km);
+    let mut options = MoonElevationOptions::default();
+    options.elevation_threshold_deg = elevation_threshold_deg;
+    options.step_seconds = step_seconds;
+    options.time_tolerance_seconds = time_tolerance_seconds;
     let crossings = core_find_moon_elevation_crossings(
         &station,
         UtcInstant::from_unix_microseconds(start_unix_us),
         UtcInstant::from_unix_microseconds(end_unix_us),
-        MoonElevationOptions {
-            elevation_threshold_deg,
-            step_seconds,
-            time_tolerance_seconds,
-        },
+        options,
     )
     .map_err(event_finder_error)?;
     Ok(crossings

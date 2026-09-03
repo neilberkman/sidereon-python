@@ -51,11 +51,11 @@ fn raim_options(
     weights: Option<BTreeMap<String, f64>>,
     n_systems: Option<isize>,
 ) -> RaimOptions {
-    RaimOptions {
-        p_fa,
-        weights: raim_weights(weights),
-        n_systems,
-    }
+    let mut options = RaimOptions::default();
+    options.p_fa = p_fa;
+    options.weights = raim_weights(weights);
+    options.n_systems = n_systems;
+    options
 }
 
 /// Typed input for standalone residual chi-square RAIM.
@@ -383,16 +383,15 @@ fn qc_fde(
 ) -> PyResult<PyFdeResult> {
     let inputs = config.to_inputs();
     let with_geodetic = config.with_geodetic_flag();
-    let options = FdeSppOptions {
-        fde: FdeOptions {
-            raim: raim_options(p_fa, weights, n_systems),
-            max_iterations,
-        },
-        validation: SolutionValidationOptions {
-            max_pdop,
-            ..Default::default()
-        },
-    };
+    let mut validation = SolutionValidationOptions::default();
+    validation.max_pdop = max_pdop;
+    let raim = raim_options(p_fa, weights, n_systems);
+    let mut fde = FdeOptions::new(raim.clone(), max_iterations);
+    fde.raim = raim;
+    fde.max_iterations = max_iterations;
+    let mut options = FdeSppOptions::new(fde.clone(), validation);
+    options.fde = fde;
+    options.validation = validation;
 
     match fde_spp(&sp3.inner, &inputs, with_geodetic, &options) {
         Ok(result) => Ok(PyFdeResult {
@@ -426,16 +425,15 @@ fn qc_fde_broadcast(
 ) -> PyResult<PyFdeResult> {
     let inputs = config.to_inputs();
     let with_geodetic = config.with_geodetic_flag();
-    let options = FdeSppOptions {
-        fde: FdeOptions {
-            raim: raim_options(p_fa, weights, n_systems),
-            max_iterations,
-        },
-        validation: SolutionValidationOptions {
-            max_pdop,
-            ..Default::default()
-        },
-    };
+    let mut validation = SolutionValidationOptions::default();
+    validation.max_pdop = max_pdop;
+    let raim = raim_options(p_fa, weights, n_systems);
+    let mut fde = FdeOptions::new(raim.clone(), max_iterations);
+    fde.raim = raim;
+    fde.max_iterations = max_iterations;
+    let mut options = FdeSppOptions::new(fde.clone(), validation);
+    options.fde = fde;
+    options.validation = validation;
 
     match fde_spp(&broadcast.inner, &inputs, with_geodetic, &options) {
         Ok(result) => Ok(PyFdeResult {
@@ -553,16 +551,15 @@ fn solve_spp_robust_fde_impl(
 ) -> PyResult<PyFdeResult> {
     let inputs = config.to_inputs();
     let with_geodetic = config.with_geodetic_flag();
-    let options = FdeSppOptions {
-        fde: FdeOptions {
-            raim: raim_options(p_fa, weights, n_systems),
-            max_iterations,
-        },
-        validation: SolutionValidationOptions {
-            max_pdop,
-            ..Default::default()
-        },
-    };
+    let mut validation = SolutionValidationOptions::default();
+    validation.max_pdop = max_pdop;
+    let raim = raim_options(p_fa, weights, n_systems);
+    let mut fde = FdeOptions::new(raim.clone(), max_iterations);
+    fde.raim = raim;
+    fde.max_iterations = max_iterations;
+    let mut options = FdeSppOptions::new(fde.clone(), validation);
+    options.fde = fde;
+    options.validation = validation;
 
     match quality::spp_robust_fde_driver(
         &sp3.inner,
@@ -816,11 +813,10 @@ fn qc_raim_fde_design(
         .iter()
         .map(|row| row.borrow(py).inner.clone())
         .collect();
-    let options = RangeFdeOptions {
-        p_fa,
-        max_exclusions: max_exclusions.unwrap_or(usize::MAX),
-        min_redundancy,
-    };
+    let mut options = RangeFdeOptions::default();
+    options.p_fa = p_fa;
+    options.max_exclusions = max_exclusions.unwrap_or(usize::MAX);
+    options.min_redundancy = min_redundancy;
     let inner =
         core_raim_fde_design(&rows, &options).map_err(|e| PyValueError::new_err(e.to_string()))?;
     Ok(PyRangeFdeResult { inner })
@@ -1537,15 +1533,11 @@ fn observation_qc(
     interval_override_s: Option<f64>,
     gap_factor: f64,
 ) -> PyResult<PyObservationQcReport> {
-    let report = core_observation_qc_with_options(
-        obs.inner(),
-        ObservationQcOptions {
-            interval_override_s,
-            gap_factor,
-            ..ObservationQcOptions::default()
-        },
-    )
-    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+    let mut options = ObservationQcOptions::default();
+    options.interval_override_s = interval_override_s;
+    options.gap_factor = gap_factor;
+    let report = core_observation_qc_with_options(obs.inner(), options)
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
     Ok(report.into())
 }
 

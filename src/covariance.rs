@@ -675,30 +675,29 @@ fn propagate_covariance(
     let drag = drag.map(|value| value.borrow(py).inner());
     let state = *initial_state.inner();
 
-    let config = PropagationConfig {
-        force_model: force_model.to_core(),
-        mu_km3_s2,
-        integrator: IntegratorKind::from(integrator),
-        options: IntegratorOptions {
-            abs_tol,
-            rel_tol,
-            initial_step: initial_step_s,
-            min_step: min_step_s,
-            max_step: max_step_s,
-            max_steps,
-            dense_output: false,
-        },
-        drag,
-        ..PropagationConfig::new(
-            state.epoch_tdb_seconds,
-            state.position_array(),
-            state.velocity_array(),
-        )
-    };
-    let options = CovariancePropagationOptions {
-        process_noise,
-        output_frame: output_frame.into(),
-    };
+    let mut integrator_options = IntegratorOptions::default();
+    integrator_options.abs_tol = abs_tol;
+    integrator_options.rel_tol = rel_tol;
+    integrator_options.initial_step = initial_step_s;
+    integrator_options.min_step = min_step_s;
+    integrator_options.max_step = max_step_s;
+    integrator_options.max_steps = max_steps;
+    integrator_options.dense_output = false;
+
+    let mut config = PropagationConfig::new(
+        state.epoch_tdb_seconds,
+        state.position_array(),
+        state.velocity_array(),
+    );
+    config.force_model = force_model.to_core();
+    config.mu_km3_s2 = mu_km3_s2;
+    config.integrator = IntegratorKind::from(integrator);
+    config.options = integrator_options;
+    config.drag = drag;
+
+    let mut options = CovariancePropagationOptions::default();
+    options.process_noise = process_noise;
+    options.output_frame = output_frame.into();
     let initial_covariance = initial_covariance.inner();
     let inner = if let Some(table) = space_weather_table {
         let source = table.borrow(py).source();

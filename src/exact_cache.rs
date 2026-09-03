@@ -203,12 +203,11 @@ fn data_exact_cache_open_single_flight<'py>(
     timing_s: (f64, f64, f64, f64),
 ) -> PyResult<(Option<CacheRead<'py>>, Option<Py<PyExactCacheOwner>>)> {
     let (poll_interval_s, heartbeat_interval_s, liveness_timeout_s, wait_timeout_s) = timing_s;
-    let options = ExactCacheSingleFlightOptions {
-        poll_interval: positive_duration("poll_interval_s", poll_interval_s)?,
-        heartbeat_interval: positive_duration("heartbeat_interval_s", heartbeat_interval_s)?,
-        liveness_timeout: positive_duration("liveness_timeout_s", liveness_timeout_s)?,
-        wait_timeout: positive_duration("wait_timeout_s", wait_timeout_s)?,
-    };
+    let mut options = ExactCacheSingleFlightOptions::default();
+    options.poll_interval = positive_duration("poll_interval_s", poll_interval_s)?;
+    options.heartbeat_interval = positive_duration("heartbeat_interval_s", heartbeat_interval_s)?;
+    options.liveness_timeout = positive_duration("liveness_timeout_s", liveness_timeout_s)?;
+    options.wait_timeout = positive_duration("wait_timeout_s", wait_timeout_s)?;
     let cache = ExactProductCache::new(
         stable_path,
         identity(identity_json)?,

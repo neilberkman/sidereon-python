@@ -103,11 +103,9 @@ impl PyGeofenceProbabilityOptions {
     #[new]
     #[pyo3(signature = (method=PyGeofenceProbabilityMethod::BOUNDARY_NORMAL))]
     fn new(method: PyGeofenceProbabilityMethod) -> Self {
-        Self {
-            inner: ProbabilityOptions {
-                method: method.into(),
-            },
-        }
+        let mut inner = ProbabilityOptions::default();
+        inner.method = method.into();
+        Self { inner }
     }
 
     /// Probability integration method.

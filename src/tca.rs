@@ -41,10 +41,10 @@ fn julian_date(jd: (f64, f64)) -> JulianDate {
 }
 
 fn finder_options(coarse_step_seconds: f64, time_tolerance_seconds: f64) -> TcaFinderOptions {
-    TcaFinderOptions {
-        coarse_step_seconds,
-        time_tolerance_seconds,
-    }
+    let mut options = TcaFinderOptions::default();
+    options.coarse_step_seconds = coarse_step_seconds;
+    options.time_tolerance_seconds = time_tolerance_seconds;
+    options
 }
 
 fn force_model_kind(force_model: PyForceModel, mu_km3_s2: Option<f64>) -> ForceModelKind {
@@ -94,14 +94,14 @@ fn pc_options(
         )?,
         None => DEFAULT_TCA_POSITION_COVARIANCE_KM2,
     };
-    Ok(TcaPcOptions {
-        hard_body_radius_km,
-        method: method.into(),
-        covariances: TcaPcCovariances {
-            primary_covariance_km2: primary,
-            secondary_covariance_km2: secondary,
-        },
-    })
+    let mut options = TcaPcOptions::new(hard_body_radius_km, method.into());
+    options.hard_body_radius_km = hard_body_radius_km;
+    options.method = method.into();
+    options.covariances = TcaPcCovariances {
+        primary_covariance_km2: primary,
+        secondary_covariance_km2: secondary,
+    };
+    Ok(options)
 }
 
 /// One local time of closest approach candidate. The relative state is
@@ -442,6 +442,15 @@ fn find_tca_conjunctions_with_propagated_covariance(
         PyProcessNoise::inner,
         ProcessNoise::default,
     );
+    let mut integrator_options = IntegratorOptions::default();
+    integrator_options.abs_tol = abs_tol;
+    integrator_options.rel_tol = rel_tol;
+    integrator_options.initial_step = initial_step_s;
+    integrator_options.min_step = min_step_s;
+    integrator_options.max_step = max_step_s;
+    integrator_options.max_steps = max_steps;
+    integrator_options.dense_output = false;
+
     let pc_options = TcaPropagatedCovariancePcOptions::new(
         hard_body_radius_km,
         method.into(),
@@ -451,15 +460,7 @@ fn find_tca_conjunctions_with_propagated_covariance(
     .with_covariance_propagator(
         force_model_kind(force_model, mu_km3_s2),
         integrator_kind(integrator),
-        IntegratorOptions {
-            abs_tol,
-            rel_tol,
-            initial_step: initial_step_s,
-            min_step: min_step_s,
-            max_step: max_step_s,
-            max_steps,
-            dense_output: false,
-        },
+        integrator_options,
     )
     .with_process_noise(process_noise);
 
@@ -647,19 +648,20 @@ fn screen_tca_conjunctions_with_propagated_covariance(
         PyProcessNoise::inner,
         ProcessNoise::default,
     );
+    let mut integrator_options = IntegratorOptions::default();
+    integrator_options.abs_tol = abs_tol;
+    integrator_options.rel_tol = rel_tol;
+    integrator_options.initial_step = initial_step_s;
+    integrator_options.min_step = min_step_s;
+    integrator_options.max_step = max_step_s;
+    integrator_options.max_steps = max_steps;
+    integrator_options.dense_output = false;
+
     let pc_options = TcaPropagatedCovarianceOptions::new(hard_body_radius_km, method.into())
         .with_covariance_propagator(
             force_model_kind(force_model, mu_km3_s2),
             integrator_kind(integrator),
-            IntegratorOptions {
-                abs_tol,
-                rel_tol,
-                initial_step: initial_step_s,
-                min_step: min_step_s,
-                max_step: max_step_s,
-                max_steps,
-                dense_output: false,
-            },
+            integrator_options,
         )
         .with_process_noise(process_noise);
     let hits = core_screen_conjunctions_with_propagated_covariance(

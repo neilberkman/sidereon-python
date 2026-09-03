@@ -2676,17 +2676,15 @@ impl PyRinexRepairOptions {
         sort_records: bool,
         drop_unsupported: bool,
     ) -> Self {
-        Self {
-            inner: CoreRepairOptions {
-                file_stamp: None,
-                set_interval,
-                set_time_of_last_obs,
-                set_obs_counts,
-                drop_empty_records,
-                sort_records,
-                drop_unsupported,
-            },
-        }
+        let mut inner = CoreRepairOptions::default();
+        inner.file_stamp = None;
+        inner.set_interval = set_interval;
+        inner.set_time_of_last_obs = set_time_of_last_obs;
+        inner.set_obs_counts = set_obs_counts;
+        inner.drop_empty_records = drop_empty_records;
+        inner.sort_records = sort_records;
+        inner.drop_unsupported = drop_unsupported;
+        Self { inner }
     }
 }
 

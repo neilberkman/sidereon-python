@@ -79,11 +79,9 @@ impl PyDtedLookupOptions {
     #[new]
     #[pyo3(signature = (interpolation=PyDtedInterpolation::BILINEAR))]
     fn new(interpolation: PyDtedInterpolation) -> Self {
-        Self {
-            inner: DtedLookupOptions {
-                interpolation: interpolation.into(),
-            },
-        }
+        let mut inner = DtedLookupOptions::default();
+        inner.interpolation = interpolation.into();
+        Self { inner }
     }
 
     #[getter]

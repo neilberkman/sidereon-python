@@ -79,15 +79,15 @@ impl PyReliabilityOptions {
         lambda0_override: Option<f64>,
         min_redundancy: Option<f64>,
     ) -> Self {
-        let defaults = ReliabilityOptions::default();
-        Self {
-            inner: ReliabilityOptions {
-                alpha: alpha.unwrap_or(defaults.alpha),
-                beta: beta.unwrap_or(defaults.beta),
-                lambda0_override,
-                min_redundancy: min_redundancy.unwrap_or(defaults.min_redundancy),
-            },
-        }
+        let mut inner = ReliabilityOptions::default();
+        let default_alpha = inner.alpha;
+        let default_beta = inner.beta;
+        let default_min_redundancy = inner.min_redundancy;
+        inner.alpha = alpha.unwrap_or(default_alpha);
+        inner.beta = beta.unwrap_or(default_beta);
+        inner.lambda0_override = lambda0_override;
+        inner.min_redundancy = min_redundancy.unwrap_or(default_min_redundancy);
+        Self { inner }
     }
 
     /// Two-sided false-alarm probability for the w-test.

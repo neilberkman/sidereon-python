@@ -1662,29 +1662,28 @@ fn fit_tle(
     metadata: Option<Py<PyTleFitMetadata>>,
 ) -> PyResult<PyTleFit> {
     let samples: Vec<FitSample> = samples.iter().map(|s| s.borrow(py).inner).collect();
-    let config = FitConfig {
-        epoch: epoch
-            .as_ref()
-            .map(|value| value.borrow(py).inner())
-            .unwrap_or_default(),
-        fit_bstar,
-        bstar_seed,
-        use_velocity,
-        velocity_weight_s,
-        weights,
-        opsmode: opsmode.into(),
-        ftol,
-        xtol,
-        gtol,
-        max_nfev,
-        x_scale: x_scale.as_ref().map(|value| value.borrow(py).inner()),
-        loss: loss.into(),
-        f_scale,
-        metadata: metadata
-            .as_ref()
-            .map(|value| value.borrow(py).inner())
-            .unwrap_or_default(),
-    };
+    let mut config = FitConfig::default();
+    config.epoch = epoch
+        .as_ref()
+        .map(|value| value.borrow(py).inner())
+        .unwrap_or_default();
+    config.fit_bstar = fit_bstar;
+    config.bstar_seed = bstar_seed;
+    config.use_velocity = use_velocity;
+    config.velocity_weight_s = velocity_weight_s;
+    config.weights = weights;
+    config.opsmode = opsmode.into();
+    config.ftol = ftol;
+    config.xtol = xtol;
+    config.gtol = gtol;
+    config.max_nfev = max_nfev;
+    config.x_scale = x_scale.as_ref().map(|value| value.borrow(py).inner());
+    config.loss = loss.into();
+    config.f_scale = f_scale;
+    config.metadata = metadata
+        .as_ref()
+        .map(|value| value.borrow(py).inner())
+        .unwrap_or_default();
     let inner = py
         .allow_threads(move || core_fit_tle(&samples, &config))
         .map_err(|err| SolveError::new_err(err.to_string()))?;
@@ -1890,16 +1889,16 @@ impl PyTle {
         let ground_station = station.inner;
         let looks =
             look_angle_arc(&self.satellite, ground_station, &instants).map_err(to_solve_err)?;
+        let mut options = PassFinderOptions::default();
+        options.elevation_mask_deg = elevation_mask_deg;
+        options.coarse_step_seconds = step_seconds;
+        options.time_tolerance_seconds = time_tolerance_s;
         let passes = find_passes_for_satellite(
             &self.satellite,
             ground_station,
             instants[0],
             *instants.last().expect("non-empty instants checked"),
-            PassFinderOptions {
-                elevation_mask_deg,
-                coarse_step_seconds: step_seconds,
-                time_tolerance_seconds: time_tolerance_s,
-            },
+            options,
         )
         .map_err(to_solve_err)?;
 
@@ -1955,16 +1954,16 @@ impl PyTle {
             return Err(PyValueError::new_err("step_seconds must be positive"));
         }
 
+        let mut options = PassFinderOptions::default();
+        options.elevation_mask_deg = elevation_mask_deg;
+        options.coarse_step_seconds = step_seconds;
+        options.time_tolerance_seconds = time_tolerance_s;
         let passes = find_passes_for_satellite(
             &self.satellite,
             station.inner,
             UtcInstant::from_unix_microseconds(start_unix_us),
             UtcInstant::from_unix_microseconds(end_unix_us),
-            PassFinderOptions {
-                elevation_mask_deg,
-                coarse_step_seconds: step_seconds,
-                time_tolerance_seconds: time_tolerance_s,
-            },
+            options,
         )
         .map_err(to_solve_err)?;
         Ok(passes.iter().map(to_py_pass).collect())
@@ -2331,19 +2330,20 @@ fn propagate_state(
     let drag = drag.map(|value| value.borrow(py).inner());
     let force_model = force_kind_from_any(force_model, mu_km3_s2)?;
 
+    let mut options = IntegratorOptions::default();
+    options.abs_tol = abs_tol;
+    options.rel_tol = rel_tol;
+    options.initial_step = initial_step_s;
+    options.min_step = min_step_s;
+    options.max_step = max_step_s;
+    options.max_steps = max_steps;
+    options.dense_output = false;
+
     let propagator = StatePropagator {
         initial: sidereon::state::CartesianState::new(epoch_s, position, velocity),
         force_model,
         integrator: IntegratorKind::from(integrator),
-        options: IntegratorOptions {
-            abs_tol,
-            rel_tol,
-            initial_step: initial_step_s,
-            min_step: min_step_s,
-            max_step: max_step_s,
-            max_steps,
-            dense_output: false,
-        },
+        options,
         drag,
         space_weather: None,
     };
@@ -2959,11 +2959,10 @@ impl PyConstellation {
 
         let start = UtcInstant::from_unix_microseconds(start_unix_us);
         let end = UtcInstant::from_unix_microseconds(end_unix_us);
-        let options = PassFinderOptions {
-            elevation_mask_deg,
-            coarse_step_seconds: step_seconds,
-            time_tolerance_seconds: time_tolerance_s,
-        };
+        let mut options = PassFinderOptions::default();
+        options.elevation_mask_deg = elevation_mask_deg;
+        options.coarse_step_seconds = step_seconds;
+        options.time_tolerance_seconds = time_tolerance_s;
 
         let mut out = Vec::new();
         for (index, satellite) in self.satellites.iter().enumerate() {
