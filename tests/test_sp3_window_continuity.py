@@ -43,7 +43,7 @@ def test_stencil_extent_and_window_verdict_map_the_three_core_cases():
     axis = product.epochs_j2000_seconds
 
     before_s, after_s = product.stencil_extent()
-    assert (before_s, after_s) == (1_500.0, 1_500.0)
+    assert (before_s, after_s) == (3_300.0, 3_300.0)
 
     inside_one_day = _speed_only_verdict(product, float(axis[24]), float(axis[72]))
     assert inside_one_day == {

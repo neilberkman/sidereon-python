@@ -138,9 +138,12 @@ The Python package mirrors the full breadth of the engine.
   decode and SSR store helpers, and NTRIP client stream handling.
 - **Ephemeris and time:** broadcast ephemeris and precise SP3 products, JPL SPK
   (DAF/.bsp) kernels, uniform satellite-state sampling across broadcast and
-  precise sources with batched multi-satellite interpolation, scale-aware time
-  (UTC/TAI/TT/TDB/UT1 and the GNSS system times) with leap-second handling,
-  and Earth orientation parameters (EOP).
+  precise sources with batched multi-satellite interpolation, configurable
+  SP3 coverage-gap interpolation policy (`gap_threshold_factor`, default 1.5)
+  and window-scoped continuity verification options (`check_continuity` and
+  `continuity_verdict`), scale-aware time (UTC/TAI/TT/TDB/UT1 and the GNSS
+  system times) with leap-second handling, and Earth orientation parameters
+  (EOP).
 - **Timing and clocks:** Allan-family stability analysis (ADEV/MDEV/HDEV/TDEV)
   and power-law clock-noise identification with a five-coefficient fit
   (IEEE 1139).
