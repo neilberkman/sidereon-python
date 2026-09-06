@@ -34,7 +34,8 @@ use sidereon_core::ephemeris::{
 };
 use sidereon_core::ephemeris::{
     check_continuity, ContinuityDefect, ContinuityOptions, EpochWindow, MergeContinuityViolation,
-    OrbitClass, SpeedBound, StencilExtent, WindowContinuityDecision, WindowContinuityVerdict,
+    OrbitClass, Sp3InterpolationOptions, SpeedBound, StencilExtent, WindowContinuityDecision,
+    WindowContinuityVerdict,
 };
 use sidereon_core::DigestProvenance;
 use sidereon_core::Error as CoreError;
@@ -137,6 +138,7 @@ fn parse_sat(token: &str) -> PyResult<GnssSatelliteId> {
 fn continuity_options(
     orbit_class: Option<&str>,
     residual_tolerance_m: Option<f64>,
+    gap_threshold_factor: Option<f64>,
 ) -> PyResult<ContinuityOptions> {
     let speed_bound = match orbit_class {
         None => None,
@@ -152,6 +154,11 @@ fn continuity_options(
     let mut options = ContinuityOptions::new(speed_bound, residual_tolerance_m);
     options.speed_bound = speed_bound;
     options.residual_tolerance_m = residual_tolerance_m;
+    if let Some(factor) = gap_threshold_factor {
+        let interpolation = Sp3InterpolationOptions::new(factor)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        options = options.with_interpolation_options(interpolation);
+    }
     Ok(options)
 }
 
@@ -307,6 +314,21 @@ impl PySp3 {
             .collect()
     }
 
+    /// SP3 interpolation gap threshold factor carried by this product.
+    #[getter]
+    fn gap_threshold_factor(&self) -> f64 {
+        self.inner.interpolation_options().gap_threshold_factor()
+    }
+
+    /// Return a copy of this product with an explicit gap threshold factor.
+    fn with_interpolation_options(&self, gap_threshold_factor: f64) -> PyResult<Self> {
+        let options = Sp3InterpolationOptions::new(gap_threshold_factor)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(Self {
+            inner: self.inner.clone().with_interpolation_options(options),
+        })
+    }
+
     /// The product's parsed epochs as seconds since J2000, in the file's own time
     /// scale, ascending, as a numpy `(n,)` `float64` array.
     ///
@@ -330,21 +352,28 @@ impl PySp3 {
     /// `orbit_class` is one of `"meo_gnss"` (default), `"geosynchronous"`,
     /// `"leo"`, or `None` to disable the speed gate.
     /// `residual_tolerance_m` enables the residual check; `None` disables it.
+    /// `gap_threshold_factor` configures the hold-out interpolation policy;
+    /// `None` leaves the core default (1.5).
     ///
     /// Returns a dict with `defects`, `attested`, and the counts of what was
     /// examined, so "checked and clean" stays distinguishable from "not
     /// checked". This reports rather than refuses: whether a product with
     /// defects is acceptable is the caller's decision.
-    #[pyo3(signature = (orbit_class = "meo_gnss", residual_tolerance_m = Some(1.0)))]
+    #[pyo3(signature = (
+        orbit_class = "meo_gnss",
+        residual_tolerance_m = Some(1.0),
+        gap_threshold_factor = None,
+    ))]
     fn check_continuity(
         &self,
         py: Python<'_>,
         orbit_class: Option<&str>,
         residual_tolerance_m: Option<f64>,
+        gap_threshold_factor: Option<f64>,
     ) -> PyResult<PyObject> {
         let report = check_continuity(
             &self.inner.precise_ephemeris_samples(),
-            &continuity_options(orbit_class, residual_tolerance_m)?,
+            &continuity_options(orbit_class, residual_tolerance_m, gap_threshold_factor)?,
         );
 
         let defects = continuity_defects_to_list(py, &report.defects)?;
@@ -377,6 +406,7 @@ impl PySp3 {
         through_j2000_s,
         orbit_class = "meo_gnss",
         residual_tolerance_m = Some(1.0),
+        gap_threshold_factor = None,
     ))]
     fn continuity_verdict(
         &self,
@@ -385,6 +415,7 @@ impl PySp3 {
         through_j2000_s: f64,
         orbit_class: Option<&str>,
         residual_tolerance_m: Option<f64>,
+        gap_threshold_factor: Option<f64>,
     ) -> PyResult<PyObject> {
         let window = EpochWindow::new(from_j2000_s, through_j2000_s)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
@@ -392,7 +423,7 @@ impl PySp3 {
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let report = check_continuity(
             &self.inner.precise_ephemeris_samples(),
-            &continuity_options(orbit_class, residual_tolerance_m)?,
+            &continuity_options(orbit_class, residual_tolerance_m, gap_threshold_factor)?,
         );
         continuity_verdict_to_py(py, report.verdict_for_window(window, stencil))
     }
@@ -528,12 +559,19 @@ impl PySp3 {
     }
 
     /// Build deterministic memory-mappable precise-interpolant artifact bytes.
+    #[pyo3(signature = (gap_threshold_factor = None))]
     fn precise_interpolant_artifact_bytes<'py>(
         &self,
         py: Python<'py>,
+        gap_threshold_factor: Option<f64>,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = self
-            .inner
+        let mut product = self.inner.clone();
+        if let Some(factor) = gap_threshold_factor {
+            let options = Sp3InterpolationOptions::new(factor)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            product = product.with_interpolation_options(options);
+        }
+        let bytes = product
             .precise_interpolant_store_bytes()
             .map_err(precise_artifact_error_without_bytes)?;
         Ok(PyBytes::new(py, &bytes))
@@ -1098,11 +1136,36 @@ impl PyPreciseEphemerisSamples {
     /// scales, a sample is non-finite, or an epoch is not representable as J2000
     /// seconds.
     #[staticmethod]
-    fn from_samples(py: Python<'_>, samples: Vec<Py<PyPreciseEphemerisSample>>) -> PyResult<Self> {
+    #[pyo3(signature = (samples, gap_threshold_factor = None))]
+    fn from_samples(
+        py: Python<'_>,
+        samples: Vec<Py<PyPreciseEphemerisSample>>,
+        gap_threshold_factor: Option<f64>,
+    ) -> PyResult<Self> {
         let samples = samples.iter().map(|s| s.borrow(py).to_core());
-        let inner = PreciseEphemerisSamples::from_samples(samples)
+        let mut inner = PreciseEphemerisSamples::from_samples(samples)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let Some(factor) = gap_threshold_factor {
+            let options = Sp3InterpolationOptions::new(factor)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            inner = inner.with_interpolation_options(options);
+        }
         Ok(Self { inner })
+    }
+
+    /// SP3 interpolation gap threshold factor carried by this source.
+    #[getter]
+    fn gap_threshold_factor(&self) -> f64 {
+        self.inner.interpolation_options().gap_threshold_factor()
+    }
+
+    /// Return a copy of these samples with an explicit gap threshold factor.
+    fn with_interpolation_options(&self, gap_threshold_factor: f64) -> PyResult<Self> {
+        let options = Sp3InterpolationOptions::new(gap_threshold_factor)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self {
+            inner: self.inner.clone().with_interpolation_options(options),
+        })
     }
 
     /// Time scale every sample epoch is expressed in.
@@ -1141,27 +1204,65 @@ pub struct PyPreciseEphemerisInterpolant {
 impl PyPreciseEphemerisInterpolant {
     /// Build a cached interpolant from a parsed SP3 product.
     #[staticmethod]
-    fn from_sp3(source: &PySp3) -> Self {
-        Self {
-            inner: PreciseEphemerisInterpolant::from_sp3(&source.inner),
+    #[pyo3(signature = (source, gap_threshold_factor = None))]
+    fn from_sp3(source: &PySp3, gap_threshold_factor: Option<f64>) -> PyResult<Self> {
+        let mut inner = PreciseEphemerisInterpolant::from_sp3(&source.inner);
+        if let Some(factor) = gap_threshold_factor {
+            let options = Sp3InterpolationOptions::new(factor)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            inner = inner.with_interpolation_options(options);
         }
+        Ok(Self { inner })
     }
 
     /// Build a cached interpolant directly from precise-ephemeris samples.
     #[staticmethod]
-    fn from_samples(py: Python<'_>, samples: Vec<Py<PyPreciseEphemerisSample>>) -> PyResult<Self> {
+    #[pyo3(signature = (samples, gap_threshold_factor = None))]
+    fn from_samples(
+        py: Python<'_>,
+        samples: Vec<Py<PyPreciseEphemerisSample>>,
+        gap_threshold_factor: Option<f64>,
+    ) -> PyResult<Self> {
         let samples = samples.iter().map(|s| s.borrow(py).to_core());
-        let inner = PreciseEphemerisInterpolant::from_samples(samples)
+        let mut inner = PreciseEphemerisInterpolant::from_samples(samples)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if let Some(factor) = gap_threshold_factor {
+            let options = Sp3InterpolationOptions::new(factor)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            inner = inner.with_interpolation_options(options);
+        }
         Ok(Self { inner })
     }
 
     /// Build a cached interpolant from an existing sample-backed source.
     #[staticmethod]
-    fn from_precise_ephemeris_samples(source: &PyPreciseEphemerisSamples) -> Self {
-        Self {
-            inner: PreciseEphemerisInterpolant::from_precise_ephemeris_samples(&source.inner),
+    #[pyo3(signature = (source, gap_threshold_factor = None))]
+    fn from_precise_ephemeris_samples(
+        source: &PyPreciseEphemerisSamples,
+        gap_threshold_factor: Option<f64>,
+    ) -> PyResult<Self> {
+        let mut inner = PreciseEphemerisInterpolant::from_precise_ephemeris_samples(&source.inner);
+        if let Some(factor) = gap_threshold_factor {
+            let options = Sp3InterpolationOptions::new(factor)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            inner = inner.with_interpolation_options(options);
         }
+        Ok(Self { inner })
+    }
+
+    /// SP3 interpolation gap threshold factor carried by this interpolant.
+    #[getter]
+    fn gap_threshold_factor(&self) -> f64 {
+        self.inner.interpolation_options().gap_threshold_factor()
+    }
+
+    /// Return a copy of this interpolant with an explicit gap threshold factor.
+    fn with_interpolation_options(&self, gap_threshold_factor: f64) -> PyResult<Self> {
+        let options = Sp3InterpolationOptions::new(gap_threshold_factor)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self {
+            inner: self.inner.clone().with_interpolation_options(options),
+        })
     }
 
     /// Time scale of the source epochs used to build this handle.
@@ -1324,6 +1425,12 @@ impl PyPreciseInterpolantArtifact {
         self.inner.time_scale().into()
     }
 
+    /// SP3 interpolation gap threshold factor read from the artifact header.
+    #[getter]
+    fn gap_threshold_factor(&self) -> f64 {
+        self.inner.interpolation_options().gap_threshold_factor()
+    }
+
     /// Satellite tokens present in the artifact.
     #[getter]
     fn satellites(&self) -> Vec<String> {
@@ -1465,28 +1572,35 @@ fn precise_artifact_error(err: PreciseInterpolantStoreError, truncated: bool) ->
 ///   directly; or
 /// - a path (`str` or `os.PathLike`): the file is read and parsed.
 ///
+/// `gap_threshold_factor` optionally configures the product-carried SP3
+/// coverage-gap interpolation policy; `None` leaves the core default (1.5).
+///
 /// Raises [`Sp3ParseError`](crate::Sp3ParseError) on malformed content, `OSError`
-/// if the path cannot be read, and `TypeError` if `source` is neither bytes nor a
-/// path.
+/// if the path cannot be read, `ValueError` if `gap_threshold_factor` is not
+/// finite or <= 1.0, and `TypeError` if `source` is neither bytes nor a path.
 #[pyfunction]
-fn load_sp3(source: &Bound<'_, PyAny>) -> PyResult<PySp3> {
+#[pyo3(signature = (source, gap_threshold_factor = None))]
+fn load_sp3(source: &Bound<'_, PyAny>, gap_threshold_factor: Option<f64>) -> PyResult<PySp3> {
     // bytes-like first, so a `bytes` argument keeps the prior "content" meaning.
-    if let Ok(bytes) = source.downcast::<PyBytes>() {
-        let inner = sidereon::load_sp3(bytes.as_bytes()).map_err(to_sp3_err)?;
-        return Ok(PySp3 { inner });
-    }
-    if let Ok(buf) = source.downcast::<PyByteArray>() {
+    let mut inner = if let Ok(bytes) = source.downcast::<PyBytes>() {
+        sidereon::load_sp3(bytes.as_bytes()).map_err(to_sp3_err)?
+    } else if let Ok(buf) = source.downcast::<PyByteArray>() {
         // SAFETY: the buffer is copied into the parser synchronously here; no
         // Python code runs in between to mutate or free it.
-        let inner = sidereon::load_sp3(unsafe { buf.as_bytes() }).map_err(to_sp3_err)?;
-        return Ok(PySp3 { inner });
+        sidereon::load_sp3(unsafe { buf.as_bytes() }).map_err(to_sp3_err)?
+    } else {
+        // Otherwise treat it as a path (str / os.PathLike via PyO3's fspath support).
+        let path: PathBuf = source.extract().map_err(|_| {
+            PyValueError::new_err("load_sp3 expects bytes, bytearray, or a path (str/os.PathLike)")
+        })?;
+        let data = std::fs::read(&path)?;
+        sidereon::load_sp3(&data).map_err(to_sp3_err)?
+    };
+    if let Some(factor) = gap_threshold_factor {
+        let options = Sp3InterpolationOptions::new(factor)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        inner = inner.with_interpolation_options(options);
     }
-    // Otherwise treat it as a path (str / os.PathLike via PyO3's fspath support).
-    let path: PathBuf = source.extract().map_err(|_| {
-        PyValueError::new_err("load_sp3 expects bytes, bytearray, or a path (str/os.PathLike)")
-    })?;
-    let data = std::fs::read(&path)?;
-    let inner = sidereon::load_sp3(&data).map_err(to_sp3_err)?;
     Ok(PySp3 { inner })
 }
 
@@ -1645,11 +1759,13 @@ fn _validate_exact_sp3(
 
 /// Build deterministic precise-interpolant artifact bytes from an SP3 product.
 #[pyfunction]
+#[pyo3(signature = (sp3, gap_threshold_factor = None))]
 fn build_precise_interpolant_artifact_bytes<'py>(
     py: Python<'py>,
     sp3: &PySp3,
+    gap_threshold_factor: Option<f64>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    sp3.precise_interpolant_artifact_bytes(py)
+    sp3.precise_interpolant_artifact_bytes(py, gap_threshold_factor)
 }
 
 pub(crate) fn parse_satellites(tokens: &[String]) -> PyResult<Vec<GnssSatelliteId>> {

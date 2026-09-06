@@ -6,6 +6,16 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [2.1.0] - 2026-09-05
 
+### Added
+
+- Configurable SP3 coverage-gap interpolation policy (`gap_threshold_factor`, default 1.5):
+  - `load_sp3(..., gap_threshold_factor=None)` loads SP3 products with an explicit gap threshold factor.
+  - `Sp3.gap_threshold_factor` reads the active factor; `Sp3.with_interpolation_options(factor)` returns a copy with the updated policy.
+  - `Sp3.check_continuity(..., gap_threshold_factor=None)` and `Sp3.continuity_verdict(..., gap_threshold_factor=None)` accept an optional gap threshold factor override.
+  - `PreciseEphemerisSamples.from_samples(..., gap_threshold_factor=None)` preserves or overrides the factor; `PreciseEphemerisSamples.gap_threshold_factor` and `with_interpolation_options(factor)` inspect and update it.
+  - `PreciseEphemerisInterpolant.from_sp3(..., gap_threshold_factor=None)`, `from_samples(..., gap_threshold_factor=None)`, and `from_precise_ephemeris_samples(..., gap_threshold_factor=None)` accept an optional factor; `PreciseEphemerisInterpolant.gap_threshold_factor` and `with_interpolation_options(factor)` inspect and update it.
+  - `Sp3.precise_interpolant_artifact_bytes(gap_threshold_factor=None)`, `build_precise_interpolant_artifact_bytes(sp3, gap_threshold_factor=None)`, and `PreciseInterpolantArtifact.gap_threshold_factor` serialize, build, and inspect precomputed artifacts with the interpolation policy.
+
 ### Changed
 
 - Engine update: sidereon 2.1.0 / sidereon-core 2.1.0. Additive upstream release: the SP3 coverage-gap threshold is now a validated, product-carried policy (`Sp3InterpolationOptions`, default 1.5 and bit-identical to before), the SP3 window-scoped continuity reach is derived from the interpolator's actual selectable node spans, and RINEX 4 CNAV week/TOW round trips are stable at the week boundary.
