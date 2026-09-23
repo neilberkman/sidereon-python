@@ -325,26 +325,26 @@ SP3_DATE = dt.date(2026, 6, 25)
 def test_predicted_ionex_filenames_match_reference():
     p1 = data.predicted_ionex("cod_prd1", IONEX_DATE)
     p2 = data.predicted_ionex("cod_prd2", IONEX_DATE)
-    assert p1.canonical_filename() == "COD0OPSPRD_20261650000_01D_01H_GIM.INX"
-    assert p2.canonical_filename() == "COD0OPSPRD_20261660000_01D_01H_GIM.INX"
+    assert p1.canonical_filename() == "COD0OPSP0D_20261650000_01D_01H_GIM.INX"
+    assert p2.canonical_filename() == "COD0OPSP1D_20261660000_01D_01H_GIM.INX"
 
 
-def test_predicted_ionex_urls_use_aiub_tier_and_resolved_year():
+def test_predicted_ionex_urls_use_the_aiub_prd_archive():
     p1 = data.predicted_ionex("cod_prd1", IONEX_DATE)
     assert p1.archive_url() == (
-        "https://www.aiub.unibe.ch/download/CODE/IONO/P1/2026/"
-        "COD0OPSPRD_20261650000_01D_01H_GIM.INX.gz"
+        "https://www.aiub.unibe.ch/download/CODE/IONO/PRD/"
+        "COD0OPSP0D_20261650000_01D_01H_GIM.INX.gz"
     )
     p2 = data.predicted_ionex("cod_prd2", IONEX_DATE)
     assert p2.archive_url() == (
-        "https://www.aiub.unibe.ch/download/CODE/IONO/P2/2026/"
-        "COD0OPSPRD_20261660000_01D_01H_GIM.INX.gz"
+        "https://www.aiub.unibe.ch/download/CODE/IONO/PRD/"
+        "COD0OPSP1D_20261660000_01D_01H_GIM.INX.gz"
     )
     boundary = data.predicted_ionex("cod_prd2", dt.date(2026, 12, 31))
     assert boundary.date == dt.date(2027, 1, 1)
     assert boundary.archive_url() == (
-        "https://www.aiub.unibe.ch/download/CODE/IONO/P2/2027/"
-        "COD0OPSPRD_20270010000_01D_01H_GIM.INX.gz"
+        "https://www.aiub.unibe.ch/download/CODE/IONO/PRD/"
+        "COD0OPSP1D_20270010000_01D_01H_GIM.INX.gz"
     )
 
 

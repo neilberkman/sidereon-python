@@ -151,10 +151,12 @@ def test_exact_product_set_is_order_independent_but_fail_closed():
     assert caught.value.unexpected == (second,)
 
 
-def test_exact_product_set_retains_prediction_tier_metadata():
+def test_exact_product_set_distinguishes_the_predicted_lines_for_one_map_date():
     one_day = _predicted_ionex_request("cod_prd1", dt.date(2026, 7, 15)).identity
     two_day = _predicted_ionex_request("cod_prd2", dt.date(2026, 7, 14)).identity
-    assert one_day.official_filename == two_day.official_filename
+    assert one_day.date == two_day.date
+    assert one_day.official_filename == "COD0OPSP0D_20261960000_01D_01H_GIM.INX"
+    assert two_day.official_filename == "COD0OPSP1D_20261960000_01D_01H_GIM.INX"
 
     with pytest.raises(distribution.ExactProductSetError) as caught:
         distribution.validate_exact_product_set([one_day], [two_day])
@@ -225,8 +227,8 @@ def test_predicted_ionex_direct_path_and_semantic_identity(tmp_path):
     target = dt.date(2026, 7, 15)
     exact = _predicted_ionex_request("cod_prd1", target)
     expected_url = (
-        "https://www.aiub.unibe.ch/download/CODE/IONO/P1/2026/"
-        "COD0OPSPRD_20261960000_01D_01H_GIM.INX.gz"
+        "https://www.aiub.unibe.ch/download/CODE/IONO/PRD/"
+        "COD0OPSP0D_20261960000_01D_01H_GIM.INX.gz"
     )
 
     def handler(request):
@@ -250,10 +252,12 @@ def test_predicted_ionex_wrong_date_is_typed_validation_failure(tmp_path):
         distribution.acquire(request, cache_dir=tmp_path)
 
 
-def test_predicted_tiers_with_same_filename_cannot_share_cache(tmp_path):
+def test_predicted_lines_for_one_map_date_cannot_share_cache(tmp_path):
     p1 = _predicted_ionex_request("cod_prd1", dt.date(2026, 7, 16)).identity
     p2 = _predicted_ionex_request("cod_prd2", dt.date(2026, 7, 15)).identity
-    assert p1.official_filename == p2.official_filename
+    assert p1.date == p2.date
+    assert p1.official_filename == "COD0OPSP0D_20261970000_01D_01H_GIM.INX"
+    assert p2.official_filename == "COD0OPSP1D_20261970000_01D_01H_GIM.INX"
     assert p1.key != p2.key
     assert distribution._cache_path(
         tmp_path, p1, distribution.DistributionSource.DIRECT

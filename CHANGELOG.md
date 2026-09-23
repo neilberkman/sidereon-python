@@ -4,6 +4,27 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-09-22
+
+### Fixed
+
+- CODE predicted ionosphere maps resolve to the archive AIUB now serves them
+  from. `cod_prd1` is `CODE/IONO/PRD/COD0OPSP0D_<date>0000_01D_01H_GIM.INX.gz`
+  and `cod_prd2` is `CODE/IONO/PRD/COD0OPSP1D_<date>0000_01D_01H_GIM.INX.gz`;
+  the `CODE/IONO/P1/<year>` and `CODE/IONO/P2/<year>` `COD0OPSPRD` trees they
+  were read from stopped receiving issues after 2026-09-21 and are now empty,
+  so every predicted-IONEX request (`predicted_ionex`, `fetch_ionex` with
+  `cod_prd1`/`cod_prd2`, the cross-line walk) returned not-published. For the
+  dates both layouts carried the objects decompress to the same bytes. The two
+  lines now carry distinct official filenames, so their identities and cache
+  paths differ by name as well as by prediction horizon. Publication status
+  counts only objects under `CODE/IONO/PRD/`, not the rolling copies CODE keeps
+  at the tree root.
+
+### Changed
+
+- Engine update: sidereon 2.1.1 / sidereon-core 2.1.1.
+
 ## [2.1.0] - 2026-09-05
 
 ### Added
