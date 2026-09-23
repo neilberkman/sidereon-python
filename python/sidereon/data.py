@@ -950,11 +950,12 @@ def rapid_ionex(date: _dt.date, *, sample: Optional[str] = None) -> Product:
 def predicted_ionex(
     center: str, date: _dt.date, *, sample: Optional[str] = None
 ) -> Product:
-    """Build a CODE predicted IONEX product (``COD0OPSPRD``) for a UTC day.
+    """Build a CODE predicted IONEX product for a UTC day.
 
-    ``center`` is ``"cod_prd1"`` (1-day-ahead) or ``"cod_prd2"`` (2-day-ahead).
-    The horizon is encoded by offsetting the target day; both aliases serve the
-    same ``COD0OPSPRD`` token.
+    ``center`` is ``"cod_prd1"`` (1-day-ahead, ``COD0OPSP0D``) or
+    ``"cod_prd2"`` (2-day-ahead, ``COD0OPSP1D``); both are archived under
+    AIUB's ``CODE/IONO/PRD/``. The horizon is encoded by offsetting the target
+    day (:func:`predicted_day_offset`), so the product's date is its map date.
     """
     if center not in ("cod_prd1", "cod_prd2"):
         raise UnknownCenter(
@@ -969,9 +970,10 @@ def predicted_ionex_line_candidates(
 ) -> list[Product]:
     """Ordered cross-line candidates for one predicted IONEX map date.
 
-    Both CODE predicted lines publish the same official filename for a map
-    date, but the two-day line is produced a day earlier, so ``cod_prd2`` is
-    routinely published while ``cod_prd1`` is still absent when CODE runs
+    Both CODE predicted lines publish a map for every map date, each under its
+    own filename token (``COD0OPSP0D`` for ``cod_prd1``, ``COD0OPSP1D`` for
+    ``cod_prd2``). The two-day line is produced a day earlier, so ``cod_prd2``
+    is routinely published while ``cod_prd1`` is still absent when CODE runs
     behind. Candidates are ordered ``cod_prd1`` first, cover the SAME map
     date (never a neighboring day's map), and keep their distinct line
     identities so resolved provenance names the line actually served. The
