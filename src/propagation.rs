@@ -11,8 +11,9 @@
 use numpy::{PyArray1, PyArray2, PyArray3, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyModule};
+use pyo3::types::{PyAny, PyDict, PyModule};
 
+use sidereon::astro::forces::TideSystem;
 use sidereon::astro::forces::{SolidEarthPoleTideGravity, SolidEarthTideGravity};
 use sidereon::geometry::visible_at_elevation_mask;
 use sidereon::passes::{
@@ -27,17 +28,20 @@ use sidereon::propagator::{
     ForceModelComponents, ForceModelKind, IntegratorKind, PropagationForceModel, StatePropagator,
 };
 use sidereon::sgp4::{
-    fit_tle as core_fit_tle, parse_tle_file_with_opsmode, DecayLatch as CoreDecayLatch, ElementSet,
+    fit_tle as core_fit_tle, parse_tle_file_with_policy, DecayLatch as CoreDecayLatch, ElementSet,
     FitConfig, FitEpoch, FitSample, FitStatistics, JulianDate as Sgp4JulianDate, Loss as CoreLoss,
-    OpsMode as CoreOpsMode, Satellite, TleFit, TleMetadata, XScale,
+    OpsMode as CoreOpsMode, RejectedTleRecord, Satellite, TleFit, TleMetadata, TleRecordIssue,
+    XScale,
 };
 use sidereon::tle::{
-    encode as encode_tle_lines, parse as parse_tle_lines, ChecksumWarning, TleElements,
+    encode as encode_tle_lines, parse_with_policy as parse_tle_lines_with_policy, ChecksumWarning,
+    ChecksumWarningKind, TleElements, TlePolicy,
 };
 use sidereon::{
     SchwarzschildRelativity, SolarRadiationPressure, SphericalHarmonicGravityConfig,
     ThirdBodyGravity, ZonalDegrees, ZonalGravity,
 };
+use sidereon_core::astro::passes::PassError as CorePassError;
 
 use crate::events::PyWgs84Geodetic;
 use crate::forces::PyDragParameters;
@@ -49,15 +53,10 @@ use crate::omm::PyOmm;
 use crate::space_weather::PySpaceWeatherTable;
 use crate::{to_solve_err, to_tle_err, SolveError, TleParseError};
 
-const UNIX_EPOCH_JDN: i64 = 2_440_588;
-const MICROSECONDS_PER_DAY_I64: i64 = 86_400_000_000;
-
+/// The split Julian date `Tle.propagate` propagates at for a unix-microsecond
+/// instant: the core's, Skyfield 1.54's split for that UTC instant.
 fn sgp4_julian_date_from_unix_microseconds(unix_microseconds: i64) -> Sgp4JulianDate {
-    let days = unix_microseconds.div_euclid(MICROSECONDS_PER_DAY_I64);
-    let micros_of_day = unix_microseconds.rem_euclid(MICROSECONDS_PER_DAY_I64);
-    let jd_midnight = (UNIX_EPOCH_JDN + days) as f64 - 0.5;
-    let fraction = micros_of_day as f64 / MICROSECONDS_PER_DAY_I64 as f64;
-    Sgp4JulianDate(jd_midnight, fraction)
+    Sgp4JulianDate::from_unix_microseconds(unix_microseconds)
 }
 
 /// SGP4 operation mode for TLE initialization.
@@ -107,6 +106,30 @@ impl PyOpsMode {
         match self {
             PyOpsMode::AFSPC => "OpsMode.AFSPC",
             PyOpsMode::IMPROVED => "OpsMode.IMPROVED",
+        }
+    }
+}
+
+/// How a TLE reader treats column 69, the modulo-10 checksum of columns
+/// 1-68, mirroring the core `TlePolicy`. Under both policies a line that ends
+/// before column 69 is read and reported.
+#[pyclass(module = "sidereon._sidereon", name = "TlePolicy", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum PyTlePolicy {
+    /// Refuse a checksum digit that disagrees and a column 69 that is not a
+    /// digit.
+    STRICT,
+    /// Accept both and report each in `checksum_warnings`, as Vallado's
+    /// `twoline2rv` reads.
+    LENIENT,
+}
+
+impl From<PyTlePolicy> for TlePolicy {
+    fn from(policy: PyTlePolicy) -> Self {
+        match policy {
+            PyTlePolicy::STRICT => TlePolicy::Strict,
+            PyTlePolicy::LENIENT => TlePolicy::Lenient,
         }
     }
 }
@@ -271,6 +294,47 @@ pub struct PyForceModelComponents {
     inner: ForceModelComponents,
 }
 
+#[pyclass(module = "sidereon._sidereon", name = "TideSystem", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyTideSystem {
+    TIDE_FREE,
+    ZERO_TIDE,
+    MEAN_TIDE,
+}
+
+impl From<PyTideSystem> for TideSystem {
+    fn from(value: PyTideSystem) -> Self {
+        match value {
+            PyTideSystem::TIDE_FREE => Self::TideFree,
+            PyTideSystem::ZERO_TIDE => Self::ZeroTide,
+            PyTideSystem::MEAN_TIDE => Self::MeanTide,
+        }
+    }
+}
+
+impl From<TideSystem> for PyTideSystem {
+    fn from(value: TideSystem) -> Self {
+        match value {
+            TideSystem::TideFree => Self::TIDE_FREE,
+            TideSystem::ZeroTide => Self::ZERO_TIDE,
+            TideSystem::MeanTide => Self::MEAN_TIDE,
+        }
+    }
+}
+
+#[pymethods]
+impl PyTideSystem {
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::TIDE_FREE => "tide_free",
+            Self::ZERO_TIDE => "zero_tide",
+            Self::MEAN_TIDE => "mean_tide",
+        }
+    }
+}
+
 impl PyForceModelComponents {
     fn inner(&self) -> ForceModelComponents {
         self.inner
@@ -297,6 +361,9 @@ fn zonal_degree_label(zonal: Option<ZonalGravity>) -> Option<u8> {
 #[pymethods]
 impl PyForceModelComponents {
     /// Build an additive force-component set.
+    ///
+    /// `tide_system` declares the tide system of zonal coefficients and selects
+    /// the solid-Earth-tide correction. It does not transform coefficient values.
     #[new]
     #[pyo3(signature = (
         two_body_mu_km3_s2=None,
@@ -308,6 +375,7 @@ impl PyForceModelComponents {
         solid_earth_pole_tide=false,
         solar_radiation_pressure=None,
         relativity=false,
+        tide_system=PyTideSystem::TIDE_FREE,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -320,7 +388,9 @@ impl PyForceModelComponents {
         solid_earth_pole_tide: bool,
         solar_radiation_pressure: Option<&PySolarRadiationPressure>,
         relativity: bool,
+        tide_system: PyTideSystem,
     ) -> PyResult<Self> {
+        let tide_system: TideSystem = tide_system.into();
         let mut inner = ForceModelComponents {
             two_body_mu_km3_s2,
             ..ForceModelComponents::EMPTY
@@ -331,7 +401,13 @@ impl PyForceModelComponents {
                     .map_err(|err| PyValueError::new_err(err.to_string()))?,
                 ..ZonalGravity::default()
             };
-            inner.zonal = Some(zonal);
+            inner.zonal = Some(ZonalGravity {
+                coefficients: sidereon::astro::forces::ZonalCoefficients {
+                    tide_system,
+                    ..zonal.coefficients
+                },
+                ..zonal
+            });
         }
         match (spherical_harmonic_max_degree, spherical_harmonic_max_order) {
             (Some(max_degree), Some(max_order)) => {
@@ -344,6 +420,11 @@ impl PyForceModelComponents {
                     SphericalHarmonicGravityConfig::earth(max_degree, max_order)
                         .map_err(|err| PyValueError::new_err(err.to_string()))?,
                 );
+                if tide_system != TideSystem::TideFree {
+                    return Err(PyValueError::new_err(
+                        "embedded EGM96 spherical harmonics use the tide-free system",
+                    ));
+                }
             }
             (None, None) => {}
             _ => {
@@ -356,7 +437,10 @@ impl PyForceModelComponents {
             inner.third_body = Some(ThirdBodyGravity::default());
         }
         if solid_earth_tide {
-            inner.solid_earth_tide = Some(SolidEarthTideGravity::default());
+            inner.solid_earth_tide = Some(SolidEarthTideGravity {
+                tide_system,
+                ..SolidEarthTideGravity::default()
+            });
         }
         if solid_earth_pole_tide {
             inner.solid_earth_pole_tide = Some(SolidEarthPoleTideGravity::default());
@@ -365,6 +449,14 @@ impl PyForceModelComponents {
             solar_radiation_pressure.map(PySolarRadiationPressure::inner);
         if relativity {
             inner.relativity = Some(SchwarzschildRelativity::default());
+        }
+        if tide_system != TideSystem::TideFree
+            && inner.solid_earth_tide.is_none()
+            && inner.zonal.is_none()
+        {
+            return Err(PyValueError::new_err(
+                "a non-default tide system requires zonal gravity or solid Earth tide",
+            ));
         }
         Ok(Self { inner })
     }
@@ -454,9 +546,19 @@ impl PyForceModelComponents {
         self.inner.relativity.is_some()
     }
 
+    #[getter]
+    fn tide_system(&self) -> PyTideSystem {
+        self.inner
+            .solid_earth_tide
+            .map(|gravity| gravity.tide_system)
+            .or_else(|| self.inner.zonal.map(|zonal| zonal.coefficients.tide_system))
+            .unwrap_or(TideSystem::TideFree)
+            .into()
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "ForceModelComponents(two_body_mu_km3_s2={:?}, zonal_max_degree={:?}, spherical_harmonic_max_degree={:?}, spherical_harmonic_max_order={:?}, third_body={}, solid_earth_tide={}, solid_earth_pole_tide={}, solar_radiation_pressure={}, relativity={})",
+            "ForceModelComponents(two_body_mu_km3_s2={:?}, zonal_max_degree={:?}, spherical_harmonic_max_degree={:?}, spherical_harmonic_max_order={:?}, third_body={}, solid_earth_tide={}, solid_earth_pole_tide={}, solar_radiation_pressure={}, relativity={}, tide_system={})",
             self.two_body_mu_km3_s2(),
             self.zonal_max_degree(),
             self.spherical_harmonic_max_degree(),
@@ -465,7 +567,8 @@ impl PyForceModelComponents {
             self.solid_earth_tide(),
             self.solid_earth_pole_tide(),
             self.solar_radiation_pressure(),
-            self.relativity()
+            self.relativity(),
+            self.tide_system().label()
         )
     }
 }
@@ -991,32 +1094,56 @@ impl PyVisibleSatellite {
     }
 }
 
-/// An advisory TLE checksum discrepancy.
+/// A TLE line whose column 69 did not confirm its checksum.
 ///
-/// The TLE grammar does not reject a line on a bad modulo-10 checksum, so each
-/// mismatch is surfaced here (via [`Tle.checksum_warnings`]) rather than raised.
-/// `line_label` is `"line 1"` or `"line 2"`; `expected` is the digit found in
-/// column 69 and `computed` is the digit recomputed from columns 1-68.
+/// `line_label` is `"line 1"` or `"line 2"`. `kind` is `"mismatch"` (a digit
+/// that differs from the checksum, in `expected`), `"not_digit"` (another
+/// character, in `found`) or `"missing"` (the line ends before column 69).
+/// `computed` is the checksum of columns 1-68, or of as many as the line has.
+/// A strict read refuses a mismatch and a non-digit; a lenient read reports
+/// them here. A missing checksum is reported under both.
 #[pyclass(module = "sidereon._sidereon", name = "ChecksumWarning")]
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct PyChecksumWarning {
     line_label: &'static str,
-    expected: u8,
+    kind: ChecksumWarningKind,
     computed: u8,
 }
 
 #[pymethods]
 impl PyChecksumWarning {
-    /// Which line the discrepancy is on: `"line 1"` or `"line 2"`.
+    /// Which line the finding is on: `"line 1"` or `"line 2"`.
     #[getter]
     fn line_label(&self) -> &'static str {
         self.line_label
     }
 
-    /// The checksum digit found in column 69 of the line.
+    /// What column 69 held: `"mismatch"`, `"not_digit"` or `"missing"`.
     #[getter]
-    fn expected(&self) -> u8 {
-        self.expected
+    fn kind(&self) -> &'static str {
+        match self.kind {
+            ChecksumWarningKind::Mismatch { .. } => "mismatch",
+            ChecksumWarningKind::NotDigit { .. } => "not_digit",
+            ChecksumWarningKind::Missing => "missing",
+        }
+    }
+
+    /// The checksum digit found in column 69, for a `"mismatch"`.
+    #[getter]
+    fn expected(&self) -> Option<u8> {
+        match self.kind {
+            ChecksumWarningKind::Mismatch { expected } => Some(expected),
+            _ => None,
+        }
+    }
+
+    /// The character found in column 69, for a `"not_digit"`.
+    #[getter]
+    fn found(&self) -> Option<String> {
+        match self.kind {
+            ChecksumWarningKind::NotDigit { found } => Some(found.to_string()),
+            _ => None,
+        }
     }
 
     /// The checksum digit recomputed from columns 1-68.
@@ -1027,15 +1154,15 @@ impl PyChecksumWarning {
 
     fn __repr__(&self) -> String {
         format!(
-            "ChecksumWarning(line_label={:?}, expected={}, computed={})",
-            self.line_label, self.expected, self.computed
+            "ChecksumWarning(line_label={:?}, kind={:?}, computed={})",
+            self.line_label,
+            self.kind(),
+            self.computed
         )
     }
 
     fn __eq__(&self, other: &PyChecksumWarning) -> bool {
-        self.line_label == other.line_label
-            && self.expected == other.expected
-            && self.computed == other.computed
+        self == other
     }
 }
 
@@ -1043,7 +1170,7 @@ impl From<&ChecksumWarning> for PyChecksumWarning {
     fn from(w: &ChecksumWarning) -> Self {
         Self {
             line_label: w.line_label,
-            expected: w.expected,
+            kind: w.kind,
             computed: w.computed,
         }
     }
@@ -1513,8 +1640,8 @@ impl PyFitStatistics {
 /// Fitted SGP4 element set plus TLE and OMM encodings.
 #[pyclass(module = "sidereon._sidereon", name = "TleFit")]
 #[derive(Clone)]
-pub struct PyTleFit {
-    inner: TleFit,
+pub(crate) struct PyTleFit {
+    pub(crate) inner: TleFit,
 }
 
 impl PyTleFit {
@@ -1562,13 +1689,17 @@ impl PyTleFit {
         self.elements().bstar
     }
 
+    /// First mean-motion derivative field (TLE ṅ/2, rev/day^2), `None` when
+    /// the element set does not state it.
     #[getter]
-    fn mean_motion_dot(&self) -> f64 {
+    fn mean_motion_dot(&self) -> Option<f64> {
         self.elements().mean_motion_dot
     }
 
+    /// Second mean-motion derivative field (TLE n̈/6, rev/day^3), `None`
+    /// when the element set does not state it.
     #[getter]
-    fn mean_motion_double_dot(&self) -> f64 {
+    fn mean_motion_double_dot(&self) -> Option<f64> {
         self.elements().mean_motion_double_dot
     }
 
@@ -1602,9 +1733,17 @@ impl PyTleFit {
         self.elements().right_ascension_deg
     }
 
+    /// Catalog number of the fitted element set, `None` when it states none.
     #[getter]
-    fn catalog_number(&self) -> u32 {
+    fn catalog_number(&self) -> Option<u32> {
         self.elements().catalog_number
+    }
+
+    /// Days since 1949-12-31 00:00 UTC used by the OMM SGP4 initialization
+    /// path, or `None` when the exact split epoch side channel is used.
+    #[getter]
+    fn omm_epoch_days(&self) -> Option<f64> {
+        self.elements().omm_epoch_days
     }
 
     fn to_lines(&self) -> (String, String) {
@@ -1613,7 +1752,7 @@ impl PyTleFit {
 
     fn __repr__(&self) -> String {
         format!(
-            "TleFit(catalog_number={}, rms_position_km={})",
+            "TleFit(catalog_number={:?}, rms_position_km={})",
             self.elements().catalog_number,
             self.inner.stats.rms_position_km
         )
@@ -1686,7 +1825,7 @@ fn fit_tle(
         .unwrap_or_default();
     let inner = py
         .allow_threads(move || core_fit_tle(&samples, &config))
-        .map_err(|err| SolveError::new_err(err.to_string()))?;
+        .map_err(|error| crate::tle_fit_error_detail::tle_fit_error(py, error))?;
     Ok(PyTleFit { inner })
 }
 
@@ -1751,15 +1890,18 @@ impl PyTle {
 #[pymethods]
 impl PyTle {
     #[new]
-    #[pyo3(signature = (line1, line2, opsmode=PyOpsMode::AFSPC))]
+    #[pyo3(signature = (line1, line2, opsmode=PyOpsMode::AFSPC, *, policy=PyTlePolicy::STRICT))]
     fn new(
         line1: &str,
         line2: &str,
         #[pyo3(from_py_with = extract_opsmode)] opsmode: PyOpsMode,
+        policy: PyTlePolicy,
     ) -> PyResult<Self> {
         let mode = CoreOpsMode::from(opsmode);
-        let parsed = parse_tle_lines(line1, line2).map_err(to_tle_err)?;
-        let satellite = Satellite::from_tle_with_opsmode(line1, line2, mode).map_err(to_tle_err)?;
+        let policy = TlePolicy::from(policy);
+        let parsed = parse_tle_lines_with_policy(line1, line2, policy).map_err(to_tle_err)?;
+        let (satellite, _) =
+            Satellite::from_tle_with_policy(line1, line2, mode, policy).map_err(to_tle_err)?;
         Ok(Self {
             elements: parsed.elements,
             satellite,
@@ -1774,8 +1916,10 @@ impl PyTle {
         encode_tle_lines(&self.elements).map_err(to_tle_err)
     }
 
-    /// Advisory checksum discrepancies found while parsing, as a list of
-    /// [`ChecksumWarning`]. Empty when both lines' checksums are valid.
+    /// Checksum findings the read accepted, as a list of [`ChecksumWarning`]:
+    /// a line with no column 69 under either policy, and under
+    /// `TlePolicy.LENIENT` also a mismatching or non-digit column 69. Empty
+    /// when both lines' checksums confirm them.
     #[getter]
     fn checksum_warnings(&self) -> Vec<PyChecksumWarning> {
         self.checksum_warnings
@@ -2071,10 +2215,35 @@ impl PyTle {
         self.elements.bstar
     }
 
-    /// Revolution number at epoch.
+    /// Revolution number at epoch, `None` when the field is blank.
     #[getter]
-    fn rev_number(&self) -> i32 {
+    fn rev_number(&self) -> Option<i32> {
         self.elements.rev_number
+    }
+
+    /// Element-set number, `None` when the field is blank.
+    #[getter]
+    fn elset_number(&self) -> Option<i32> {
+        self.elements.elset_number
+    }
+
+    /// Ephemeris type (column 63), `None` when the column is blank.
+    #[getter]
+    fn ephemeris_type(&self) -> Option<i32> {
+        self.elements.ephemeris_type
+    }
+
+    /// The eight characters of the B* field as read, written back by
+    /// `to_lines` while they decode to exactly `bstar`.
+    #[getter]
+    fn bstar_text(&self) -> Option<String> {
+        self.elements.bstar_text.clone()
+    }
+
+    /// The eight characters of the second-derivative field as read.
+    #[getter]
+    fn mean_motion_double_dot_text(&self) -> Option<String> {
+        self.elements.mean_motion_double_dot_text.clone()
     }
 
     fn __repr__(&self) -> String {
@@ -2094,6 +2263,7 @@ impl PyTle {
 pub struct PyNamedTle {
     name: String,
     tle: Py<PyTle>,
+    line_number: usize,
 }
 
 #[pymethods]
@@ -2105,10 +2275,17 @@ impl PyNamedTle {
         self.name.clone()
     }
 
-    /// The parsed satellite, ready to `propagate` / `look_angles`.
+    /// The parsed satellite, ready to `propagate` / `look_angles`. Its
+    /// `checksum_warnings` are the findings the file's policy accepted.
     #[getter]
     fn tle(&self, py: Python<'_>) -> Py<PyTle> {
         self.tle.clone_ref(py)
+    }
+
+    /// One-based line number of the record's line 1 in the file text.
+    #[getter]
+    fn line_number(&self) -> usize {
+        self.line_number
     }
 
     fn __repr__(&self, py: Python<'_>) -> String {
@@ -2120,13 +2297,67 @@ impl PyNamedTle {
     }
 }
 
+/// A stretch of a TLE file the reader did not turn into a satellite.
+///
+/// `issue` is `"invalid"` (a line 1 and line 2 whose element set the TLE
+/// grammar, the checksum policy or SGP4 initialization refused, with the
+/// reason in `message`), `"missing_line2"`, `"orphan_line2"` or
+/// `"orphan_name"`.
+#[pyclass(module = "sidereon._sidereon", name = "RejectedTleRecord")]
+#[derive(Clone)]
+pub struct PyRejectedTleRecord {
+    inner: RejectedTleRecord,
+}
+
+#[pymethods]
+impl PyRejectedTleRecord {
+    /// One-based line number of the first rejected line: the name line when
+    /// the record had one, otherwise its line 1 or line 2.
+    #[getter]
+    fn line_number(&self) -> usize {
+        self.inner.line_number
+    }
+
+    /// The name line belonging to the rejected lines, empty when there was
+    /// none.
+    #[getter]
+    fn name(&self) -> String {
+        self.inner.name.clone()
+    }
+
+    /// Why the lines were rejected.
+    #[getter]
+    fn issue(&self) -> &'static str {
+        match self.inner.issue {
+            TleRecordIssue::Invalid(_) => "invalid",
+            TleRecordIssue::MissingLine2 => "missing_line2",
+            TleRecordIssue::OrphanLine2 => "orphan_line2",
+            TleRecordIssue::OrphanName => "orphan_name",
+        }
+    }
+
+    /// The reason as the core states it.
+    #[getter]
+    fn message(&self) -> String {
+        self.inner.issue.to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RejectedTleRecord(line_number={}, issue={:?}, message={:?})",
+            self.inner.line_number,
+            self.issue(),
+            self.message()
+        )
+    }
+}
+
 /// The result of parsing a multi-record TLE file: the satellites that parsed,
-/// plus a count of records that were skipped because their element set failed
-/// SGP4 initialization.
+/// and every other non-blank line with the reason it did not.
 #[pyclass(module = "sidereon._sidereon", name = "TleFile")]
 pub struct PyTleFile {
     satellites: Vec<Py<PyNamedTle>>,
-    skipped: usize,
+    rejected: Vec<RejectedTleRecord>,
 }
 
 #[pymethods]
@@ -2137,11 +2368,21 @@ impl PyTleFile {
         self.satellites.iter().map(|s| s.clone_ref(py)).collect()
     }
 
-    /// How many complete `(line 1, line 2)` records were found but skipped
-    /// because their element set failed SGP4 initialization.
+    /// Every rejected record, stray line and orphan name line, in file
+    /// order, as [`RejectedTleRecord`].
+    #[getter]
+    fn rejected(&self) -> Vec<PyRejectedTleRecord> {
+        self.rejected
+            .iter()
+            .cloned()
+            .map(|inner| PyRejectedTleRecord { inner })
+            .collect()
+    }
+
+    /// The number of entries in `rejected`.
     #[getter]
     fn skipped(&self) -> usize {
-        self.skipped
+        self.rejected.len()
     }
 
     /// Number of satellites that parsed successfully.
@@ -2151,9 +2392,9 @@ impl PyTleFile {
 
     fn __repr__(&self) -> String {
         format!(
-            "TleFile(satellites={}, skipped={})",
+            "TleFile(satellites={}, rejected={})",
             self.satellites.len(),
-            self.skipped
+            self.rejected.len()
         )
     }
 }
@@ -2163,34 +2404,40 @@ impl PyTleFile {
 ///
 /// Handles, in a single pass, bare 2-line element sets, 3-line sets (a name line
 /// followed by lines 1 and 2), and CelesTrak `0 NAME` name lines. Blank lines,
-/// CRLF endings, and surrounding whitespace are tolerated. A record whose element
-/// set fails SGP4 initialization is skipped and counted in `TleFile.skipped`
-/// rather than aborting the whole file.
+/// CRLF endings, and surrounding whitespace are tolerated. A record that fails,
+/// a stray line 1 or line 2 and a name line with no element set after it are
+/// listed in `TleFile.rejected` with their line numbers and reasons; the rest
+/// of the file is still read.
 ///
 /// `opsmode` selects the SGP4 operation mode (default `OpsMode.AFSPC`); each
-/// returned [`Tle`] is initialized with it.
+/// returned [`Tle`] is initialized with it. `policy` selects the checksum
+/// policy (default `TlePolicy.STRICT`, which rejects a record whose checksum
+/// disagrees).
 #[pyfunction]
-#[pyo3(signature = (text, *, opsmode=PyOpsMode::AFSPC))]
+#[pyo3(signature = (text, *, opsmode=PyOpsMode::AFSPC, policy=PyTlePolicy::STRICT))]
 fn parse_tle_file(
     py: Python<'_>,
     text: &str,
     #[pyo3(from_py_with = extract_opsmode)] opsmode: PyOpsMode,
+    policy: PyTlePolicy,
 ) -> PyResult<PyTleFile> {
     let mode = CoreOpsMode::from(opsmode);
-    let parsed = parse_tle_file_with_opsmode(text, mode);
+    let policy = TlePolicy::from(policy);
+    let parsed = parse_tle_file_with_policy(text, mode, policy);
     let mut satellites = Vec::with_capacity(parsed.satellites.len());
     for named in parsed.satellites {
-        // The core already initialized this satellite with `mode`; wrap it
-        // directly (no re-init) and recover the element fields / checksum
-        // advisories by re-parsing its source lines.
-        let elements = parse_tle_lines(named.satellite.line1(), named.satellite.line2())
-            .map_err(to_tle_err)?;
+        // The core already initialized this satellite with `mode` under
+        // `policy`; wrap it directly (no re-init) and recover the element
+        // fields by re-reading its source lines under the same policy.
+        let elements =
+            parse_tle_lines_with_policy(named.satellite.line1(), named.satellite.line2(), policy)
+                .map_err(to_tle_err)?;
         let tle = Py::new(
             py,
             PyTle {
                 elements: elements.elements,
                 satellite: named.satellite,
-                checksum_warnings: elements.checksum_warnings,
+                checksum_warnings: named.checksum_warnings,
             },
         )?;
         satellites.push(Py::new(
@@ -2198,12 +2445,13 @@ fn parse_tle_file(
             PyNamedTle {
                 name: named.name,
                 tle,
+                line_number: named.line_number,
             },
         )?);
     }
     Ok(PyTleFile {
         satellites,
-        skipped: parsed.skipped,
+        rejected: parsed.rejected,
     })
 }
 
@@ -2476,11 +2724,17 @@ impl PyBatchLookAngles {
 /// Build a satellite per `(line1, line2)` pair, parsed once with the GIL held so
 /// the rayon compute window touches no Python objects. A parse/init failure
 /// names the offending index. Empty fleets are valid and return empty batches.
-fn build_satellites(tles: &[(String, String)], mode: CoreOpsMode) -> PyResult<Vec<Satellite>> {
+fn build_satellites(
+    tles: &[(String, String)],
+    mode: CoreOpsMode,
+    policy: PyTlePolicy,
+) -> PyResult<Vec<Satellite>> {
+    let policy = TlePolicy::from(policy);
     tles.iter()
         .enumerate()
         .map(|(idx, (line1, line2))| {
-            Satellite::from_tle_with_opsmode(line1, line2, mode)
+            Satellite::from_tle_with_policy(line1, line2, mode, policy)
+                .map(|(satellite, _)| satellite)
                 .map_err(|e| TleParseError::new_err(format!("satellite {idx}: {e}")))
         })
         .collect()
@@ -2512,16 +2766,17 @@ fn unwrap_batch<T, E: std::fmt::Display>(results: Vec<Result<Vec<T>, E>>) -> PyR
 /// `SidereonError` (naming the index) if a satellite fails to parse or
 /// propagate.
 #[pyfunction]
-#[pyo3(signature = (tles, epochs_unix_us, *, opsmode=PyOpsMode::AFSPC, parallel=true))]
+#[pyo3(signature = (tles, epochs_unix_us, *, opsmode=PyOpsMode::AFSPC, parallel=true, policy=PyTlePolicy::STRICT))]
 fn propagate_batch(
     py: Python<'_>,
     tles: Vec<(String, String)>,
     epochs_unix_us: PyReadonlyArray1<'_, i64>,
     #[pyo3(from_py_with = extract_opsmode)] opsmode: PyOpsMode,
     parallel: bool,
+    policy: PyTlePolicy,
 ) -> PyResult<PyBatchPropagation> {
     let mode = CoreOpsMode::from(opsmode);
-    let satellites = build_satellites(&tles, mode)?;
+    let satellites = build_satellites(&tles, mode, policy)?;
     let instants = instants_from_unix_micros(&epochs_unix_us, EmptyPolicy::Allow)?;
     let epoch_count = instants.len();
 
@@ -2557,7 +2812,7 @@ fn propagate_batch(
 /// (`parallel=True` by default), bit-identical to the serial path. Returns a
 /// [`BatchLookAngles`] with `(n_satellites, n_epochs)` az/el/range arrays.
 #[pyfunction]
-#[pyo3(signature = (tles, station, epochs_unix_us, *, opsmode=PyOpsMode::AFSPC, parallel=true))]
+#[pyo3(signature = (tles, station, epochs_unix_us, *, opsmode=PyOpsMode::AFSPC, parallel=true, policy=PyTlePolicy::STRICT))]
 fn look_angles_batch(
     py: Python<'_>,
     tles: Vec<(String, String)>,
@@ -2565,9 +2820,10 @@ fn look_angles_batch(
     epochs_unix_us: PyReadonlyArray1<'_, i64>,
     #[pyo3(from_py_with = extract_opsmode)] opsmode: PyOpsMode,
     parallel: bool,
+    policy: PyTlePolicy,
 ) -> PyResult<PyBatchLookAngles> {
     let mode = CoreOpsMode::from(opsmode);
-    let satellites = build_satellites(&tles, mode)?;
+    let satellites = build_satellites(&tles, mode, policy)?;
     let ground_station = station.inner;
     let instants = instants_from_unix_micros(&epochs_unix_us, EmptyPolicy::Allow)?;
     let epoch_count = instants.len();
@@ -2891,6 +3147,54 @@ impl PyConstellation {
             .collect())
     }
 
+    /// Detailed per-satellite outcomes for `look_angle_arcs`. Each dictionary
+    /// has `satellite_index`, `value` (the angle arrays, or `None`), and `error`
+    /// (the complete typed core error mapping, or `None`). The legacy method
+    /// keeps returning its index-aligned empty-arc placeholders.
+    fn look_angle_arcs_detailed<'py>(
+        &self,
+        py: Python<'py>,
+        station: PyGroundStation,
+        epochs_unix_us: PyReadonlyArray1<'_, i64>,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let instants = instants_from_unix_micros(&epochs_unix_us, EmptyPolicy::Allow)?;
+        look_angle_batch_serial(&self.satellites, station.inner, &instants)
+            .into_iter()
+            .enumerate()
+            .map(|(satellite_index, result)| {
+                let outcome = PyDict::new(py);
+                outcome.set_item("satellite_index", satellite_index)?;
+                match result {
+                    Ok(looks) => {
+                        let value = PyDict::new(py);
+                        value.set_item(
+                            "azimuth_deg",
+                            looks.iter().map(|l| l.azimuth_deg).collect::<Vec<_>>(),
+                        )?;
+                        value.set_item(
+                            "elevation_deg",
+                            looks.iter().map(|l| l.elevation_deg).collect::<Vec<_>>(),
+                        )?;
+                        value.set_item(
+                            "range_km",
+                            looks.iter().map(|l| l.range_km).collect::<Vec<_>>(),
+                        )?;
+                        outcome.set_item("value", value)?;
+                        outcome.set_item("error", py.None())?;
+                    }
+                    Err(error) => {
+                        outcome.set_item("value", py.None())?;
+                        outcome.set_item(
+                            "error",
+                            crate::coverage::look_angle_error_value(py, &error)?,
+                        )?;
+                    }
+                }
+                Ok(outcome)
+            })
+            .collect()
+    }
+
     /// Sub-satellite WGS84 ground tracks for every satellite over a shared epoch
     /// grid, in fleet order (element `i` is satellite `i`'s track).
     ///
@@ -2919,6 +3223,60 @@ impl PyConstellation {
                 },
             })
             .collect())
+    }
+
+    /// Detailed per-satellite outcomes for `ground_tracks`, with one indexed
+    /// success or complete typed look-angle/frame/SGP4 error per input satellite.
+    fn ground_tracks_detailed<'py>(
+        &self,
+        py: Python<'py>,
+        epochs_unix_us: PyReadonlyArray1<'_, i64>,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let instants = instants_from_unix_micros(&epochs_unix_us, EmptyPolicy::Allow)?;
+        self.satellites
+            .iter()
+            .enumerate()
+            .map(|(satellite_index, satellite)| {
+                let outcome = PyDict::new(py);
+                outcome.set_item("satellite_index", satellite_index)?;
+                match core_ground_track(satellite, &instants) {
+                    Ok(points) => {
+                        let value = PyDict::new(py);
+                        value.set_item(
+                            "latitude_deg",
+                            points
+                                .iter()
+                                .map(|g| g.lat_rad.to_degrees())
+                                .collect::<Vec<_>>(),
+                        )?;
+                        value.set_item(
+                            "longitude_deg",
+                            points
+                                .iter()
+                                .map(|g| g.lon_rad.to_degrees())
+                                .collect::<Vec<_>>(),
+                        )?;
+                        value.set_item(
+                            "altitude_km",
+                            points
+                                .iter()
+                                .map(|g| g.height_m / 1000.0)
+                                .collect::<Vec<_>>(),
+                        )?;
+                        outcome.set_item("value", value)?;
+                        outcome.set_item("error", py.None())?;
+                    }
+                    Err(error) => {
+                        outcome.set_item("value", py.None())?;
+                        outcome.set_item(
+                            "error",
+                            crate::coverage::look_angle_error_value(py, &error)?,
+                        )?;
+                    }
+                }
+                Ok(outcome)
+            })
+            .collect()
     }
 
     /// Passes over `station` within `[start_unix_us, end_unix_us)` for every
@@ -2981,6 +3339,75 @@ impl PyConstellation {
         Ok(out)
     }
 
+    /// Detailed per-satellite pass-search outcomes. Each dictionary carries
+    /// its fleet index, that satellite's pass list (possibly empty), or the full
+    /// typed `PassError`. The legacy flattened pass list remains unchanged.
+    #[pyo3(signature = (
+        station,
+        start_unix_us,
+        end_unix_us,
+        *,
+        elevation_mask_deg = 0.0,
+        step_seconds = 30.0,
+        time_tolerance_s = 1.0e-3,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn passes_detailed<'py>(
+        &self,
+        py: Python<'py>,
+        station: PyGroundStation,
+        start_unix_us: i64,
+        end_unix_us: i64,
+        elevation_mask_deg: f64,
+        step_seconds: f64,
+        time_tolerance_s: f64,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        if end_unix_us <= start_unix_us {
+            return Err(PyValueError::new_err(
+                "end_unix_us must be after start_unix_us",
+            ));
+        }
+        if step_seconds <= 0.0 {
+            return Err(PyValueError::new_err("step_seconds must be positive"));
+        }
+        let start = UtcInstant::from_unix_microseconds(start_unix_us);
+        let end = UtcInstant::from_unix_microseconds(end_unix_us);
+        let mut options = PassFinderOptions::default();
+        options.elevation_mask_deg = elevation_mask_deg;
+        options.coarse_step_seconds = step_seconds;
+        options.time_tolerance_seconds = time_tolerance_s;
+        self.satellites
+            .iter()
+            .enumerate()
+            .map(|(satellite_index, satellite)| {
+                let outcome = PyDict::new(py);
+                outcome.set_item("satellite_index", satellite_index)?;
+                match find_passes_for_satellite(satellite, station.inner, start, end, options) {
+                    Ok(passes) => {
+                        let values = passes
+                            .iter()
+                            .map(|pass| {
+                                (
+                                    pass.aos.unix_microseconds(),
+                                    pass.los.unix_microseconds(),
+                                    pass.max_elevation_deg,
+                                    pass.culmination.unix_microseconds(),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        outcome.set_item("value", values)?;
+                        outcome.set_item("error", py.None())?;
+                    }
+                    Err(error) => {
+                        outcome.set_item("value", py.None())?;
+                        outcome.set_item("error", pass_error_detail(py, &error)?)?;
+                    }
+                }
+                Ok(outcome)
+            })
+            .collect()
+    }
+
     fn __len__(&self) -> usize {
         self.satellites.len()
     }
@@ -2990,8 +3417,27 @@ impl PyConstellation {
     }
 }
 
+fn pass_error_detail<'py>(py: Python<'py>, error: &CorePassError) -> PyResult<Bound<'py, PyDict>> {
+    let node = PyDict::new(py);
+    let fields = PyDict::new(py);
+    match error {
+        CorePassError::InvalidInput { field, reason } => {
+            node.set_item("kind", "invalid_input")?;
+            fields.set_item("field", field)?;
+            fields.set_item("reason", reason)?;
+        }
+        CorePassError::Ut1OutsideCoverage(reason) => {
+            node.set_item("kind", "ut1_outside_coverage")?;
+            fields.set_item("reason", crate::degrade_reason_label(*reason))?;
+        }
+    }
+    node.set_item("fields", fields)?;
+    Ok(node)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOpsMode>()?;
+    m.add_class::<PyTideSystem>()?;
     m.add_class::<PyForceModel>()?;
     m.add_class::<PySolarRadiationPressure>()?;
     m.add_class::<PyForceModelComponents>()?;
@@ -3009,7 +3455,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDecayLatch>()?;
     m.add_class::<PyTle>()?;
     m.add_class::<PyNamedTle>()?;
+    m.add_class::<PyRejectedTleRecord>()?;
     m.add_class::<PyTleFile>()?;
+    m.add_class::<PyTlePolicy>()?;
     m.add_class::<PyTlePropagation>()?;
     m.add_class::<PyLookAngles>()?;
     m.add_class::<PyVisibilitySeries>()?;

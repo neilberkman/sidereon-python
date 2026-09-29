@@ -133,6 +133,12 @@ pub struct PyAraimGeometry {
 
 #[pymethods]
 impl PyAraimGeometry {
+    /// The UT1 departure a permissive UT1 policy accepted, `before_coverage` or `after_coverage`; `None` when every UT1 read was inside the table.
+    #[getter]
+    fn ut1_degraded(&self) -> Option<&'static str> {
+        self.inner.ut1_degraded.map(crate::degrade_reason_label)
+    }
+
     /// Build ARAIM geometry from rows, a receiver, and clock systems.
     ///
     /// `rows` are satellite line-of-sight rows. `receiver` is WGS84 geodetic in
@@ -154,6 +160,7 @@ impl PyAraimGeometry {
                 rows,
                 receiver: Wgs84Geodetic::try_from(&*receiver)?,
                 clock_systems: clock_systems.into_iter().map(Into::into).collect(),
+                ut1_degraded: None,
             },
         })
     }

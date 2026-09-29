@@ -19,6 +19,11 @@ import pytest
 import sidereon
 from _helpers import FIXTURES
 
+# The Vallado verification set carries element sets whose column-69 checksum
+# disagrees with the line (catalog numbers 33333 to 33335); `twoline2rv` reads
+# them, which the lenient policy mirrors. The strict default refuses them.
+LENIENT = sidereon.TlePolicy.LENIENT
+
 
 def _load_fixture():
     with open(os.path.join(FIXTURES, "batch_fleet.json")) as fh:
@@ -51,7 +56,7 @@ def test_propagate_batch_matches_single_tle_bits():
     epochs = _epochs_int64(fx)
     opsmode = fx["opsmode"]
 
-    batch = sidereon.propagate_batch(tles, epochs, opsmode=opsmode)
+    batch = sidereon.propagate_batch(tles, epochs, opsmode=opsmode, policy=LENIENT)
 
     n_sats, n_epochs = len(tles), len(epochs)
     assert batch.satellite_count == n_sats
@@ -64,7 +69,9 @@ def test_propagate_batch_matches_single_tle_bits():
     assert "BatchPropagation(" in repr(batch)
 
     for i, (line1, line2) in enumerate(tles):
-        ref = sidereon.Tle(line1, line2, opsmode=opsmode).propagate(epochs)
+        ref = sidereon.Tle(line1, line2, opsmode=opsmode, policy=LENIENT).propagate(
+            epochs
+        )
         assert _bits_equal(batch.position_km[i], ref.position_km)
         assert _bits_equal(batch.velocity_km_s[i], ref.velocity_km_s)
 
@@ -75,8 +82,12 @@ def test_propagate_batch_parallel_equals_serial_bits():
     epochs = _epochs_int64(fx)
     opsmode = fx["opsmode"]
 
-    parallel = sidereon.propagate_batch(tles, epochs, opsmode=opsmode, parallel=True)
-    serial = sidereon.propagate_batch(tles, epochs, opsmode=opsmode, parallel=False)
+    parallel = sidereon.propagate_batch(
+        tles, epochs, opsmode=opsmode, parallel=True, policy=LENIENT
+    )
+    serial = sidereon.propagate_batch(
+        tles, epochs, opsmode=opsmode, parallel=False, policy=LENIENT
+    )
 
     assert _bits_equal(parallel.position_km, serial.position_km)
     assert _bits_equal(parallel.velocity_km_s, serial.velocity_km_s)
@@ -87,8 +98,12 @@ def test_propagate_batch_opsmode_enum_matches_string_alias():
     tles = _tle_pairs(fx)
     epochs = _epochs_int64(fx)
 
-    legacy = sidereon.propagate_batch(tles, epochs, opsmode=fx["opsmode"])
-    enum_batch = sidereon.propagate_batch(tles, epochs, opsmode=_opsmode(fx["opsmode"]))
+    legacy = sidereon.propagate_batch(
+        tles, epochs, opsmode=fx["opsmode"], policy=LENIENT
+    )
+    enum_batch = sidereon.propagate_batch(
+        tles, epochs, opsmode=_opsmode(fx["opsmode"]), policy=LENIENT
+    )
 
     assert _bits_equal(enum_batch.position_km, legacy.position_km)
     assert _bits_equal(enum_batch.velocity_km_s, legacy.velocity_km_s)
@@ -103,7 +118,9 @@ def test_look_angles_batch_matches_single_tle_bits():
         latitude_deg=51.5074, longitude_deg=-0.1278, altitude_m=11.0
     )
 
-    batch = sidereon.look_angles_batch(tles, station, epochs, opsmode=opsmode)
+    batch = sidereon.look_angles_batch(
+        tles, station, epochs, opsmode=opsmode, policy=LENIENT
+    )
 
     n_sats, n_epochs = len(tles), len(epochs)
     assert batch.satellite_count == n_sats
@@ -114,7 +131,9 @@ def test_look_angles_batch_matches_single_tle_bits():
     assert "BatchLookAngles(" in repr(batch)
 
     for i, (line1, line2) in enumerate(tles):
-        ref = sidereon.Tle(line1, line2, opsmode=opsmode).look_angles(station, epochs)
+        ref = sidereon.Tle(line1, line2, opsmode=opsmode, policy=LENIENT).look_angles(
+            station, epochs
+        )
         assert _bits_equal(batch.azimuth_deg[i], ref.azimuth_deg)
         assert _bits_equal(batch.elevation_deg[i], ref.elevation_deg)
         assert _bits_equal(batch.range_km[i], ref.range_km)
@@ -128,10 +147,10 @@ def test_look_angles_batch_parallel_equals_serial_bits():
     station = sidereon.GroundStation(latitude_deg=40.0, longitude_deg=-105.0)
 
     parallel = sidereon.look_angles_batch(
-        tles, station, epochs, opsmode=opsmode, parallel=True
+        tles, station, epochs, opsmode=opsmode, parallel=True, policy=LENIENT
     )
     serial = sidereon.look_angles_batch(
-        tles, station, epochs, opsmode=opsmode, parallel=False
+        tles, station, epochs, opsmode=opsmode, parallel=False, policy=LENIENT
     )
 
     assert _bits_equal(parallel.azimuth_deg, serial.azimuth_deg)
@@ -145,9 +164,11 @@ def test_look_angles_batch_opsmode_enum_matches_string_alias():
     epochs = _epochs_int64(fx)
     station = sidereon.GroundStation(latitude_deg=40.0, longitude_deg=-105.0)
 
-    legacy = sidereon.look_angles_batch(tles, station, epochs, opsmode=fx["opsmode"])
+    legacy = sidereon.look_angles_batch(
+        tles, station, epochs, opsmode=fx["opsmode"], policy=LENIENT
+    )
     enum_batch = sidereon.look_angles_batch(
-        tles, station, epochs, opsmode=_opsmode(fx["opsmode"])
+        tles, station, epochs, opsmode=_opsmode(fx["opsmode"]), policy=LENIENT
     )
 
     assert _bits_equal(enum_batch.azimuth_deg, legacy.azimuth_deg)
@@ -180,8 +201,8 @@ def test_empty_epochs_return_empty_batches():
     epochs = np.asarray([], dtype=np.int64)
     station = sidereon.GroundStation(latitude_deg=40.0, longitude_deg=-105.0)
 
-    prop = sidereon.propagate_batch(tles, epochs)
-    looks = sidereon.look_angles_batch(tles, station, epochs)
+    prop = sidereon.propagate_batch(tles, epochs, policy=LENIENT)
+    looks = sidereon.look_angles_batch(tles, station, epochs, policy=LENIENT)
 
     assert prop.satellite_count == len(tles)
     assert prop.epoch_count == 0
@@ -203,3 +224,9 @@ def test_bad_tle_in_fleet_raises_with_index():
     with pytest.raises(sidereon.SidereonError) as excinfo:
         sidereon.propagate_batch(tles, epochs, opsmode=fx["opsmode"])
     assert "satellite 1" in str(excinfo.value)
+
+
+def test_strict_policy_refuses_the_verification_set_checksum_mismatch():
+    fx = _load_fixture()
+    with pytest.raises(sidereon.TleParseError, match="checksum"):
+        sidereon.propagate_batch(_tle_pairs(fx), _epochs_int64(fx))

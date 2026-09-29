@@ -14,7 +14,7 @@ import _helpers
 import numpy as np
 import pytest
 import sidereon
-from _helpers import FIXTURES
+from _helpers import FIXTURES, core_goldens, hex_to_f64
 
 
 def _fixture():
@@ -78,6 +78,14 @@ def _real_arc_fixed_options():
         partial_ambiguity_resolution=False,
         partial_min_ambiguities=4,
     )
+
+
+def _bits_list(values):
+    return np.asarray(values, dtype=np.float64).ravel().view(np.uint64).tolist()
+
+
+def _golden_bits(hex_values):
+    return [int(value, 16) for value in hex_values]
 
 
 def _vector_error_m(vector, truth):
@@ -231,6 +239,106 @@ def test_rtk_fixed_matches_reference():
     )
     assert sol.integer_status == _integer_status(exp["fixed_integer_status"])
     assert "RtkFixedSolution(" in repr(sol)
+
+
+def test_rtk_residual_validation_failure_retains_complete_outlier():
+    import pytest
+
+    base = [4075580.0, 931854.0, 4801568.0]
+    truth = [1.2, -0.85, 0.91]
+    rover = [base[i] + truth[i] for i in range(3)]
+    wavelength = 299792458.0 / 1575.42e6
+    sats = [
+        ("G01", [15000000.0, 7000000.0, 21000000.0], 0),
+        ("G02", [-12000000.0, 18000000.0, 19000000.0], 4),
+        ("G03", [20000000.0, -10000000.0, 17000000.0], -7),
+        ("G04", [-19000000.0, -13000000.0, 20000000.0], 9),
+        ("G05", [9000000.0, 22000000.0, 16000000.0], -3),
+    ]
+
+    def range_m(position, receiver):
+        return float(np.linalg.norm(np.asarray(position) - np.asarray(receiver)))
+
+    def observation(position, sat, cycles, noise):
+        base_range = range_m(position, base)
+        rover_range = range_m(position, rover)
+        return sidereon.RtkSatMeasurement(
+            sat=sat,
+            sd_ambiguity_id=sat,
+            base_code_m=base_range,
+            base_phase_m=base_range,
+            rover_code_m=rover_range + noise,
+            rover_phase_m=rover_range + cycles * wavelength,
+            base_tx_pos=position,
+            rover_tx_pos=position,
+            pos=position,
+        )
+
+    epochs = []
+    for noise in (40.0, -40.0, 40.0):
+        rows = [
+            observation(pos, sat, cycles, noise if sat == "G05" else 0.0)
+            for sat, pos, cycles in sats
+        ]
+        epochs.append(
+            sidereon.RtkEpoch(references=[rows[0]], nonref=rows[1:], dt_s=0.0)
+        )
+
+    ambiguity_ids = ["G02", "G03", "G04", "G05"]
+    config = sidereon.RtkFixedConfig(
+        epochs=epochs,
+        base=base,
+        ambiguity_ids=ambiguity_ids,
+        ambiguity_satellites={sat: sat for sat in ambiguity_ids},
+        wavelengths_m={sat: wavelength for sat in ambiguity_ids},
+        offsets_m={sat: 0.0 for sat in ambiguity_ids},
+        model=sidereon.RtkMeasurementModel(
+            code_sigma_m=0.3,
+            phase_sigma_m=0.003,
+            sagnac=False,
+            stochastic="simple",
+            elevation_weighting=False,
+        ),
+        float_options=sidereon.RtkFloatOptions(
+            position_tol_m=1.0e-3, ambiguity_tol_m=1.0e-6, max_iterations=10
+        ),
+        fixed_options=sidereon.RtkFixedOptions(
+            position_tol_m=1.0e-3,
+            ambiguity_tol_m=1.0e-6,
+            max_iterations=10,
+            ratio_threshold=3.0,
+            partial_ambiguity_resolution=False,
+            partial_min_ambiguities=4,
+        ),
+        residual_options=sidereon.RtkResidualValidationOptions(
+            threshold_sigma=6.0, max_exclusions=0
+        ),
+        initial_baseline_m=[-30.0, 25.0, -10.0],
+    )
+
+    with pytest.raises(sidereon.SolveError) as exc_info:
+        sidereon.solve_rtk_fixed(config)
+
+    error = exc_info.value
+    assert error.detail["family"] == "ValidatedFixedSolveError"
+    assert error.detail["kind"] == "residual_validation_failed"
+    assert error.detail["message"] == str(error)
+    outlier = error.detail["outlier"]
+    assert outlier["family"] == "ResidualValidationOutlier"
+    assert 0 <= outlier["epoch_index"] < len(epochs)
+    assert outlier["satellite_id"] == "G05"
+    assert outlier["reference_satellite_id"] == "G01"
+    assert outlier["ambiguity_id"] == "G05"
+    assert outlier["residual_kind"] == "code"
+    assert np.isfinite(outlier["residual_m"])
+    assert np.isfinite(outlier["sigma_m"]) and outlier["sigma_m"] > 0.0
+    assert np.isfinite(outlier["normalized_residual"])
+    derived_normalized = outlier["residual_m"] / outlier["sigma_m"]
+    division_roundoff = 2.0 * np.finfo(float).eps * max(1.0, abs(derived_normalized))
+    assert abs(outlier["normalized_residual"] - derived_normalized) <= division_roundoff
+    assert outlier["threshold_sigma"] == 6.0
+    assert abs(outlier["normalized_residual"]) > outlier["threshold_sigma"]
+    assert error.detail["exclusions"] == []
 
 
 # --- sequential RTK arc driver ---------------------------------------------
@@ -456,8 +564,15 @@ def test_rtk_arc_unsound_innovation_screen_surface_is_removed():
 
 
 def test_rtk_arc_rejects_empty_arc():
-    with pytest.raises(sidereon.SolveError):
+    with pytest.raises(sidereon.SolveError) as exc_info:
         sidereon.solve_rtk_arc([], _arc_config(_fixture()))
+
+    assert str(exc_info.value) == "RTK arc requires at least one epoch"
+    assert exc_info.value.detail == {
+        "family": "RtkArcError",
+        "kind": "empty_epochs",
+        "message": "RTK arc requires at least one epoch",
+    }
 
 
 def test_rinex_rtk_arc_options_round_trip_getters():
@@ -539,6 +654,12 @@ def test_rinex_rtk_static_convenience_solves_real_wettzell_arc():
 
 def test_static_reference_station_rinex_matches_core_oracle():
     sp3, base_obs, rover_obs, base_arp_m, truth_baseline_m = _wettzell_rinex_inputs()
+    # `scripts/core_goldens` solves the same arc through the core with the
+    # options below and writes the reference position it formed from the WTZR
+    # marker and antenna height. The solve takes that position, so it does not
+    # depend on how numpy rounds the marker norm.
+    golden = core_goldens()["rtk_static_reference"]
+    reference_position_m = [hex_to_f64(bits) for bits in golden["reference_position_m"]]
     arc_options = sidereon.RtkRinexArcOptions(
         max_epochs=24,
         include_prediction_time=False,
@@ -556,7 +677,7 @@ def test_static_reference_station_rinex_matches_core_oracle():
         sp3,
         base_obs,
         rover_obs,
-        base_arp_m.tolist(),
+        reference_position_m,
         model=_real_arc_model(),
         arc_options=arc_options,
         preprocessing=sidereon.RtkArcPreprocessing(cycle_slip="split_arc"),
@@ -567,9 +688,6 @@ def test_static_reference_station_rinex_matches_core_oracle():
         with_geodetic=True,
     )
 
-    core_position_m = np.array(
-        [4075579.3700862653, 931853.4127828529, 4801569.4021161515]
-    )
     truth_position_m = base_arp_m + truth_baseline_m
     error_m = np.asarray(solution.position) - truth_position_m
     cov = solution.covariance.position_ecef
@@ -578,14 +696,22 @@ def test_static_reference_station_rinex_matches_core_oracle():
 
     assert solution.mode == "carrier_fixed"
     assert solution.fix_status == "carrier_fixed"
-    assert np.allclose(solution.position, core_position_m, atol=1.0e-9)
+    assert _bits_list(solution.position) == _golden_bits(golden["position_m"])
+    assert _bits_list(solution.baseline_vector_m) == _golden_bits(
+        golden["baseline_vector_m"]
+    )
+    assert _bits_list([solution.baseline_m]) == _golden_bits([golden["baseline_m"]])
+    assert _bits_list(cov) == _golden_bits(golden["position_covariance_ecef_m2"])
+    assert _bits_list([solution.carrier_solution.integer_ratio]) == _golden_bits(
+        [golden["integer_ratio"]]
+    )
     assert _vector_error_m(solution.position, truth_position_m) < 0.01
     assert three_sigma_m > np.linalg.norm(error_m)
     assert three_sigma_m < 0.03
     assert np.linalg.eigvalsh(cov).min() >= -1.0e-12
     assert solution.carrier_solution.integer_status == sidereon.IntegerStatus.FIXED
     assert solution.carrier_solution.integer_ratio > 3.0
-    assert len(solution.diagnostics) == 24
+    assert len(solution.diagnostics) == golden["diagnostic_count"] == 24
     assert solution.mode_reports[0].status == "solved"
 
 
@@ -707,6 +833,35 @@ def _dual_frequency_arc():
         )
         for idx, jd_fraction in enumerate([0.25, 0.251, 0.252])
     ]
+
+
+def test_rtk_arc_exact_gap_and_prediction_epochs_preserve_sub_float_precision():
+    base_epoch = sidereon.ExactEpoch.new(1_000_000_000, 0)
+    next_epoch = sidereon.ExactEpoch.new(1_000_000_000, 1)
+    assert base_epoch.j2000_seconds() == next_epoch.j2000_seconds()
+
+    single_frequency_epoch = sidereon.RtkArcEpoch(
+        base=[],
+        rover=[],
+        satellite_positions_m={},
+        prediction_epoch=next_epoch,
+    )
+    assert single_frequency_epoch.prediction_epoch == next_epoch
+    assert single_frequency_epoch.prediction_epoch.attoseconds == 1
+
+    dual_frequency_epoch = sidereon.RtkDualFrequencyArcEpoch(
+        jd_whole=2_460_100.5,
+        jd_fraction=0.25,
+        observations=[],
+        satellite_positions_m={},
+        gap_time_s=0.0,
+        prediction_time_s=0.0,
+        gap_epoch=base_epoch,
+        prediction_epoch=next_epoch,
+    )
+    assert dual_frequency_epoch.gap_epoch == base_epoch
+    assert dual_frequency_epoch.prediction_epoch == next_epoch
+    assert dual_frequency_epoch.prediction_epoch.attoseconds == 1
 
 
 def _wide_lane_arc_config(cycle_slip=None):

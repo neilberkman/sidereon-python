@@ -19,7 +19,23 @@ from ._sidereon import (
 
 
 class ExactSp3ValidationError(ValueError):
-    """An SP3 product does not satisfy its exact requested identity."""
+    """An SP3 product does not satisfy its exact requested identity.
+
+    Native failures retain a `kind` tag and typed `detail` where the core
+    provides exact evidence, including integer 10 ns ticks for start mismatch.
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.kind = None
+        self.detail = None
+
+
+def _exact_error(exc: ValueError) -> ExactSp3ValidationError:
+    error = ExactSp3ValidationError(str(exc))
+    error.kind = getattr(exc, "kind", None)
+    error.detail = getattr(exc, "detail", None)
+    return error
 
 
 class ExactSp3Coverage(Enum):
@@ -127,7 +143,7 @@ class ExactSp3Request:
                 expected_agency,
             ) = _core_from_identity(identity_json)
         except (TypeError, ValueError) as exc:
-            raise ExactSp3ValidationError(str(exc)) from None
+            raise _exact_error(exc) from None
         request = cls(
             dt.date(year, month, day),
             span,
@@ -153,7 +169,7 @@ class ExactSp3Request:
                 self._identity_json,
             )
         except ValueError as exc:
-            raise ExactSp3ValidationError(str(exc)) from None
+            raise _exact_error(exc) from None
 
     def _core_args(self) -> tuple[object, ...]:
         return (
@@ -185,7 +201,7 @@ def parse_exact_sp3(
     try:
         sp3, coverage = _core_parse_exact_sp3(content, *request._core_args())
     except ValueError as exc:
-        raise ExactSp3ValidationError(str(exc)) from None
+        raise _exact_error(exc) from None
     return sp3, ExactSp3Coverage(coverage)
 
 
@@ -196,7 +212,7 @@ def validate_exact_sp3(sp3: Sp3, request: ExactSp3Request) -> ExactSp3Coverage:
     try:
         coverage = _core_validate_exact_sp3(sp3, *request._core_args())
     except ValueError as exc:
-        raise ExactSp3ValidationError(str(exc)) from None
+        raise _exact_error(exc) from None
     return ExactSp3Coverage(coverage)
 
 

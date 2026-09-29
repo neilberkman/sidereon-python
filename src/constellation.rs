@@ -794,15 +794,15 @@ impl PySkippedOmm {
         self.inner.object_name.clone()
     }
 
-    /// The OMM `NORAD_CAT_ID`.
+    /// The OMM `NORAD_CAT_ID`, `None` when the record does not state one.
     #[getter]
-    fn norad_id(&self) -> u32 {
+    fn norad_id(&self) -> Option<u32> {
         self.inner.norad_id
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "SkippedOmm(object_name={:?}, norad_id={})",
+            "SkippedOmm(object_name={:?}, norad_id={:?})",
             self.inner.object_name, self.inner.norad_id
         )
     }

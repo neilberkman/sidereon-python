@@ -444,8 +444,10 @@ impl PySyntheticObservationSet {
     }
 
     /// Serialize the synthetic observations to RINEX OBS text.
-    fn to_rinex_string(&self) -> String {
-        self.inner.to_rinex_string()
+    fn to_rinex_string(&self, py: Python<'_>) -> PyResult<String> {
+        self.inner
+            .to_rinex_string()
+            .map_err(|err| crate::rinex::to_obs_write_err(py, err))
     }
 
     /// Build SPP observations for one epoch from the pseudorange arrays.

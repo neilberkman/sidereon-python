@@ -58,6 +58,9 @@ from sidereon.distribution import (
     HttpAcquisitionError as HttpAcquisitionError,
 )
 from sidereon.distribution import (
+    HttpStatusFailure as HttpStatusFailure,
+)
+from sidereon.distribution import (
     InvalidContentType as InvalidContentType,
 )
 from sidereon.distribution import (
@@ -183,6 +186,7 @@ class AbsentCenter:
     pattern: Optional[str] = ...
     url: Optional[str] = ...
     http_status: Optional[int] = ...
+    detail: Optional[str] = ...
     def to_dict(self) -> dict: ...
 
 @dataclass(frozen=True)

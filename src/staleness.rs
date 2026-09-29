@@ -24,8 +24,10 @@ use sidereon_core::staleness::{
 use sidereon_core::{GnssSatelliteId, Wgs84Geodetic};
 
 use crate::ephemeris::{PySp3, PySp3State};
+use crate::exact_time::PyExactEpochQuery;
 use crate::ionex::PyIonex;
 use crate::marshal::option_py_or_default;
+use crate::rinex_clock::PyClockInstant;
 use crate::{to_solve_err, SelectionError as PySelectionError};
 
 /// Degrees to radians as a single rounded constant `pi/180`, matching the
@@ -35,8 +37,43 @@ const DEG_TO_RAD: f64 = PI / 180.0;
 
 /// Map a core [`SelectionError`] into the typed Python
 /// [`SelectionError`](crate::SelectionError), preserving the engine message.
-pub(crate) fn to_selection_err(err: SelectionError) -> PyErr {
-    PySelectionError::new_err(err.to_string())
+pub(crate) fn to_selection_err(py: Python<'_>, err: SelectionError) -> PyErr {
+    let py_error = PySelectionError::new_err(err.to_string());
+    let detail = match crate::selection_error_detail(py, &err) {
+        Ok(detail) => detail,
+        Err(error) => return error,
+    };
+    if let Err(error) = py_error.value(py).setattr("detail", detail) {
+        return error;
+    }
+    let detail = match crate::selection_error_detail(py, &err) {
+        Ok(detail) => detail,
+        Err(error) => return error,
+    };
+    if let Err(error) = py_error.value(py).setattr("selection_detail", detail) {
+        return error;
+    }
+    py_error
+}
+
+fn to_selection_instant_err(py: Python<'_>, err: SelectionError) -> PyErr {
+    let message = err.to_string();
+    let detail = match crate::selection_error_detail(py, &err) {
+        Ok(detail) => detail,
+        Err(error) => return error,
+    };
+    let py_error = match &err {
+        SelectionError::IonexEpoch(epoch_error) => crate::ionex::attach_ionex_epoch_detail(
+            py,
+            PySelectionError::new_err(message),
+            *epoch_error,
+        ),
+        _ => PySelectionError::new_err(message),
+    };
+    if let Err(error) = py_error.value(py).setattr("selection_detail", detail) {
+        return error;
+    }
+    py_error
 }
 
 /// How a selected product's source epoch relates to the requested epoch.
@@ -269,13 +306,47 @@ impl PyIonexSelection {
             receiver,
             elevation_deg * DEG_TO_RAD,
             azimuth_deg * DEG_TO_RAD,
-            epoch_j2000_s,
+            crate::ionex::ionex_epoch_from_j2000_seconds(epoch_j2000_s)?,
             frequency_hz,
         )
         .map_err(|err| match err {
             sidereon_core::Error::InvalidInput(message) => pyo3::exceptions::PyValueError::new_err(
                 format!("invalid IONEX slant input: {message}"),
             ),
+            other => to_solve_err(other.to_string()),
+        })
+    }
+
+    /// Query the selected product at a scale-tagged instant without rounding it to seconds.
+    #[pyo3(signature = (lat_deg, lon_deg, azimuth_deg, elevation_deg, epoch, frequency_hz))]
+    #[allow(clippy::too_many_arguments)]
+    fn slant_delay_at_instant(
+        &self,
+        py: Python<'_>,
+        lat_deg: f64,
+        lon_deg: f64,
+        azimuth_deg: f64,
+        elevation_deg: f64,
+        epoch: &PyClockInstant,
+        frequency_hz: f64,
+    ) -> PyResult<f64> {
+        let receiver = Wgs84Geodetic::new(lat_deg * DEG_TO_RAD, lon_deg * DEG_TO_RAD, 0.0)
+            .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?;
+        sidereon_core::atmosphere::ionex_slant_delay(
+            &self.ionex,
+            receiver,
+            elevation_deg * DEG_TO_RAD,
+            azimuth_deg * DEG_TO_RAD,
+            epoch.to_core(),
+            frequency_hz,
+        )
+        .map_err(|err| match err {
+            sidereon_core::Error::InvalidInput(message) => pyo3::exceptions::PyValueError::new_err(
+                format!("invalid IONEX slant input: {message}"),
+            ),
+            sidereon_core::Error::IonexEpoch(epoch_error) => {
+                crate::ionex::to_ionex_epoch_solve_err(py, epoch_error)
+            }
             other => to_solve_err(other.to_string()),
         })
     }
@@ -312,6 +383,57 @@ impl PySp3Selection {
     #[getter]
     fn sp3(&self) -> PySp3 {
         PySp3::from_sp3(self.sp3.clone())
+    }
+
+    fn selected_state_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<Option<crate::ephemeris::PyEphemerisQueryState>> {
+        crate::ephemeris::source_state_at_epoch_query(&self.sp3, satellite, epoch, selection_epoch)
+    }
+
+    fn transmit_epoch_clock_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<Option<(f64, Option<&'static str>)>> {
+        crate::ephemeris::source_transmit_clock_at_epoch_query(
+            &self.sp3,
+            satellite,
+            epoch,
+            selection_epoch,
+        )
+    }
+
+    fn ephemeris_variance_at_epoch_query(
+        &self,
+        satellite: &str,
+        state_epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<f64> {
+        crate::ephemeris::source_variance_at_epoch_query(
+            &self.sp3,
+            satellite,
+            state_epoch,
+            selection_epoch,
+        )
+    }
+
+    fn clock_relativity_for_state_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+        position_ecef_m: [f64; 3],
+    ) -> PyResult<crate::ephemeris::PyClockRelativity> {
+        crate::ephemeris::source_clock_relativity_at_epoch_query(
+            &self.sp3,
+            satellite,
+            epoch,
+            position_ecef_m,
+        )
     }
 
     /// Interpolate `satellite` at a J2000-second epoch on the selected product.
@@ -388,11 +510,51 @@ fn select_ionex_over_range(
     let resolved = PyStalenessPolicy::resolve(py, policy.as_ref());
     let selection = sidereon_core::staleness::select_ionex_over_range(
         &owned,
-        start_epoch_j2000_s,
-        end_epoch_j2000_s,
+        crate::ionex::ionex_epoch_from_j2000_seconds(start_epoch_j2000_s)?,
+        crate::ionex::ionex_epoch_from_j2000_seconds(end_epoch_j2000_s)?,
         resolved,
     )
-    .map_err(to_selection_err)?;
+    .map_err(|error| to_selection_err(py, error))?;
+    Ok(PyIonexSelection {
+        ionex: selection.ionex().clone(),
+        metadata: selection.metadata(),
+    })
+}
+
+/// Select an IONEX product usable at a scale-tagged instant.
+#[pyfunction]
+#[pyo3(signature = (products, epoch, policy=None))]
+fn select_ionex_at_instant(
+    py: Python<'_>,
+    products: Vec<PyRef<'_, PyIonex>>,
+    epoch: &PyClockInstant,
+    policy: Option<Py<PyStalenessPolicy>>,
+) -> PyResult<PyIonexSelection> {
+    select_ionex_over_instant_range(py, products, epoch, epoch, policy)
+}
+
+/// Select an IONEX product usable over a range of scale-tagged instants.
+#[pyfunction]
+#[pyo3(signature = (products, start, end, policy=None))]
+fn select_ionex_over_instant_range(
+    py: Python<'_>,
+    products: Vec<PyRef<'_, PyIonex>>,
+    start: &PyClockInstant,
+    end: &PyClockInstant,
+    policy: Option<Py<PyStalenessPolicy>>,
+) -> PyResult<PyIonexSelection> {
+    let owned: Vec<Ionex> = products
+        .iter()
+        .map(|product| product.inner.clone())
+        .collect();
+    let resolved = PyStalenessPolicy::resolve(py, policy.as_ref());
+    let selection = sidereon_core::staleness::select_ionex_over_range(
+        &owned,
+        start.to_core(),
+        end.to_core(),
+        resolved,
+    )
+    .map_err(|error| to_selection_instant_err(py, error))?;
     Ok(PyIonexSelection {
         ionex: selection.ionex().clone(),
         metadata: selection.metadata(),
@@ -436,7 +598,7 @@ fn select_sp3_over_range(
         end_epoch_j2000_s,
         resolved,
     )
-    .map_err(to_selection_err)?;
+    .map_err(|error| to_selection_err(py, error))?;
     Ok(PySp3Selection {
         sp3: selection.sp3().clone(),
         metadata: selection.metadata(),
@@ -451,6 +613,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySp3Selection>()?;
     m.add_function(wrap_pyfunction!(select_ionex, m)?)?;
     m.add_function(wrap_pyfunction!(select_ionex_over_range, m)?)?;
+    m.add_function(wrap_pyfunction!(select_ionex_at_instant, m)?)?;
+    m.add_function(wrap_pyfunction!(select_ionex_over_instant_range, m)?)?;
     m.add_function(wrap_pyfunction!(select_sp3, m)?)?;
     m.add_function(wrap_pyfunction!(select_sp3_over_range, m)?)?;
     Ok(())

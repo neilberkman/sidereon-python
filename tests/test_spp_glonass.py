@@ -17,10 +17,13 @@ residual, well inside the loose kilometre-scale bound asserted here.
 Behaviours proven:
   * GLONASS pseudoranges solve end-to-end and recover the synthesis truth (iono
     off -- no channels needed);
-  * ionosphere on with no channel map -> the core's `IonosphereUnsupported`
-    error, naming the GLONASS satellite;
+  * ionosphere on with no channel map -> every GLONASS satellite is excluded,
+    so an all-GLONASS epoch has too few satellites;
+  * a satellite with no channel, or with an out-of-range one, is excluded and
+    reported in `rejected_sats` as `IonosphereCarrierUnresolved`, and the rest
+    of the epoch is solved (RTKLIB `rescode` skips a satellite whose carrier
+    frequency is zero);
   * supplying the channel map lifts that gate and GLONASS still recovers truth;
-  * an out-of-range FDMA channel is rejected exactly like a missing one;
   * `glonass_channels` is a bit-for-bit no-op on a GPS-only solve.
 """
 
@@ -30,7 +33,7 @@ import os
 import numpy as np
 import pytest
 import sidereon
-from _helpers import CORE_FIXTURES, hex_to_f64
+from _helpers import CORE_FIXTURES, core_goldens, hex_to_f64
 
 # Multi-GNSS final product with real GLONASS ephemeris (same fixture the WASM
 # binding synthesizes from).
@@ -48,10 +51,15 @@ POSITION_TOLERANCE_M = 2000.0
 
 C_M_S = 299792458.0
 # A representable channel outside the valid FDMA range [-7, +6]; the core must
-# still reject it, proving the value (not just the key) reaches the solver.
+# still exclude its satellite, proving the value (not just the key) reaches the
+# solver.
 OUT_OF_RANGE_CHANNEL = 9
-# Substring of the core's `SppError::IonosphereUnsupported` Display message.
-NO_CARRIER = "no modeled carrier frequency"
+# Substring of the core's `SppError::TooFewSatellites` Display message.
+TOO_FEW = "usable satellites"
+# The core `RejectionReason` of a satellite with no resolvable carrier.
+CARRIER_UNRESOLVED = "IonosphereCarrierUnresolved"
+# The satellite whose channel the exclusion tests withhold.
+WITHHELD = "R03"
 
 
 def _geodetic_to_ecef(lat_deg, lon_deg, h_m):
@@ -108,7 +116,7 @@ def _glonass_scenario(sp3):
     return rx, observations, channels, t_rx
 
 
-def _config(observations, t_rx, *, ionosphere, glonass_channels):
+def _config(observations, t_rx, *, ionosphere, glonass_channels, initial_guess=None):
     return sidereon.SppConfig(
         observations=observations,
         t_rx_j2000_s=t_rx,
@@ -117,7 +125,7 @@ def _config(observations, t_rx, *, ionosphere, glonass_channels):
         # Generic Earth-surface seed (equator/prime meridian), thousands of km
         # from truth; the ionosphere model needs a non-degenerate receiver radius
         # at the first iteration.
-        initial_guess=[6378137.0, 0.0, 0.0, 0.0],
+        initial_guess=initial_guess or [6378137.0, 0.0, 0.0, 0.0],
         corrections=sidereon.SppCorrections(ionosphere=ionosphere, troposphere=False),
         klobuchar=sidereon.SppKlobucharCoeffs(
             alpha=[1e-8, 0.0, 0.0, 0.0], beta=[1e5, 0.0, 0.0, 0.0]
@@ -145,18 +153,73 @@ def test_glonass_solves_end_to_end_iono_off():
     )
 
 
-def test_glonass_iono_without_channel_is_rejected():
-    """Ionosphere on with no channel map -> the core's typed error, named sat."""
+def test_glonass_iono_without_channel_excludes_every_glonass_satellite():
+    """Ionosphere on with no channel map excludes each GLONASS satellite, so an
+    all-GLONASS epoch is left with too few satellites."""
     sp3 = _glonass_sp3()
     _rx, observations, _channels, t_rx = _glonass_scenario(sp3)
 
     cfg = _config(observations, t_rx, ionosphere=True, glonass_channels=None)
-    with pytest.raises(sidereon.SolveError) as exc:
+    with pytest.raises(sidereon.SolveError, match=TOO_FEW):
         sidereon.solve_spp(sp3, cfg)
-    msg = str(exc.value)
-    assert NO_CARRIER in msg
-    # The rejected satellite is named (e.g. "R07").
-    assert any(f"R{n:02d}" in msg for n in range(1, 25))
+
+
+def _truth_seeded(observations, t_rx, rx, channels):
+    # Seeded at truth, every synthesized satellite passes the elevation mask
+    # the frozen selection applies at the seed, so the only exclusion left is
+    # the carrier one.
+    return _config(
+        observations,
+        t_rx,
+        ionosphere=True,
+        glonass_channels=channels,
+        initial_guess=[float(rx[0]), float(rx[1]), float(rx[2]), 0.0],
+    )
+
+
+def test_glonass_satellite_without_a_channel_is_excluded_and_reported():
+    """One satellite with no channel is left out and reported; the rest of the
+    epoch is solved."""
+    sp3 = _glonass_sp3()
+    rx, observations, channels, t_rx = _glonass_scenario(sp3)
+    assert WITHHELD in {obs.satellite_id for obs in observations}
+    assert len(observations) >= 6, "enough visible GLONASS satellites"
+
+    del channels[int(WITHHELD[1:])]
+    sol = sidereon.solve_spp(sp3, _truth_seeded(observations, t_rx, rx, channels))
+
+    assert sol.rejected_sats == [(WITHHELD, CARRIER_UNRESOLVED)]
+    assert WITHHELD not in sol.used_sats
+    assert len(sol.used_sats) == len(observations) - 1
+    err = float(np.linalg.norm(sol.position - rx))
+    assert np.isfinite(err) and err < POSITION_TOLERANCE_M, (
+        f"recovered within {err:.1f} m"
+    )
+
+
+def test_static_solve_reports_the_satellite_without_a_channel():
+    """The static solve excludes the satellite from its epoch the same way and
+    keeps the epoch's other satellites."""
+    sp3 = _glonass_sp3()
+    rx, observations, channels, t_rx = _glonass_scenario(sp3)
+    del channels[int(WITHHELD[1:])]
+    epoch = sidereon.StaticEpoch(_truth_seeded(observations, t_rx, rx, channels))
+    options = sidereon.StaticSolveOptions(
+        initial_position_m=[float(rx[0]), float(rx[1]), float(rx[2])],
+        qzss_clock=sidereon.QzssClock.SEPARATE,
+        troposphere_model=sidereon.TroposphereModel.SAASTAMOINEN_NIELL,
+    )
+    assert options.qzss_clock == sidereon.QzssClock.SEPARATE
+    assert options.troposphere_model == sidereon.TroposphereModel.SAASTAMOINEN_NIELL
+
+    solution = sidereon.solve_static(sp3, [epoch], options)
+
+    assert solution.rejected_sats == [[(WITHHELD, CARRIER_UNRESOLVED)]]
+    assert solution.rejected_sats_with_details == [
+        [(WITHHELD, CARRIER_UNRESOLVED, None)]
+    ]
+    assert WITHHELD not in solution.used_sats[0]
+    assert len(solution.used_sats[0]) == len(observations) - 1
 
 
 def test_glonass_channel_map_lifts_the_gate_and_recovers_truth():
@@ -175,17 +238,22 @@ def test_glonass_channel_map_lifts_the_gate_and_recovers_truth():
     )
 
 
-def test_glonass_out_of_range_channel_is_rejected():
-    """An out-of-range FDMA channel is rejected exactly like a missing one --
-    the value, not just the key, is threaded into the core and range-checked."""
+def test_glonass_out_of_range_channel_is_excluded_like_a_missing_one():
+    """An out-of-range FDMA channel excludes its satellite exactly like a
+    missing one -- the value, not just the key, is threaded into the core and
+    range-checked."""
     sp3 = _glonass_sp3()
-    _rx, observations, channels, t_rx = _glonass_scenario(sp3)
+    rx, observations, channels, t_rx = _glonass_scenario(sp3)
 
     bad = {slot: OUT_OF_RANGE_CHANNEL for slot in channels}
     cfg = _config(observations, t_rx, ionosphere=True, glonass_channels=bad)
-    with pytest.raises(sidereon.SolveError) as exc:
+    with pytest.raises(sidereon.SolveError, match=TOO_FEW):
         sidereon.solve_spp(sp3, cfg)
-    assert NO_CARRIER in str(exc.value)
+
+    channels[int(WITHHELD[1:])] = OUT_OF_RANGE_CHANNEL
+    sol = sidereon.solve_spp(sp3, _truth_seeded(observations, t_rx, rx, channels))
+    assert sol.rejected_sats == [(WITHHELD, CARRIER_UNRESOLVED)]
+    assert WITHHELD not in sol.used_sats
 
 
 def test_glonass_channels_is_noop_for_gps_only_solve():
@@ -226,6 +294,6 @@ def test_glonass_channels_is_noop_for_gps_only_solve():
     assert np.array_equal(with_channels.position, without.position)
     assert with_channels.rx_clock_s == without.rx_clock_s
 
-    expected = np.array([hex_to_f64(x) for x in fx["final_solution"]["x"][:3]])
-    err = float(np.linalg.norm(without.position - expected))
-    assert err < 1.0e-6, f"GPS golden still reproduced within {err} m"
+    golden = core_goldens()["spp_trace_default"]
+    expected = [hex_to_f64(x) for x in golden["position_m"]]
+    assert without.position.tolist() == expected

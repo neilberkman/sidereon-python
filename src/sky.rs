@@ -39,11 +39,15 @@ fn body_observation_error(err: BodyObservationError) -> PyErr {
 }
 
 /// Map an event-finder failure to a Python exception. The caller controls the
-/// station, the time window, and the scan step/tolerance, so every
-/// [`EventFinderError`] variant is an invalid input and maps to `ValueError`.
+/// station, the time window, and the scan step/tolerance, so an invalid input
+/// maps to `ValueError`. A search that reads UT1 outside the UT1 table raises
+/// `Ut1OutsideCoverageError`, itself a `ValueError`.
 fn event_finder_error(err: EventFinderError) -> PyErr {
     match err {
         EventFinderError::InvalidInput { .. } => PyValueError::new_err(err.to_string()),
+        EventFinderError::Ut1OutsideCoverage(reason) => {
+            crate::ut1_outside_coverage_err("event search", reason)
+        }
     }
 }
 

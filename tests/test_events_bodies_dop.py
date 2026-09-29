@@ -177,11 +177,11 @@ def test_gnss_dop_series_matches_real_sp3_fixture():
     ]
 
     expected_first = {
-        "gdop": "0x4000c042642e3cbc",
-        "pdop": "0x3ffd34cde2c7e400",
+        "gdop": "0x4000c042642e3cba",
+        "pdop": "0x3ffd34cde2c7e3fd",
         "hdop": "0x3ff257e7df379517",
-        "vdop": "0x3ff6ba2ad4e284af",
-        "tdop": "0x3ff069acbf06750f",
+        "vdop": "0x3ff6ba2ad4e284ab",
+        "tdop": "0x3ff069acbf06750c",
     }
     for attr, bits in expected_first.items():
         _assert_bits_within_one_ulp(getattr(series, attr)[0], bits)

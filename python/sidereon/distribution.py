@@ -208,32 +208,43 @@ class EarthdataAuth:
 
 @dataclass(frozen=True)
 class SourceFailure:
-    """Sanitized structured failure from one explicitly allowed source."""
+    """Sanitized structured failure from one explicitly allowed source.
+
+    ``error_type`` is a canonical acquisition-failure spelling. A failure no
+    canonical case describes is ``unclassified_failure``, and ``detail`` then
+    keeps its raw type and text; ``detail`` is None for every other type and
+    only an unclassified failure's record carries it. ``status`` is an HTTP
+    status (100-599) or None.
+    """
 
     source: DistributionSource
     error_type: str
     message: str
     url: Optional[str] = None
     status: Optional[int] = None
+    detail: Optional[str] = None
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "source": self.source.value,
             "error_type": self.error_type,
             "message": self.message,
             "url": self.url,
             "status": self.status,
         }
+        if self.error_type == UNCLASSIFIED_FAILURE:
+            out["detail"] = self.detail
+        return out
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "SourceFailure":
-        return cls(
-            source=DistributionSource(str(value["source"])),
-            error_type=str(value["error_type"]),
-            message=str(value["message"]),
-            url=None if value.get("url") is None else str(value["url"]),
-            status=(None if value.get("status") is None else int(str(value["status"]))),
-        )
+        # Use the same exact field/type/status/detail rules as persisted report
+        # parsing. String coercion here would turn malformed JSON into a
+        # different record and silently discard detail on classified failures.
+        failure = _data._exact_source_failure(value)
+        if failure.error_type not in _data._ACQUISITION_FAILURE_TYPES:
+            raise ValueError("source failure error_type is not canonical")
+        return failure
 
 
 @dataclass(frozen=True)
@@ -366,6 +377,23 @@ class TransportFailure(AcquisitionError):
         self.url = _sanitize_url(url)
         self.status: Optional[int] = None
         super().__init__(f"{kind} transport failure for {self.url}")
+
+
+class HttpStatusFailure(TransportFailure):
+    """An HTTP status (100-599) the acquisition assigns no more specific
+    failure.
+
+    A subclass of :class:`TransportFailure`, which it was before it had its
+    own code; ``kind`` is ``http_<status>`` and ``status`` the status. A
+    response with a status outside 100-599 is no HTTP status (RFC 9110
+    section 15) and raises a plain :class:`TransportFailure` of kind
+    ``http_<status>`` with no ``status``."""
+
+    code = "http_status"
+
+    def __init__(self, status: int, url: str) -> None:
+        super().__init__(f"http_{status}", url)
+        self.status = status
 
 
 class InvalidContentType(AcquisitionError):
@@ -1136,9 +1164,9 @@ def _download_http_once(
                 if status == 410:
                     raise RetiredEndpoint(status, current, "retired endpoint")
                 if status < 200 or status >= 300:
-                    error = TransportFailure(f"http_{status}", current)
-                    error.status = status
-                    raise error
+                    if _http_status(status) is None:
+                        raise TransportFailure(f"http_{status}", current)
+                    raise HttpStatusFailure(status, current)
                 archive = bytearray()
                 chunks = (
                     (response.content,)
@@ -1688,15 +1716,36 @@ def _normalize_error(error: BaseException) -> AcquisitionError:
     return ProductValidationFailure("unexpected acquisition failure")
 
 
-def _source_failure(
-    source: DistributionSource, error: _data.DataError
-) -> SourceFailure:
+UNCLASSIFIED_FAILURE = "unclassified_failure"
+
+
+def _http_status(value: object) -> Optional[int]:
+    """An HTTP status code (RFC 9110 section 15, 100-599), or None."""
+    if type(value) is int and 100 <= value <= 599:
+        return value
+    return None
+
+
+def _failure_classification(error: BaseException) -> tuple[str, Optional[str]]:
+    """The canonical failure type of ``error``, and the raw text of one no
+    canonical case describes, kept as its detail."""
+    raw_code = getattr(error, "code", None)
+    raw = raw_code if type(raw_code) is str and raw_code else type(error).__name__
+    if raw in _data._ACQUISITION_FAILURE_TYPES and raw != UNCLASSIFIED_FAILURE:
+        return raw, None
+    text = str(error)
+    return UNCLASSIFIED_FAILURE, f"{raw}: {text}" if text else raw
+
+
+def _source_failure(source: DistributionSource, error: BaseException) -> SourceFailure:
+    error_type, detail = _failure_classification(error)
     return SourceFailure(
         source=source,
-        error_type=getattr(error, "code", error.__class__.__name__),
-        message=str(error),
+        error_type=error_type,
+        message=str(error) or error_type,
         url=getattr(error, "url", None),
-        status=getattr(error, "status", None),
+        status=_http_status(getattr(error, "status", None)),
+        detail=detail,
     )
 
 
@@ -1720,6 +1769,7 @@ __all__ = [
     "RetiredEndpoint",
     "MalformedUrl",
     "TransportFailure",
+    "HttpStatusFailure",
     "InvalidContentType",
     "ErrorDocument",
     "ContentLengthMismatch",

@@ -28,6 +28,41 @@ import sidereon.data as data
 import sidereon.distribution as distribution
 from _helpers import CORE_FIXTURES, FIXTURES, sp3_bytes_for_date
 
+
+def test_unusable_sample_report_requires_reason_and_epoch_to_agree():
+    placed = {
+        "kind": "unusable_sample",
+        "satellite": "G01",
+        "from_j2000_s": 1.0,
+        "to_j2000_s": 1.0,
+        "magnitude": None,
+        "bound": None,
+        "epoch_j2000_s": 1.0,
+        "sample_index": 0,
+        "reason": "non_finite_position",
+    }
+    unplaced = {
+        **placed,
+        "from_j2000_s": None,
+        "to_j2000_s": None,
+        "epoch_j2000_s": None,
+        "reason": "epoch_not_placed",
+    }
+
+    assert data._validate_continuity_defect(placed, "placed defect")
+    assert data._validate_continuity_defect(unplaced, "unplaced defect")
+
+    for invalid in (
+        {**placed, "reason": "epoch_not_placed"},
+        {
+            **unplaced,
+            "reason": "non_finite_position",
+        },
+    ):
+        with pytest.raises(ValueError, match="reason disagrees with epoch"):
+            data._validate_continuity_defect(invalid, "invalid defect")
+
+
 # --- fixtures ------------------------------------------------------------
 
 
@@ -234,8 +269,11 @@ def _stub_http(monkeypatch, responses):
 POSTINGS = 3601
 HGT_LEN = POSTINGS * POSTINGS * 2
 DTED_LEN = 25_981_042
+# The synthetic tile's one SRTM void is written as the DTED null (0xFFFF), as
+# MIL-PRF-89020B 3.10.9.1 requires; written as 0, the digest was
+# 708c193f768f3d859b71da20a81059db4e6077494481c4484d0bc238af096d77.
 SYNTHETIC_DTED_SHA256 = (
-    "708c193f768f3d859b71da20a81059db4e6077494481c4484d0bc238af096d77"
+    "953bbb5ae33c646910a1498276cb7a3a9dc000bd2a8a58e58d5bf320a71a8a89"
 )
 
 SPACE_WEATHER_CSV = (
@@ -266,8 +304,10 @@ def _synthetic_hgt_sample(row, col):
 
 
 def _expected_posting(lat_posting, lon_posting):
+    """The height a converted posting reads back as, or None for the SRTM void,
+    which reads back as an unknown elevation."""
     sample = _synthetic_hgt_sample(POSTINGS - 1 - lat_posting, lon_posting)
-    return 0 if sample == -32768 else sample
+    return None if sample == -32768 else sample
 
 
 @functools.lru_cache(maxsize=1)
@@ -838,10 +878,28 @@ def test_sp3_merge_input_identity_matches_all_surface_golden_contract():
         data.sp3_merge_input_identity(
             [replace(esa, product_sha256=mutations["malformed_product_sha256"])]
         )
-    with pytest.raises(ValueError, match="whole number of seconds"):
-        sidereon.Sp3MergeOptions(
-            target_epoch_interval_s=mutations["fractional_target_epoch_interval_s"]
-        )
+    # Merge policy identity uses the same exact 10-nanosecond interval rule as
+    # the core, including fractional-second intervals.
+    fractional = sidereon.Sp3MergeOptions(
+        target_epoch_interval_s=mutations["fractional_target_epoch_interval_s"]
+    )
+    assert (
+        fractional.target_epoch_interval_s
+        == mutations["fractional_target_epoch_interval_s"]
+    )
+    assert data.sp3_merge_input_identity([esa, cod], fractional).stable_id
+    off_tick = sidereon.Sp3MergeOptions(target_epoch_interval_s=1.0e-9)
+    with pytest.raises(
+        ValueError,
+        match=(
+            "target_epoch_interval_s 0.000000001 s is not an SP3 epoch interval: "
+            "it is not a whole number of the 10-nanosecond ticks an SP3 epoch states"
+        ),
+    ) as caught:
+        data.sp3_merge_input_identity([esa, cod], off_tick)
+    assert caught.value.kind == "sp3_epoch_interval"
+    assert caught.value.field == "target_epoch_interval_s"
+    assert caught.value.value in {"1e-09", "1e-9"}
     with pytest.raises(ValueError, match="must not be empty"):
         sidereon.Sp3MergeOptions(systems=mutations["empty_systems"])
 
@@ -1143,6 +1201,38 @@ def _rebind_persisted_merge_policy(record, options):
     record["stable_input_identity"] = identity.stable_id
 
 
+def _empty_merge_audit():
+    """The report schema 3 fields of a merge that dropped, omitted and withheld
+    nothing and was asked for no continuity check or provenance."""
+    return {
+        "dropped_input_epochs": [],
+        "omitted_epochs": [],
+        "arc_withheld": [],
+        "clock_omissions": [],
+        "continuity": None,
+        "provenance": None,
+    }
+
+
+_MERGE_AUDIT_FIELDS = tuple(_empty_merge_audit())
+
+
+def _as_schema(record, schema):
+    """The record as a writer of report ``schema`` spelled it: schemas 1 and 2
+    carry neither the audit fields nor merge policy schema 2's reporting
+    options."""
+    out = copy.deepcopy(record)
+    out["schema_version"] = schema
+    if schema < 3:
+        for name in _MERGE_AUDIT_FIELDS:
+            del out["merge_report"][name]
+        policy = out["merge_policy"]
+        del policy["verify_continuity"]
+        del policy["provenance"]
+        policy["schema_version"] = 1
+    return out
+
+
 def _single_source_merge_result(entries):
     flags = []
     cells = []
@@ -1169,12 +1259,14 @@ def _single_source_merge_result(entries):
                 "clock_max_s": 0.0,
             }
         )
+        # Report schema 2: an epoch with no multi-source position consensus
+        # has no position spread.
         epoch = {
             "jd_whole": jd_whole,
             "jd_fraction": jd_fraction,
             "satellites": 0,
-            "position_rms_m": 0.0,
-            "position_max_m": 0.0,
+            "position_rms_m": None,
+            "position_max_m": None,
             "clock_rms_s": None,
             "clock_max_s": None,
         }
@@ -1197,6 +1289,7 @@ def _single_source_merge_result(entries):
             "cells": cells,
             "epochs": epochs,
         },
+        **_empty_merge_audit(),
     }
 
 
@@ -1237,6 +1330,7 @@ def _two_source_merge_result(frame_reconciliations=None):
                 }
             ],
         },
+        **_empty_merge_audit(),
     }
 
 
@@ -1250,7 +1344,9 @@ def test_verify_merged_sp3_report_checks_satellite_leap_and_epoch_grid_domains(
     )
     persisted = report.to_dict()
 
-    for satellite in ("G32", "R27", "E36", "C63", "J09", "I14", "S20", "S58"):
+    # The core identifier takes 01..99 under every system letter, so an
+    # extended slot such as R28, which real products carry, is a valid cell.
+    for satellite in ("G01", "G99", "R28", "E99", "C64", "J10", "I99", "S01", "S99"):
         boundary = copy.deepcopy(persisted)
         boundary["merge_report"] = _single_source_merge_result(
             [(satellite, 2_457_753.5, 1.0)]
@@ -1260,15 +1356,12 @@ def test_verify_merged_sp3_report_checks_satellite_leap_and_epoch_grid_domains(
 
     for satellite in (
         "G00",
-        "G33",
-        "R28",
-        "E37",
-        "C64",
-        "J10",
-        "I15",
-        "S19",
-        "S59",
+        "R00",
+        "S00",
+        "L01",
+        "X05",
         "G999",
+        "G1",
     ):
         invalid = copy.deepcopy(persisted)
         invalid["merge_report"] = _single_source_merge_result(
@@ -1353,7 +1446,8 @@ def test_verify_merged_sp3_report_checks_frames_systems_and_precedence(tmp_path)
     precedence["merge_report"]["agreement"]["cells"][0]["position_members"] = 1
     precedence["merge_report"]["agreement"]["position_rms_m"] = None
     precedence["merge_report"]["agreement"]["epochs"][0]["satellites"] = 0
-    precedence["merge_report"]["agreement"]["epochs"][0]["position_rms_m"] = 0.0
+    precedence["merge_report"]["agreement"]["epochs"][0]["position_rms_m"] = None
+    precedence["merge_report"]["agreement"]["epochs"][0]["position_max_m"] = None
     precedence["merge_report"]["position_outliers"] = [
         {
             "satellite": "G01",
@@ -1571,6 +1665,975 @@ def test_verify_merged_sp3_report_accepts_exact_absent_center_partition(tmp_path
     assert not data.verify_merge_report(persisted)
 
 
+def test_merge_report_schema_3_is_written_and_schemas_1_and_2_verify_by_their_rules(
+    tmp_path,
+):
+    product = data.mgex_sp3("cod", SP3_DATE)
+    _seed_exact_direct_sp3(str(tmp_path), product)
+    _, report = data.fetch_merged_sp3(
+        SP3_DATE, ["cod"], cache_dir=str(tmp_path), offline=True
+    )
+    persisted = report.to_dict()
+    assert persisted["schema_version"] == 3
+    assert persisted["merge_policy"]["schema_version"] == 2
+    assert persisted["merge_policy"]["verify_continuity"] is None
+    assert persisted["merge_policy"]["provenance"] is None
+    for name, empty in _empty_merge_audit().items():
+        assert persisted["merge_report"][name] == empty
+    assert data.verify_merge_report(persisted)
+
+    # Every cell of a single-product merge is single-source, so no epoch has a
+    # multi-source position spread to report.
+    for epoch in persisted["merge_report"]["agreement"]["epochs"]:
+        assert epoch["satellites"] == 0
+        assert epoch["position_rms_m"] is None
+        assert epoch["position_max_m"] is None
+
+    entries = [("G01", 2_460_000.5, 0.5), ("G02", 2_460_000.5, 0.5)]
+    current = copy.deepcopy(persisted)
+    current["merge_report"] = _single_source_merge_result(entries)
+    assert data.verify_merge_report(current)
+
+    # Schema 2 carried the same agreement without the audit fields or the
+    # policy's reporting options, and still verifies as schema 2.
+    schema_2 = _as_schema(current, 2)
+    assert data.verify_merge_report(schema_2)
+    assert data.verify_merge_report(json.loads(json.dumps(schema_2)))
+
+    # Schema 1 spelled the same epoch as a 0.0 spread, with the maximum over
+    # every cell. A record written that way still verifies as schema 1.
+    legacy = _as_schema(current, 1)
+    for epoch in legacy["merge_report"]["agreement"]["epochs"]:
+        epoch["position_rms_m"] = 0.0
+        epoch["position_max_m"] = 0.0
+    assert data.verify_merge_report(legacy)
+    assert data.verify_merge_report(json.loads(json.dumps(legacy)))
+
+    # Each schema is held to its own spelling and fields, and no other version
+    # is read.
+    assert not data.verify_merge_report(_as_schema(current, 1))
+    mixed_current = copy.deepcopy(legacy)
+    mixed_current["schema_version"] = 2
+    assert not data.verify_merge_report(mixed_current)
+    audit_in_schema_2 = copy.deepcopy(current)
+    audit_in_schema_2["schema_version"] = 2
+    assert not data.verify_merge_report(audit_in_schema_2)
+    schema_3_without_audit = copy.deepcopy(schema_2)
+    schema_3_without_audit["schema_version"] = 3
+    assert not data.verify_merge_report(schema_3_without_audit)
+    old_policy_in_schema_3 = copy.deepcopy(current)
+    del old_policy_in_schema_3["merge_policy"]["verify_continuity"]
+    del old_policy_in_schema_3["merge_policy"]["provenance"]
+    old_policy_in_schema_3["merge_policy"]["schema_version"] = 1
+    assert not data.verify_merge_report(old_policy_in_schema_3)
+    new_policy_in_schema_2 = copy.deepcopy(schema_2)
+    new_policy_in_schema_2["merge_policy"] = copy.deepcopy(current["merge_policy"])
+    assert not data.verify_merge_report(new_policy_in_schema_2)
+    for version in (0, 4, True, 2.0, 3.0):
+        unknown = copy.deepcopy(current)
+        unknown["schema_version"] = version
+        assert not data.verify_merge_report(unknown)
+
+
+def _two_source_clock_only_merge_result(*, quarantined_orbit):
+    """A schema 2 merge result whose G01 cell is a clock-only record.
+
+    Without ``quarantined_orbit`` G01 is a single-source orbit and G02 a
+    single-source clock-only record, the result of merging a product holding
+    G01 with one holding G02's clock beside the missing-orbit sentinel. With
+    it, both sources held G01 orbits that disagreed (quarantined) while their
+    clocks agreed, so G01 is kept as a two-member clock-only record.
+    """
+    jd_whole, jd_fraction = 2_460_000.5, 0.5
+
+    def flag(satellite, sources):
+        return {
+            "satellite": satellite,
+            "jd_whole": jd_whole,
+            "jd_fraction": jd_fraction,
+            "sources": sources,
+        }
+
+    def cell(satellite, position_members, clock_members):
+        orbit = position_members > 0
+        return {
+            "satellite": satellite,
+            "jd_whole": jd_whole,
+            "jd_fraction": jd_fraction,
+            "position_members": position_members,
+            "position_rms_m": 0.0 if orbit else None,
+            "position_max_m": 0.0 if orbit else None,
+            "clock_members": clock_members,
+            "clock_rms_s": 0.0,
+            "clock_max_s": 0.0,
+        }
+
+    if quarantined_orbit:
+        quarantined = [flag("G01", [0, 1])]
+        single_source = []
+        cells = [cell("G01", 0, 2)]
+        clock_rms, clock_max = 0.0, 0.0
+        position_max = None
+    else:
+        quarantined = []
+        single_source = [flag("G01", [0]), flag("G02", [1])]
+        cells = [cell("G01", 1, 1), cell("G02", 0, 1)]
+        clock_rms, clock_max = None, None
+        position_max = 0.0
+    return {
+        "frame_reconciliations": [],
+        "quarantined": quarantined,
+        "single_source": single_source,
+        "position_outliers": [],
+        "clock_outliers": [],
+        "agreement": {
+            "position_rms_m": None,
+            "position_max_m": position_max,
+            "clock_rms_s": clock_rms,
+            "clock_max_s": 0.0,
+            "cells": cells,
+            "epochs": [
+                {
+                    "jd_whole": jd_whole,
+                    "jd_fraction": jd_fraction,
+                    "satellites": 0,
+                    "position_rms_m": None,
+                    "position_max_m": None,
+                    "clock_rms_s": clock_rms,
+                    "clock_max_s": clock_max,
+                }
+            ],
+        },
+        **_empty_merge_audit(),
+    }
+
+
+def test_verify_merged_sp3_report_accepts_clock_only_cells(tmp_path):
+    products = [data.mgex_sp3("cod", SP3_DATE), data.mgex_sp3("esa", SP3_DATE)]
+    payload = _sp3_payload()
+    archives = {
+        product.archive_url(): _archive_for_catalog_product(product, payload)
+        for product in products
+    }
+
+    def handler(request):
+        return httpx.Response(200, request=request, content=archives[str(request.url)])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        _, report = data.fetch_merged_sp3(
+            SP3_DATE,
+            ["cod", "esa"],
+            cache_dir=str(tmp_path),
+            http_client=client,
+        )
+    persisted = report.to_dict()
+
+    for quarantined_orbit in (False, True):
+        record = copy.deepcopy(persisted)
+        record["merge_report"] = _two_source_clock_only_merge_result(
+            quarantined_orbit=quarantined_orbit
+        )
+        assert data.verify_merge_report(record)
+        assert data.verify_merge_report(json.loads(json.dumps(record)))
+
+        # Schema 2 already held clock-only cells; schema 1 predates them.
+        assert data.verify_merge_report(_as_schema(record, 2))
+        assert not data.verify_merge_report(_as_schema(record, 1))
+
+    clock_only = copy.deepcopy(persisted)
+    clock_only["merge_report"] = _two_source_clock_only_merge_result(
+        quarantined_orbit=False
+    )
+
+    fabricated_orbit = copy.deepcopy(clock_only)
+    fabricated_orbit["merge_report"]["agreement"]["cells"][1]["position_rms_m"] = 0.0
+    fabricated_orbit["merge_report"]["agreement"]["cells"][1]["position_max_m"] = 0.0
+    assert not data.verify_merge_report(fabricated_orbit)
+
+    no_record = copy.deepcopy(clock_only)
+    no_record["merge_report"]["agreement"]["cells"][1]["clock_members"] = 0
+    no_record["merge_report"]["agreement"]["cells"][1]["clock_rms_s"] = None
+    no_record["merge_report"]["agreement"]["cells"][1]["clock_max_s"] = None
+    assert not data.verify_merge_report(no_record)
+
+    # G02's clock came from one source, which the core always flags.
+    unaudited = copy.deepcopy(clock_only)
+    unaudited["merge_report"]["single_source"].pop()
+    assert not data.verify_merge_report(unaudited)
+
+    # A quarantined orbit cannot sit beside an accepted orbit for the same cell.
+    orbit_beside_quarantine = copy.deepcopy(persisted)
+    result = _two_source_clock_only_merge_result(quarantined_orbit=True)
+    orbit_cell = result["agreement"]["cells"][0]
+    orbit_cell["position_members"] = 2
+    orbit_cell["position_rms_m"] = 0.0
+    orbit_cell["position_max_m"] = 0.0
+    result["agreement"]["position_rms_m"] = 0.0
+    result["agreement"]["position_max_m"] = 0.0
+    result["agreement"]["epochs"][0]["satellites"] = 1
+    result["agreement"]["epochs"][0]["position_rms_m"] = 0.0
+    result["agreement"]["epochs"][0]["position_max_m"] = 0.0
+    orbit_beside_quarantine["merge_report"] = result
+    assert not data.verify_merge_report(orbit_beside_quarantine)
+
+
+def test_single_product_schema_3_report_holds_a_clock_only_record(tmp_path):
+    product = data.mgex_sp3("cod", SP3_DATE)
+    _seed_exact_direct_sp3(str(tmp_path), product)
+    _, report = data.fetch_merged_sp3(
+        SP3_DATE, ["cod"], cache_dir=str(tmp_path), offline=True
+    )
+    record = report.to_dict()
+    result = _single_source_merge_result([("G01", 2_460_000.5, 0.5)])
+    cell = result["agreement"]["cells"][0]
+    cell["position_members"] = 0
+    cell["position_rms_m"] = None
+    cell["position_max_m"] = None
+    result["agreement"]["position_max_m"] = None
+    record["merge_report"] = result
+
+    # One product's clock beside its missing-orbit sentinel: a clock-only
+    # record, which schemas 2 and 3 hold and schema 1 predates.
+    assert data.verify_merge_report(record)
+    assert data.verify_merge_report(_as_schema(record, 2))
+    assert not data.verify_merge_report(_as_schema(record, 1))
+
+
+def test_merge_report_leap_second_label_on_the_next_day_boundary(tmp_path):
+    product = data.mgex_sp3("cod", SP3_DATE)
+    _seed_exact_direct_sp3(str(tmp_path), product)
+    _, report = data.fetch_merged_sp3(
+        SP3_DATE, ["cod"], cache_dir=str(tmp_path), offline=True
+    )
+    persisted = report.to_dict()
+
+    # 2016-12-31 ends with a positive leap second. The core holds a UTC
+    # 23:59:60.x label on 2017-01-01's boundary with the negative fraction
+    # (x - 1) / 86400, down to 23:59:60.0 at -1/86400.
+    for fraction in (-0.5 / 86_400.0, -1.0 / 86_400.0, -1.0e-9):
+        leap = copy.deepcopy(persisted)
+        leap["merge_report"] = _single_source_merge_result(
+            [("G01", 2_457_754.5, fraction)]
+        )
+        assert data.verify_merge_report(leap)
+        assert data.verify_merge_report(json.loads(json.dumps(leap)))
+
+    for jd_whole, fraction in (
+        # The day before 2460000.5 ends without a leap second.
+        (2_460_000.5, -0.5 / 86_400.0),
+        # Earlier than the leap second itself.
+        (2_457_754.5, -1.5 / 86_400.0),
+    ):
+        invalid = copy.deepcopy(persisted)
+        invalid["merge_report"] = _single_source_merge_result(
+            [("G01", jd_whole, fraction)]
+        )
+        assert not data.verify_merge_report(invalid)
+
+
+def test_merge_report_schema_3_writes_one_failure_vocabulary(tmp_path):
+    cache = str(tmp_path)
+    _seed_exact_direct_sp3(cache, data.mgex_sp3("cod", SP3_DATE))
+    _, report = data.fetch_merged_sp3(
+        SP3_DATE, ["cod", "esa"], offline=True, cache_dir=cache
+    )
+    persisted = report.to_dict()
+    absent = persisted["absent"][0]
+    assert absent["reason"] == "offline_cache_miss"
+    assert absent["filename"] is not None and absent["http_status"] is None
+    assert data.verify_merge_report(persisted)
+    assert data.verify_merge_report(_as_schema(persisted, 2))
+
+    def with_absence(record, **changes):
+        value = copy.deepcopy(record)
+        value["absent"][0].update(changes)
+        return value
+
+    def with_attempt(record, error_type, status=None, **extra):
+        value = copy.deepcopy(record)
+        value["contributors"][0]["acquisition_facts"]["attempts"].append(
+            {
+                "source": "direct",
+                "error_type": error_type,
+                "message": "failure",
+                "url": None,
+                "status": status,
+                **extra,
+            }
+        )
+        return value
+
+    # Schema 3 writes and reads only the canonical spellings.
+    for legacy in ("offline_miss", "candidate_not_found", "http_status:503"):
+        assert not data.verify_merge_report(with_absence(persisted, reason=legacy))
+        assert data.verify_merge_report(
+            with_absence(_as_schema(persisted, 2), reason=legacy)
+        )
+    for legacy in ("transport", "decompression_failed", "acquisition", "unknown"):
+        assert not data.verify_merge_report(with_attempt(persisted, legacy))
+        assert data.verify_merge_report(with_attempt(_as_schema(persisted, 2), legacy))
+    for canonical in (
+        "transport_failure",
+        "decompression_failure",
+        "http_client_failure",
+    ):
+        assert data.verify_merge_report(with_attempt(persisted, canonical))
+    assert data.verify_merge_report(with_attempt(persisted, "http_status", 503))
+
+    # Unknown spellings are refused in every schema, and a canonical reason
+    # must agree with the candidate it names.
+    for schema in (2, 3):
+        record = persisted if schema == 3 else _as_schema(persisted, 2)
+        assert not data.verify_merge_report(with_absence(record, reason="gone"))
+        assert not data.verify_merge_report(with_attempt(record, "mystery"))
+    untried = with_absence(
+        persisted, reason="no_candidate", filename=None, pattern=None, url=None
+    )
+    assert data.verify_merge_report(untried)
+    for value in (
+        with_absence(persisted, reason="http_status"),
+        with_absence(persisted, reason="offline_cache_miss", http_status=404),
+        with_absence(persisted, reason="no_candidate"),
+        with_attempt(persisted, "http_status"),
+    ):
+        assert not data.verify_merge_report(value)
+
+    # An HTTP status is 100-599 (RFC 9110 section 15), in every schema.
+    for status in (100, 599):
+        assert data.verify_merge_report(with_attempt(persisted, "http_status", status))
+        assert data.verify_merge_report(
+            with_absence(persisted, reason="http_status", http_status=status)
+        )
+    for schema in (2, 3):
+        record = persisted if schema == 3 else _as_schema(persisted, 2)
+        for status in (0, 99, 600, 999):
+            assert not data.verify_merge_report(
+                with_attempt(record, "http_status", status)
+            )
+            assert not data.verify_merge_report(
+                with_absence(record, reason="product_not_published", http_status=status)
+            )
+    assert data.verify_merge_report(
+        with_absence(_as_schema(persisted, 2), reason="http_status:599")
+    )
+    for legacy in ("http_status:600", "http_status:99", "http_status:0503"):
+        assert not data.verify_merge_report(
+            with_absence(_as_schema(persisted, 2), reason=legacy)
+        )
+
+    # A failure no canonical case describes is unclassified, with its raw
+    # text in a required non-empty detail; schemas 1 and 2 predate it.
+    raw = "SomeError: something the classifier has no case for"
+    assert data.verify_merge_report(
+        with_attempt(persisted, "unclassified_failure", detail=raw)
+    )
+    assert data.verify_merge_report(
+        with_absence(persisted, reason="unclassified", detail=raw)
+    )
+    for value in (
+        with_attempt(persisted, "unclassified_failure"),
+        with_attempt(persisted, "unclassified_failure", detail=""),
+        with_attempt(persisted, "unclassified_failure", detail=None),
+        with_attempt(persisted, "transport_failure", detail=raw),
+        with_absence(persisted, reason="unclassified"),
+        with_absence(persisted, reason="unclassified", detail=""),
+        with_absence(
+            persisted,
+            reason="unclassified",
+            detail=raw,
+            filename=None,
+            pattern=None,
+            url=None,
+        ),
+        with_attempt(_as_schema(persisted, 2), "unclassified_failure", detail=raw),
+        with_absence(_as_schema(persisted, 2), reason="unclassified", detail=raw),
+    ):
+        assert not data.verify_merge_report(value)
+
+
+def test_unclassifiable_failures_are_recorded_as_unclassified_with_their_text():
+    direct = distribution.DistributionSource.DIRECT
+
+    class SurpriseError(Exception):
+        pass
+
+    for error, raw in (
+        (SurpriseError("the unexpected"), "SurpriseError: the unexpected"),
+        (distribution.AcquisitionError("base"), "acquisition_error: base"),
+    ):
+        failure = distribution._source_failure(direct, error)
+        assert failure.error_type == "unclassified_failure"
+        assert failure.detail == raw
+        assert failure.to_dict()["detail"] == raw
+        assert distribution.SourceFailure.from_dict(failure.to_dict()) == failure
+
+    classified = distribution._source_failure(
+        direct, distribution.ProductNotPublished(404, "https://example.test/x", "gone")
+    )
+    assert classified.error_type == "product_not_published"
+    assert classified.detail is None
+    assert "detail" not in classified.to_dict()
+
+    class MalformedCodeError(Exception):
+        def __init__(self, code, message="foreign failure"):
+            super().__init__(message)
+            self.code = code
+
+    for malformed_code in (["future"], {"future": "failure"}, 17, ""):
+        malformed = distribution._source_failure(
+            direct, MalformedCodeError(malformed_code)
+        )
+        assert malformed.error_type == "unclassified_failure"
+        assert malformed.detail == "MalformedCodeError: foreign failure"
+        assert isinstance(malformed.detail, str)
+        assert malformed.message == "foreign failure"
+        assert distribution.SourceFailure.from_dict(malformed.to_dict()) == malformed
+
+    class EmptyTextMalformedCodeError(MalformedCodeError):
+        def __str__(self):
+            return ""
+
+    empty_text = distribution._source_failure(
+        direct, EmptyTextMalformedCodeError({"future": "failure"})
+    )
+    assert empty_text.error_type == "unclassified_failure"
+    assert empty_text.detail == "EmptyTextMalformedCodeError"
+    assert isinstance(empty_text.detail, str)
+    assert empty_text.message == "unclassified_failure"
+    assert distribution.SourceFailure.from_dict(empty_text.to_dict()) == empty_text
+
+    # The public serializer/deserializer pair preserves optional None values,
+    # but rejects malformed persisted records instead of coercing or dropping
+    # fields. Classified failures cannot carry unclassified raw detail.
+    assert distribution.SourceFailure.from_dict(classified.to_dict()) == classified
+    no_location = distribution._source_failure(
+        direct, distribution.ProductValidationFailure("content rejected")
+    )
+    assert no_location.url is None and no_location.status is None
+    assert distribution.SourceFailure.from_dict(no_location.to_dict()) == no_location
+    for invalid_record in (
+        {**classified.to_dict(), "detail": "unexpected detail"},
+        {**classified.to_dict(), "status": True},
+        {**classified.to_dict(), "status": 99},
+        {**classified.to_dict(), "status": 600},
+        {**classified.to_dict(), "error_type": "future_failure"},
+        {**empty_text.to_dict(), "detail": None},
+        {key: value for key, value in empty_text.to_dict().items() if key != "detail"},
+        {**empty_text.to_dict(), "detail": ""},
+    ):
+        with pytest.raises(ValueError):
+            distribution.SourceFailure.from_dict(invalid_record)
+
+    status = distribution._source_failure(
+        direct, distribution.HttpStatusFailure(503, "https://example.test/x")
+    )
+    assert (status.error_type, status.status) == ("http_status", 503)
+    # A status outside 100-599 is no HTTP status and is not recorded as one.
+    invalid = distribution.TransportFailure("http_600", "https://example.test/x")
+    invalid.status = 600
+    recorded = distribution._source_failure(direct, invalid)
+    assert (recorded.error_type, recorded.status) == ("transport_failure", None)
+    assert "http_600" in recorded.message
+
+    assert data._absence_reason(data.HttpStatusError(503, "u")) == (
+        "http_status",
+        None,
+    )
+    reason, detail = data._absence_reason(data.HttpStatusError(600, "u"))
+    assert reason == "unclassified"
+    assert detail == "HttpStatusError: HTTP 600 for u"
+    reason, detail = data._absence_reason(data.NetworkError("down"))
+    assert (reason, detail) == ("unclassified", "NetworkError: down")
+    absent = data.AbsentCenter(
+        "esa", "F.SP3", reason, None, "https://x/F", None, detail
+    )
+    assert absent.to_dict()["detail"] == detail
+    assert "detail" not in data.AbsentCenter("esa", None, "no_candidate").to_dict()
+
+
+def test_merge_report_schema_3_fixture_from_the_elixir_interface():
+    """The schema 3 record the Elixir interface writes verifies here, and a
+    tampered copy does not."""
+    with open(os.path.join(FIXTURES, "sp3-merge-report-v3.json")) as handle:
+        record = json.load(handle)
+    assert record["schema_version"] == 3
+    # ESA contributed after a transport failure; COD was absent, its candidate
+    # not published.
+    assert record["requested_centers"] == ["esa", "cod"]
+    assert [item["reason"] for item in record["absent"]] == ["product_not_published"]
+    assert record["absent"][0]["http_status"] == 404
+    attempts = record["contributors"][0]["acquisition_facts"]["attempts"]
+    assert [item["error_type"] for item in attempts] == [
+        "transport_failure",
+        "unclassified_failure",
+    ]
+    assert "detail" not in attempts[0]
+    assert attempts[1]["detail"] == "{:tls_alert, :bad_record_mac}"
+    assert data.verify_merge_report(record)
+
+    def changed(mutation):
+        value = copy.deepcopy(record)
+        mutation(value)
+        return value
+
+    tampered = [
+        lambda value: value["merge_report"]["continuity"].__setitem__("attested", True),
+        lambda value: value["merge_report"]["continuity"].__setitem__(
+            "pairs_checked", 0
+        ),
+        lambda value: value["merge_report"]["provenance"]["cells"].pop(),
+        lambda value: value["merge_policy"].__setitem__("provenance", "summary"),
+        lambda value: value["merge_policy"]["verify_continuity"].__setitem__(
+            "gap_threshold_factor", 1.0
+        ),
+        lambda value: value.__setitem__("stable_input_identity", "0" * 16),
+        # The absent center and the contributor's failed attempt are held to
+        # the canonical vocabulary and the HTTP status range.
+        lambda value: value["absent"][0].__setitem__("reason", "candidate_not_found"),
+        lambda value: value["absent"][0].__setitem__("http_status", 700),
+        lambda value: value["absent"].clear(),
+        lambda value: value["contributors"][0]["acquisition_facts"]["attempts"][
+            0
+        ].__setitem__("error_type", "transport"),
+        lambda value: value["contributors"][0]["acquisition_facts"]["attempts"][
+            0
+        ].__setitem__("status", 99),
+        # An unclassified failure keeps its raw text; without it the record is
+        # refused.
+        lambda value: value["contributors"][0]["acquisition_facts"]["attempts"][1].pop(
+            "detail"
+        ),
+    ]
+    for mutation in tampered:
+        assert not data.verify_merge_report(changed(mutation))
+
+    # Summary mode omits per-cell membership but still has to refer to the
+    # accepted agreement grid. Rebind the stable identity after changing the
+    # requested provenance mode so each mutation starts from a valid record.
+    summary = copy.deepcopy(record)
+    summary["merge_policy"]["provenance"] = "summary"
+    summary["merge_report"]["provenance"]["mode"] = "summary"
+    summary["merge_report"]["provenance"]["cells"] = []
+    _rebind_persisted_merge_policy(
+        summary, data._merge_options_from_policy(summary["merge_policy"])
+    )
+    assert data.verify_merge_report(summary)
+
+    def summary_changed(mutation):
+        value = copy.deepcopy(summary)
+        mutation(value)
+        return value
+
+    absent_satellite = summary_changed(
+        lambda value: value["merge_report"]["provenance"]["transitions"][0].__setitem__(
+            "satellite", "G02"
+        )
+    )
+    assert not data.verify_merge_report(absent_satellite)
+    absent_epoch = summary_changed(
+        lambda value: value["merge_report"]["provenance"]["transitions"][0][
+            "epoch"
+        ].__setitem__(
+            "jd_whole",
+            value["merge_report"]["provenance"]["transitions"][0]["epoch"]["jd_whole"]
+            + 1,
+        )
+    )
+    assert not data.verify_merge_report(absent_epoch)
+    absent_coverage_span = summary_changed(
+        lambda value: [
+            value["merge_report"]["provenance"]["coverage"][0][endpoint].__setitem__(
+                "jd_whole",
+                value["merge_report"]["provenance"]["coverage"][0][endpoint]["jd_whole"]
+                + 1,
+            )
+            for endpoint in ("first_epoch", "last_epoch")
+        ]
+    )
+    assert not data.verify_merge_report(absent_coverage_span)
+    off_grid_coverage_span = summary_changed(
+        lambda value: [
+            value["merge_report"]["provenance"]["coverage"][0][endpoint].__setitem__(
+                "jd_fraction",
+                value["merge_report"]["provenance"]["coverage"][0][endpoint][
+                    "jd_fraction"
+                ]
+                + 0.001,
+            )
+            for endpoint in ("first_epoch", "last_epoch")
+        ]
+    )
+    assert not data.verify_merge_report(off_grid_coverage_span)
+
+    # Canonical class bounds are delegated to the core; changing the class and
+    # all redundant bound fields remains valid, while a self-consistent forged
+    # value is refused.
+    for orbit_class in ("meo_gnss", "geosynchronous", "leo"):
+        candidate = copy.deepcopy(record)
+        bound = data._core_sp3_orbit_class_speed_bound_m_s(orbit_class)
+        candidate["merge_policy"]["verify_continuity"]["orbit_class"] = orbit_class
+        for defect in candidate["merge_report"]["continuity"]["defects"]:
+            if defect["kind"] == "speed_bound":
+                defect["displacement_m"] = (bound + 1.0) * defect["interval_s"]
+                speed = defect["displacement_m"] / defect["interval_s"]
+                defect["implied_speed_m_s"] = defect["magnitude"] = speed
+                defect["bound"] = defect["bound_m_s"] = bound
+        for violation in candidate["merge_report"]["continuity"]["violations"]:
+            defect = violation["defect"]
+            if defect["kind"] == "speed_bound":
+                defect["displacement_m"] = (bound + 1.0) * defect["interval_s"]
+                speed = defect["displacement_m"] / defect["interval_s"]
+                defect["implied_speed_m_s"] = defect["magnitude"] = speed
+                defect["bound"] = defect["bound_m_s"] = bound
+        _rebind_persisted_merge_policy(
+            candidate, data._merge_options_from_policy(candidate["merge_policy"])
+        )
+        assert data.verify_merge_report(candidate)
+
+    wrong_class_bound = copy.deepcopy(record)
+    for defect in wrong_class_bound["merge_report"]["continuity"]["defects"]:
+        defect["bound"] = defect["bound_m_s"] = 1.0
+    for violation in wrong_class_bound["merge_report"]["continuity"]["violations"]:
+        violation["defect"]["bound"] = violation["defect"]["bound_m_s"] = 1.0
+    assert not data.verify_merge_report(wrong_class_bound)
+
+
+def _fetch_two_contributor_merge(tmp_path, merge_options=None):
+    """Merge COD and ESA copies of one product through `fetch_merged_sp3`."""
+    products = [data.mgex_sp3("cod", SP3_DATE), data.mgex_sp3("esa", SP3_DATE)]
+    payload = _sp3_payload()
+    archives = {
+        product.archive_url(): _archive_for_catalog_product(product, payload)
+        for product in products
+    }
+
+    def handler(request):
+        return httpx.Response(200, request=request, content=archives[str(request.url)])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        return data.fetch_merged_sp3(
+            SP3_DATE,
+            ["cod", "esa"],
+            cache_dir=str(tmp_path),
+            http_client=client,
+            merge_options=merge_options,
+        )
+
+
+def _epoch_of(instant):
+    return {
+        "time_scale": instant.scale.abbrev,
+        "jd_whole": instant.jd_whole,
+        "jd_fraction": instant.fraction,
+    }
+
+
+def test_merge_report_schema_3_round_trips_provenance_and_continuity(tmp_path):
+    options = sidereon.Sp3MergeOptions(
+        systems=["J"],
+        provenance="full",
+        verify_continuity=sidereon.Sp3ContinuityOptions(),
+    )
+    _, report = _fetch_two_contributor_merge(tmp_path, options)
+    persisted = report.to_dict()
+    native = report.merge_report
+
+    assert persisted["schema_version"] == 3
+    policy = persisted["merge_policy"]
+    assert policy["schema_version"] == 2
+    assert policy["provenance"] == "full"
+    assert policy["verify_continuity"] == {
+        "orbit_class": "meo_gnss",
+        "residual_tolerance_m": 1.0,
+        "gap_threshold_factor": None,
+    }
+    assert data.verify_merge_report(persisted)
+    assert data.verify_merge_report(json.loads(json.dumps(persisted)))
+
+    # Nothing the binding reports is lost on the way to the record.
+    result = persisted["merge_report"]
+    provenance = result["provenance"]
+    assert provenance["mode"] == "full"
+    assert len(provenance["cells"]) == len(native.provenance.cells)
+    assert len(provenance["cells"]) == len(result["agreement"]["cells"]) > 0
+    for stored, cell in zip(provenance["cells"], native.provenance.cells):
+        assert stored["epoch"] == _epoch_of(cell.epoch)
+        assert stored["satellite"] == cell.satellite
+        assert stored["position"] == {
+            "kind": "combined",
+            "rule": "mean",
+            "members": list(cell.position.members),
+        }
+    assert [
+        (item["from_source"], item["to_source"], item["reason"])
+        for item in provenance["transitions"]
+    ] == [
+        (item.from_source, item.to_source, item.reason)
+        for item in native.provenance.transitions
+    ]
+    assert [item["cells_contributed"] for item in provenance["coverage"]] == [
+        item.cells_contributed for item in native.provenance.coverage
+    ]
+    continuity = result["continuity"]
+    assert continuity["attested"] == native.continuity.attested
+    assert len(continuity["defects"]) == len(native.continuity.defects)
+    assert len(continuity["violations"]) == len(native.continuity.violations)
+    for stored, violation in zip(
+        continuity["violations"], native.continuity.violations
+    ):
+        assert stored["sources"] == violation.sources
+        assert [cell["epoch_j2000_s"] for cell in stored["cells"]] == [
+            cell.epoch_j2000_s for cell in violation.cells
+        ]
+    assert continuity["splices"] == [
+        item for item in continuity["violations"] if item["crosses_contributors"]
+    ]
+
+    # Schema 2 and 1 spellings of the same merge still verify by their rules.
+    assert data.verify_merge_report(_as_schema(persisted, 2))
+
+    def changed(mutation):
+        value = copy.deepcopy(persisted)
+        mutation(value)
+        return value
+
+    first_cell = result["agreement"]["cells"][0]
+    first_epoch = {
+        "time_scale": provenance["cells"][0]["epoch"]["time_scale"],
+        "jd_whole": first_cell["jd_whole"],
+        "jd_fraction": first_cell["jd_fraction"],
+    }
+    inconsistencies = [
+        lambda value: value["merge_report"].__setitem__("provenance", None),
+        lambda value: value["merge_policy"].__setitem__("provenance", "summary"),
+        lambda value: value["merge_policy"].__setitem__("provenance", None),
+        lambda value: value["merge_report"]["provenance"]["cells"][0][
+            "position"
+        ].__setitem__("members", [0]),
+        lambda value: value["merge_report"]["provenance"]["cells"][0][
+            "position"
+        ].__setitem__("rule", "median"),
+        lambda value: value["merge_report"]["provenance"]["cells"].pop(),
+        lambda value: value["merge_report"]["provenance"]["cells"][0][
+            "epoch"
+        ].__setitem__("time_scale", "UT1"),
+        lambda value: value["merge_report"]["provenance"]["coverage"][0].__setitem__(
+            "cells_selected", 1
+        ),
+        lambda value: value["merge_report"]["provenance"]["coverage"][0].__setitem__(
+            "cells_contributed",
+            value["merge_report"]["provenance"]["coverage"][0]["cells_contributed"] - 1,
+        ),
+        lambda value: value["merge_report"]["provenance"]["transitions"][0].__setitem__(
+            "reason", "whim"
+        ),
+        lambda value: value["merge_report"].__setitem__("continuity", None),
+        lambda value: value["merge_policy"].__setitem__("verify_continuity", None),
+        lambda value: value["merge_policy"]["verify_continuity"].__setitem__(
+            "residual_tolerance_m", None
+        ),
+        # The core's interpolation options take a factor greater than 1.
+        lambda value: value["merge_policy"]["verify_continuity"].__setitem__(
+            "gap_threshold_factor", 1.0
+        ),
+        lambda value: value["merge_report"]["continuity"].__setitem__(
+            "attested", not value["merge_report"]["continuity"]["attested"]
+        ),
+        lambda value: value["merge_report"]["continuity"].__setitem__("splices", [{}]),
+        lambda value: value["merge_report"]["omitted_epochs"].append(first_epoch),
+        lambda value: value["merge_report"]["arc_withheld"].append(
+            {"satellite": first_cell["satellite"], "epoch": first_epoch, "sources": [1]}
+        ),
+        lambda value: value["merge_report"]["dropped_input_epochs"].append(
+            {
+                "source": 1,
+                "epoch_index": 0,
+                "epoch": first_epoch,
+                "reason": "off_target_grid",
+            }
+        ),
+        lambda value: value["merge_report"]["clock_omissions"].append(
+            {
+                "epoch": first_epoch,
+                "satellite": first_cell["satellite"],
+                "source": 1,
+                "reason": "no_consensus",
+                "preferred": None,
+                "cell_has_clock": False,
+            }
+        ),
+        lambda value: value["merge_report"]["clock_omissions"].append(
+            {
+                "epoch": first_epoch,
+                "satellite": first_cell["satellite"],
+                "source": 0,
+                "reason": "datum_not_observable",
+                "preferred": None,
+                "cell_has_clock": True,
+            }
+        ),
+        lambda value: value["merge_report"]["clock_omissions"].append(
+            {
+                "epoch": first_epoch,
+                "satellite": first_cell["satellite"],
+                "source": 1,
+                "reason": "preferred_source_without_clock",
+                "preferred": 0,
+                "cell_has_clock": True,
+            }
+        ),
+    ]
+    for mutation in inconsistencies:
+        assert not data.verify_merge_report(changed(mutation))
+    explicit_factor = changed(
+        lambda value: value["merge_policy"]["verify_continuity"].__setitem__(
+            "gap_threshold_factor", 1.5
+        )
+    )
+    assert data.verify_merge_report(explicit_factor)
+
+
+def test_merge_report_schema_3_verifies_core_withheld_arcs_omissions_and_splices(
+    tmp_path,
+):
+    """Core merges of the coverage fixture, recorded in a schema 3 report.
+
+    Satellite-arc precedence omits the epochs past source A's end and
+    withholds and omits source B's positions and clocks there; cell precedence
+    over a 0.8 m handover yields continuity violations across contributors.
+    Each record verifies, and each audit it carries is checked against the
+    agreement it sits beside.
+    """
+    from _sp3_merge import coverage_product
+
+    _, report = _fetch_two_contributor_merge(tmp_path)
+    persisted = report.to_dict()
+    a = coverage_product("a_0_72", list(range(0, 72)))
+    b = coverage_product("b_60_24", list(range(60, 84)))
+    b_displaced = coverage_product("b_60_24_displaced_0_8", list(range(60, 84)), 0.8)
+
+    def recorded(sources, options):
+        _merged, merge_report = sidereon.merge_sp3(sources, options)
+        record = copy.deepcopy(persisted)
+        _rebind_persisted_merge_policy(record, options)
+        record["merge_report"] = data._merge_result_to_dict(merge_report)
+        return record
+
+    arc = recorded(
+        [a, b],
+        sidereon.Sp3MergeOptions(
+            combine="precedence",
+            precedence_scope="satellite_arc",
+            min_agree=1,
+            position_tolerance_m=5.0,
+            provenance="full",
+        ),
+    )
+    assert data.verify_merge_report(arc)
+    assert data.verify_merge_report(json.loads(json.dumps(arc)))
+    arc_result = arc["merge_report"]
+    assert len(arc_result["omitted_epochs"]) == 12
+    assert len(arc_result["arc_withheld"]) == 6 * 12
+    assert len(arc_result["clock_omissions"]) == 6 * 12
+    assert all(
+        item["reason"] == "datum_not_observable" and item["source"] == 1
+        for item in arc_result["clock_omissions"]
+    )
+    assert len(arc_result["provenance"]["cells"]) == len(
+        arc_result["agreement"]["cells"]
+    )
+
+    accepted = arc_result["agreement"]["cells"][0]
+    accepted_epoch = {
+        "time_scale": arc_result["omitted_epochs"][0]["time_scale"],
+        "jd_whole": accepted["jd_whole"],
+        "jd_fraction": accepted["jd_fraction"],
+    }
+
+    def changed(record, mutation):
+        value = copy.deepcopy(record)
+        mutation(value["merge_report"])
+        return value
+
+    arc_inconsistencies = [
+        # A withheld position is one the product does not hold.
+        lambda value: (
+            value["arc_withheld"][0].__setitem__("epoch", accepted_epoch)
+            or value["arc_withheld"][0].__setitem__("satellite", accepted["satellite"])
+        ),
+        # An omitted epoch holds no accepted cell, and they are in time order.
+        lambda value: value["omitted_epochs"].__setitem__(0, accepted_epoch),
+        lambda value: value["omitted_epochs"].reverse(),
+        # Source 0 is the clock datum.
+        lambda value: value["clock_omissions"][0].__setitem__("source", 0),
+        lambda value: value["clock_omissions"][0].__setitem__("cell_has_clock", True),
+        lambda value: value["clock_omissions"].reverse(),
+        # The full provenance of an accepted cell names its writer.
+        lambda value: value["provenance"]["cells"][0].__setitem__(
+            "position", {"kind": "single_source", "source": 1}
+        ),
+    ]
+    for mutation in arc_inconsistencies:
+        assert not data.verify_merge_report(changed(arc, mutation))
+    # Cell precedence always prefers a source that carries the cell.
+    cell_policy = copy.deepcopy(arc)
+    _rebind_persisted_merge_policy(
+        cell_policy,
+        sidereon.Sp3MergeOptions(
+            combine="precedence",
+            precedence_scope="cell",
+            min_agree=1,
+            position_tolerance_m=5.0,
+            provenance="full",
+        ),
+    )
+    assert not data.verify_merge_report(cell_policy)
+
+    splice = recorded(
+        [a, b_displaced],
+        sidereon.Sp3MergeOptions(
+            combine="precedence",
+            precedence_scope="cell",
+            min_agree=1,
+            position_tolerance_m=5.0,
+            verify_continuity=sidereon.Sp3ContinuityOptions(),
+            provenance="summary",
+        ),
+    )
+    assert data.verify_merge_report(splice)
+    assert data.verify_merge_report(json.loads(json.dumps(splice)))
+    continuity = splice["merge_report"]["continuity"]
+    assert not continuity["attested"]
+    assert continuity["splices"]
+    assert splice["merge_report"]["provenance"]["cells"] == []
+
+    index = continuity["violations"].index(continuity["splices"][0])
+    splice_inconsistencies = [
+        lambda value: value["continuity"]["violations"][index].__setitem__(
+            "crosses_contributors", False
+        ),
+        lambda value: value["continuity"]["violations"][index]["cells"].pop(),
+        lambda value: value["continuity"]["violations"][index].__setitem__(
+            "sources", [1]
+        ),
+        lambda value: value["continuity"]["violations"][index]["cells"][0].__setitem__(
+            "role", "pair_end"
+        ),
+        lambda value: value["continuity"]["splices"].pop(),
+        lambda value: value["continuity"]["violations"].pop(),
+        lambda value: value["continuity"]["defects"][0].__setitem__(
+            "magnitude", value["continuity"]["defects"][0]["magnitude"] * 2.0
+        ),
+        lambda value: value["provenance"].__setitem__(
+            "cells", copy.deepcopy(arc["merge_report"]["provenance"]["cells"])
+        ),
+        # Each finding is on a sample the residual check examined.
+        lambda value: value["continuity"].__setitem__("residuals_checked", 0),
+    ]
+    for mutation in splice_inconsistencies:
+        assert not data.verify_merge_report(changed(splice, mutation))
+
+
 def test_ultra_sp3_candidates_include_only_evidenced_current_product():
     candidates = data._sp3_candidates("esa_ult", dt.date(2026, 7, 13), None)
 
@@ -1656,7 +2719,7 @@ def test_ultra_sp3_all_variants_missing_records_absence(monkeypatch):
     result = data._fetch_center_sp3("gfz_ult", dt.date(2021, 5, 15), None, {})
 
     assert result[0] == "absent"
-    assert result[1].reason == "candidate_not_found"
+    assert result[1].reason == "product_not_published"
     assert result[1].pattern == "alternate_02D_05M"
     assert result[1].url is not None
     assert result[1].url.endswith("_02D_05M_ORB.SP3.gz")
@@ -1679,7 +2742,7 @@ def test_fetch_merged_sp3_offline_records_absent_centers(tmp_path):
     assert isinstance(sp3, sidereon.Sp3)
     assert report.source_count == 1
     assert [a.center for a in report.absent] == ["esa"]
-    assert report.absent[0].reason == "offline_miss"
+    assert report.absent[0].reason == "offline_cache_miss"
 
 
 def test_fetch_merged_sp3_offline_empty_cache_raises_no_products(tmp_path):
@@ -1687,7 +2750,7 @@ def test_fetch_merged_sp3_offline_empty_cache_raises_no_products(tmp_path):
         data.fetch_merged_sp3(SP3_DATE, ["cod"], offline=True, cache_dir=str(tmp_path))
     reasons = excinfo.value.reasons
     assert [r.center for r in reasons] == ["cod"]
-    assert reasons[0].reason == "offline_miss"
+    assert reasons[0].reason == "offline_cache_miss"
 
 
 def test_fetch_merged_sp3_rejects_legacy_digest_only_cache(tmp_path):
@@ -1701,7 +2764,7 @@ def test_fetch_merged_sp3_rejects_legacy_digest_only_cache(tmp_path):
     with pytest.raises(data.NoProducts) as excinfo:
         data.fetch_merged_sp3(SP3_DATE, ["cod"], cache_dir=str(tmp_path), offline=True)
 
-    assert excinfo.value.reasons[0].reason == "offline_miss"
+    assert excinfo.value.reasons[0].reason == "offline_cache_miss"
 
 
 def test_fetch_merged_sp3_unknown_center_raises(tmp_path):
@@ -2008,9 +3071,49 @@ def test_fetch_dted_conversion_reference_and_terrain_reader(tmp_path, monkeypatc
     ]:
         lat = 36.0 + lat_posting / 3600.0
         lon = -107.0 + lon_posting / 3600.0
-        assert terrain.height_m(lat, lon, nearest) == pytest.approx(
-            _expected_posting(lat_posting, lon_posting)
-        )
+        expected = _expected_posting(lat_posting, lon_posting)
+        if expected is None:
+            with pytest.raises(sidereon.TerrainError) as excinfo:
+                terrain.height_m(lat, lon, nearest)
+            assert isinstance(excinfo.value, ValueError)
+            detail = excinfo.value.detail
+            assert (detail.family, detail.kind) == ("Error", "UnknownTerrainElevation")
+            assert detail.details() == {
+                "lat_index": 36,
+                "lon_index": -107,
+                "latitude_posting": lat_posting,
+                "longitude_posting": lon_posting,
+            }
+            assert excinfo.value.point_index is None
+            continue
+        assert terrain.height_m(lat, lon, nearest) == pytest.approx(expected)
+
+
+def test_a_tile_converted_with_voids_as_zero_is_reconverted(tmp_path, monkeypatch):
+    # hgt_to_dted v1 wrote SRTM voids as 0 m, so its tiles read as sea level at
+    # a void. Such a tile is not a cache hit: offline it is a miss, online it
+    # is fetched and converted again with voids as the DTED null.
+    cache = str(tmp_path)
+    path = _seed_terrain(cache)
+    with open(path + ".provenance.json") as handle:
+        provenance = json.load(handle)
+    provenance["converter"] = "sidereon-core hgt_to_dted v1"
+    with open(path + ".provenance.json", "w") as handle:
+        json.dump(provenance, handle)
+
+    with pytest.raises(data.OfflineCacheMiss, match="voids written as 0 m"):
+        data.fetch_dted(36.5, -106.5, cache_dir=cache, offline=True)
+
+    calls = _stub_http(monkeypatch, [(200, _synthetic_hgt_gz())])
+    assert data.fetch_dted(36.5, -106.5, cache_dir=cache) == path
+    assert len(calls) == 1
+    with open(path + ".provenance.json") as handle:
+        provenance = json.load(handle)
+    assert provenance["converter"] == "sidereon-core hgt_to_dted v2"
+    assert provenance["sha256_dt2"] == SYNTHETIC_DTED_SHA256
+
+    # The reconverted tile is a cache hit.
+    assert data.fetch_dted(36.5, -106.5, cache_dir=cache, offline=True) == path
 
 
 def test_prefetch_dted_bbox_and_tiles_report_results(tmp_path, monkeypatch):

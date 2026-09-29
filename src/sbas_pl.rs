@@ -21,8 +21,8 @@ use crate::marshal::{fixed_array, FinitePolicy, PyGnssSystem};
 use crate::np_array;
 use crate::sbas_ssr::PySbasCorrectionStore;
 
-fn to_sbas_pl_err(err: SbasPlError) -> PyErr {
-    PyValueError::new_err(err.to_string())
+fn to_sbas_pl_err(py: Python<'_>, err: SbasPlError) -> PyErr {
+    crate::solve_error_detail::sbas_pl_error(py, err)
 }
 
 fn parse_satellite(token: &str) -> PyResult<GnssSatelliteId> {
@@ -49,6 +49,9 @@ pub enum PySbasPlError {
     NUMERICAL_FAILURE,
     /// The supplied range-error model is outside its valid domain.
     INVALID_ERROR_MODEL,
+    /// A satellite position was refused because producing it reads UT1
+    /// outside the UT1 table under a strict UT1 policy.
+    UT1_OUTSIDE_COVERAGE,
 }
 
 impl From<SbasPlError> for PySbasPlError {
@@ -57,6 +60,7 @@ impl From<SbasPlError> for PySbasPlError {
             SbasPlError::InsufficientGeometry => Self::INSUFFICIENT_GEOMETRY,
             SbasPlError::NumericalFailure => Self::NUMERICAL_FAILURE,
             SbasPlError::InvalidErrorModel => Self::INVALID_ERROR_MODEL,
+            SbasPlError::Ut1OutsideCoverage(_) => Self::UT1_OUTSIDE_COVERAGE,
         }
     }
 }
@@ -70,6 +74,7 @@ impl PySbasPlError {
             Self::INSUFFICIENT_GEOMETRY => "insufficient_geometry",
             Self::NUMERICAL_FAILURE => "numerical_failure",
             Self::INVALID_ERROR_MODEL => "invalid_error_model",
+            Self::UT1_OUTSIDE_COVERAGE => "ut1_outside_coverage",
         }
     }
 
@@ -79,6 +84,7 @@ impl PySbasPlError {
             Self::INSUFFICIENT_GEOMETRY => "SbasPlError.INSUFFICIENT_GEOMETRY",
             Self::NUMERICAL_FAILURE => "SbasPlError.NUMERICAL_FAILURE",
             Self::INVALID_ERROR_MODEL => "SbasPlError.INVALID_ERROR_MODEL",
+            Self::UT1_OUTSIDE_COVERAGE => "SbasPlError.UT1_OUTSIDE_COVERAGE",
         }
     }
 }
@@ -178,6 +184,13 @@ pub struct PyProtectionGeometry {
 
 #[pymethods]
 impl PyProtectionGeometry {
+    /// The UT1 departure a permissive UT1 policy accepted, `before_coverage`
+    /// or `after_coverage`; `None` when every UT1 read was inside the table.
+    #[getter]
+    fn ut1_degraded(&self) -> Option<&'static str> {
+        self.inner.ut1_degraded.map(crate::degrade_reason_label)
+    }
+
     /// Build SBAS protection geometry from rows, receiver, and clock systems.
     #[new]
     fn new(
@@ -195,6 +208,7 @@ impl PyProtectionGeometry {
                 rows,
                 receiver: Wgs84Geodetic::try_from(&*receiver)?,
                 clock_systems: clock_systems.into_iter().map(Into::into).collect(),
+                ut1_degraded: None,
             },
         })
     }
@@ -417,6 +431,7 @@ impl PySbasErrorModel {
         degradation=None
     ))]
     fn from_store(
+        py: Python<'_>,
         store: &PySbasCorrectionStore,
         geo_satellite_id: &str,
         geometry: &PyProtectionGeometry,
@@ -436,7 +451,7 @@ impl PySbasErrorModel {
             &degradation,
         )
         .map(|inner| Self { inner })
-        .map_err(to_sbas_pl_err)
+        .map_err(|err| to_sbas_pl_err(py, err))
     }
 
     /// Per-satellite range-error rows.
@@ -680,6 +695,7 @@ impl PySbasProtection {
 #[pyfunction]
 #[pyo3(signature = (geometry, model, k=None))]
 fn sbas_protection_levels(
+    py: Python<'_>,
     geometry: &PyProtectionGeometry,
     model: &PySbasErrorModel,
     k: Option<&PySbasKMultipliers>,
@@ -687,7 +703,7 @@ fn sbas_protection_levels(
     let k = PySbasKMultipliers::inner_or_default(k);
     core_sbas_protection_levels(&geometry.inner, &model.inner, k)
         .map(Into::into)
-        .map_err(to_sbas_pl_err)
+        .map_err(|err| to_sbas_pl_err(py, err))
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

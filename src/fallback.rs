@@ -11,19 +11,42 @@
 //! is the binding's separate `data` surface.
 
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyDict, PyModule};
 
 use sidereon_core::ephemeris::Sp3;
 use sidereon_core::positioning::{
     solve_broadcast as core_solve_broadcast, solve_with_fallback as core_solve_with_fallback,
-    BroadcastReason, FixSource, SourcedSolution,
+    BroadcastReason, FallbackError, FixSource, SourcedSolution,
 };
+use sidereon_core::staleness::SelectionError;
 
 use crate::ephemeris::PySp3;
 use crate::rinex::PyBroadcastEphemeris;
 use crate::spp::{PySppConfig, PySppSolution};
 use crate::staleness::{PyStalenessMetadata, PyStalenessPolicy};
 use crate::{to_solve_err, FallbackError as PyFallbackError};
+
+fn fallback_error(py: Python<'_>, error: FallbackError) -> PyErr {
+    let message = error.to_string();
+    let (kind, cause) = match error {
+        FallbackError::Precise(cause) => ("precise", cause),
+        FallbackError::Broadcast(cause) => ("broadcast", cause),
+    };
+    let py_error = PyFallbackError::new_err(message.clone());
+    let detail = PyDict::new(py);
+    let result = (|| -> PyResult<()> {
+        detail.set_item("family", "FallbackError")?;
+        detail.set_item("kind", kind)?;
+        detail.set_item("message", &message)?;
+        detail.set_item("cause", crate::spp_error_detail::spp_detail(py, &cause)?)?;
+        py_error.value(py).setattr("detail", detail)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => py_error,
+        Err(error) => error,
+    }
+}
 
 /// Which ephemeris source produced a [`SourcedSolution`].
 ///
@@ -193,6 +216,34 @@ impl PySourcedSolution {
         }
     }
 
+    /// Owned, variant-complete explanation of why precise data was not used.
+    /// This is additive; `selection_error` and the legacy reason fields retain
+    /// their existing types and text.
+    #[getter]
+    fn broadcast_reason_detail(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
+        let detail = match &self.inner.source {
+            FixSource::Broadcast(BroadcastReason::PreciseUnavailable(error)) => {
+                let detail = PyDict::new(py);
+                detail.set_item("family", "BroadcastReason")?;
+                detail.set_item("kind", "precise_unavailable")?;
+                detail.set_item("message", error.to_string())?;
+                detail.set_item("selection_error", selection_error_detail(py, error)?)?;
+                detail
+            }
+            FixSource::Broadcast(BroadcastReason::PreciseDegradedUnusable { staleness, error }) => {
+                let detail = PyDict::new(py);
+                detail.set_item("family", "BroadcastReason")?;
+                detail.set_item("kind", "precise_degraded_unusable")?;
+                detail.set_item("message", error.to_string())?;
+                detail.set_item("staleness", staleness_detail(py, *staleness)?)?;
+                detail.set_item("error", crate::spp_detail(py, error)?)?;
+                detail
+            }
+            FixSource::Precise(_) => return Ok(None),
+        };
+        Ok(Some(detail.unbind()))
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "SourcedSolution(source={}, is_precise_exact={})",
@@ -200,6 +251,118 @@ impl PySourcedSolution {
             self.inner.source.is_precise_exact(),
         )
     }
+}
+
+pub(crate) fn selection_error_detail<'py>(
+    py: Python<'py>,
+    error: &SelectionError,
+) -> PyResult<Bound<'py, PyDict>> {
+    let detail = PyDict::new(py);
+    detail.set_item("family", "SelectionError")?;
+    detail.set_item("message", error.to_string())?;
+    match error {
+        SelectionError::EmptyProductSet => detail.set_item("kind", "empty_product_set")?,
+        SelectionError::InvalidRange {
+            start_epoch_j2000_s,
+            end_epoch_j2000_s,
+        } => {
+            detail.set_item("kind", "invalid_range")?;
+            detail.set_item("start_epoch_j2000_s", start_epoch_j2000_s)?;
+            detail.set_item("end_epoch_j2000_s", end_epoch_j2000_s)?;
+        }
+        SelectionError::NoPriorProduct {
+            requested_epoch_j2000_s,
+        } => {
+            detail.set_item("kind", "no_prior_product")?;
+            detail.set_item("requested_epoch_j2000_s", requested_epoch_j2000_s)?;
+        }
+        SelectionError::BeyondStalenessCap {
+            requested_epoch_j2000_s,
+            source_epoch_j2000_s,
+            staleness_s,
+            max_staleness_s,
+        } => {
+            detail.set_item("kind", "beyond_staleness_cap")?;
+            detail.set_item("requested_epoch_j2000_s", requested_epoch_j2000_s)?;
+            detail.set_item("source_epoch_j2000_s", source_epoch_j2000_s)?;
+            detail.set_item("staleness_s", staleness_s)?;
+            detail.set_item("max_staleness_s", max_staleness_s)?;
+        }
+        SelectionError::InvalidProduct(message) => {
+            detail.set_item("kind", "invalid_product")?;
+            detail.set_item("message_detail", message)?;
+        }
+        SelectionError::InvalidPolicy { max_staleness_s } => {
+            detail.set_item("kind", "invalid_policy")?;
+            detail.set_item("max_staleness_s", max_staleness_s)?;
+        }
+        SelectionError::Overflow { context } => {
+            detail.set_item("kind", "overflow")?;
+            detail.set_item("context", context)?;
+        }
+        SelectionError::IonexEpoch(error) => {
+            let cause = PyDict::new(py);
+            cause.set_item("family", "IonexEpochError")?;
+            match error {
+                sidereon_core::atmosphere::IonexEpochError::NotWholeSecond { scale } => {
+                    cause.set_item("kind", "not_whole_second")?;
+                    cause.set_item("scale", scale.abbrev())?;
+                }
+                sidereon_core::atmosphere::IonexEpochError::FractionalUtcSecond { scale } => {
+                    cause.set_item("kind", "fractional_utc_second")?;
+                    cause.set_item("scale", scale.abbrev())?;
+                }
+                sidereon_core::atmosphere::IonexEpochError::NoExactUtcOffset { scale } => {
+                    cause.set_item("kind", "no_exact_utc_offset")?;
+                    cause.set_item("scale", scale.abbrev())?;
+                }
+                sidereon_core::atmosphere::IonexEpochError::InsertedLeapSecond { scale } => {
+                    cause.set_item("kind", "inserted_leap_second")?;
+                    cause.set_item("scale", scale.abbrev())?;
+                }
+                sidereon_core::atmosphere::IonexEpochError::BeforeIntegerLeapSeconds { scale } => {
+                    cause.set_item("kind", "before_integer_leap_seconds")?;
+                    cause.set_item("scale", scale.abbrev())?;
+                }
+                sidereon_core::atmosphere::IonexEpochError::OutOfRange { scale } => {
+                    cause.set_item("kind", "out_of_range")?;
+                    cause.set_item("scale", scale.abbrev())?;
+                }
+                sidereon_core::atmosphere::IonexEpochError::YearOutOfField { utc_j2000_s } => {
+                    cause.set_item("kind", "year_out_of_field")?;
+                    cause.set_item("utc_j2000_s", utc_j2000_s)?;
+                }
+                _ => {
+                    cause.set_item("kind", "unknown")?;
+                    cause.set_item("diagnostic", format!("{error:?}"))?;
+                }
+            }
+            cause.set_item("message", error.to_string())?;
+            detail.set_item("kind", "ionex_epoch")?;
+            detail.set_item("cause", cause)?;
+        }
+    }
+    Ok(detail)
+}
+
+fn staleness_detail<'py>(
+    py: Python<'py>,
+    value: sidereon_core::staleness::StalenessMetadata,
+) -> PyResult<Bound<'py, PyDict>> {
+    let detail = PyDict::new(py);
+    detail.set_item(
+        "kind",
+        match value.kind {
+            sidereon_core::staleness::DegradationKind::Exact => "exact",
+            sidereon_core::staleness::DegradationKind::NearestPrior => "nearest_prior",
+            sidereon_core::staleness::DegradationKind::DiurnalShift => "diurnal_shift",
+        },
+    )?;
+    detail.set_item("requested_epoch_j2000_s", value.requested_epoch_j2000_s)?;
+    detail.set_item("source_epoch_j2000_s", value.source_epoch_j2000_s)?;
+    detail.set_item("staleness_s", value.staleness_s)?;
+    detail.set_item("staleness_days", value.staleness_days)?;
+    Ok(detail)
 }
 
 /// Solve a receiver position from broadcast ephemeris alone: the supported
@@ -211,12 +374,20 @@ impl PySourcedSolution {
 #[pyfunction]
 #[pyo3(signature = (broadcast, config))]
 fn solve_broadcast(
+    py: Python<'_>,
     broadcast: &PyBroadcastEphemeris,
     config: &PySppConfig,
 ) -> PyResult<PySppSolution> {
     let inputs = config.to_inputs();
-    let inner = core_solve_broadcast(&broadcast.inner, &inputs, config.with_geodetic_flag())
-        .map_err(to_solve_err)?;
+    let inner = match core_solve_broadcast(&broadcast.inner, &inputs, config.with_geodetic_flag()) {
+        Ok(inner) => inner,
+        Err(error) => {
+            let py_error = to_solve_err(error.to_string());
+            let detail = crate::spp_error_detail::spp_detail(py, &error)?;
+            py_error.value(py).setattr("detail", detail)?;
+            return Err(py_error);
+        }
+    };
     Ok(PySppSolution::from_solution(inner))
 }
 
@@ -253,7 +424,7 @@ fn solve_with_fallback(
         resolved,
         config.with_geodetic_flag(),
     )
-    .map_err(|err| PyFallbackError::new_err(err.to_string()))?;
+    .map_err(|err| fallback_error(py, err))?;
     Ok(PySourcedSolution { inner })
 }
 

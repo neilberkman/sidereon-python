@@ -6,20 +6,16 @@ import struct
 import numpy as np
 import pytest
 import sidereon
-from _helpers import CORE_FIXTURES
+from _helpers import CORE_FIXTURES, core_goldens
 
 SP3_PATH = os.path.join(CORE_FIXTURES, "sp3", "GRG0MGXFIN_20201760000_01D_15M_ORB.SP3")
 
+# The core `velocity` module scenario, with its range-rate and GLONASS-channel
+# Doppler solutions, written by `scripts/core_goldens`.
+_VELOCITY = core_goldens()["velocity"]
 VELOCITY_OBS_BITS = [
-    ("G07", 0xC0768A0B93C45F82),
-    ("G08", 0xC081BBF2879835FD),
-    ("G10", 0xC081C9B51570E844),
-    ("G16", 0xC045EB58A1B7B54E),
-    ("G18", 0x407EC07DD774B2F8),
-    ("G20", 0xC0689F0E9E24FBC3),
-    ("G21", 0x4063A9470C18C1A7),
-    ("G26", 0x4079EF7D9618F6B0),
-    ("G27", 0xC0775231A845D789),
+    (sat, int(bits, 16))
+    for sat, bits in zip(_VELOCITY["satellites"], _VELOCITY["range_rate_m_s"])
 ]
 
 CARRIER_ARC_ROWS = [
@@ -444,6 +440,60 @@ def test_cycle_slips_detect_clean_and_injected_arc_bits():
         assert got.skipped is skipped
 
 
+def test_exact_arc_gap_epoch_takes_precedence_over_legacy_float_coordinate():
+    first_epoch = sidereon.ExactEpoch.new(1_000_000_000, 0)
+    second_epoch = sidereon.ExactEpoch.new(1_000_000_010, 0)
+    rows = []
+    for row_index, row in enumerate(CARRIER_ARC_ROWS[:2]):
+        (
+            _,
+            phase1,
+            phase2,
+            pseudorange1,
+            pseudorange2,
+            lli1,
+            lli2,
+            frequency1,
+            frequency2,
+        ) = row
+        rows.append(
+            sidereon.ArcEpoch(
+                phi1_cycles=_f64(phase1),
+                phi2_cycles=_f64(phase2),
+                p1_m=_f64(pseudorange1),
+                p2_m=_f64(pseudorange2),
+                lli1=lli1,
+                lli2=lli2,
+                f1_hz=_f64(frequency1),
+                f2_hz=_f64(frequency2),
+                gap_time_s=1000.0 * row_index,
+                gap_epoch=(first_epoch, second_epoch)[row_index],
+            )
+        )
+
+    exact_results = sidereon.detect_cycle_slips(rows)
+    assert rows[0].gap_epoch == first_epoch
+    assert rows[1].gap_epoch == second_epoch
+    assert sidereon.SlipReason.DATA_GAP not in exact_results[1].reasons
+
+    legacy_rows = [
+        sidereon.ArcEpoch(
+            phi1_cycles=row.phi1_cycles,
+            phi2_cycles=row.phi2_cycles,
+            p1_m=row.p1_m,
+            p2_m=row.p2_m,
+            lli1=row.lli1,
+            lli2=row.lli2,
+            f1_hz=row.f1_hz,
+            f2_hz=row.f2_hz,
+            gap_time_s=row.gap_time_s,
+        )
+        for row in rows
+    ]
+    legacy_results = sidereon.detect_cycle_slips(legacy_rows)
+    assert sidereon.SlipReason.DATA_GAP in legacy_results[1].reasons
+
+
 def test_hatch_smoothing_matches_rust_oracle_bits():
     actual = sidereon.smooth_code(_carrier_arc(), hatch_window_cap=100)
     expected = [
@@ -509,6 +559,22 @@ def _velocity_observations():
     ]
 
 
+def _assert_velocity_matches(solution, golden):
+    assert solution.used_sats == golden["used_sats"]
+    assert np.array_equal(
+        _array_bits(solution.velocity_m_s), _expect_bits(golden["velocity_m_s"])
+    )
+    assert _bits(solution.speed_m_s) == int(golden["speed_m_s"], 16)
+    assert _bits(solution.clock_drift_s_s) == int(golden["clock_drift_s_s"], 16)
+    assert np.array_equal(
+        _array_bits(solution.residuals_m_s), _expect_bits(golden["residuals_m_s"])
+    )
+    assert np.array_equal(
+        _array_bits(solution.state_covariance).ravel(),
+        _expect_bits(golden["state_covariance"]),
+    )
+
+
 def test_velocity_solve_matches_rust_oracle_bits():
     sp3 = _load_sp3()
     observations = _velocity_observations()
@@ -524,30 +590,7 @@ def test_velocity_solve_matches_rust_oracle_bits():
     assert solution.used_sats == [sat for sat, _ in VELOCITY_OBS_BITS]
     assert solution.velocity_m_s.shape == (3,)
     assert solution.residuals_m_s.shape == (len(observations),)
-    assert np.array_equal(
-        _array_bits(solution.velocity_m_s),
-        _expect_bits(
-            ["0x4028000000000000", "0xc01c000000000016", "0x4007ffffffffff00"]
-        ),
-    )
-    assert _bits(solution.speed_m_s) == 0x402C6CE322982A37
-    assert _bits(solution.clock_drift_s_s) == 0x3E112E0BE826D2EE
-    assert np.array_equal(
-        _array_bits(solution.residuals_m_s),
-        _expect_bits(
-            [
-                "0xbd01000000000000",
-                "0xbd24000000000000",
-                "0x3cfc000000000000",
-                "0xbd16000000000000",
-                "0xbd1a800000000000",
-                "0x3cf0000000000000",
-                "0xbd14000000000000",
-                "0x3d31800000000000",
-                "0x3d18000000000000",
-            ]
-        ),
-    )
+    _assert_velocity_matches(solution, _VELOCITY["range_rate_solution"])
 
 
 def test_velocity_doppler_solve_matches_rust_oracle_bits():
@@ -575,14 +618,7 @@ def test_velocity_doppler_solve_matches_rust_oracle_bits():
         sidereon.VelocitySolveOptions(observable=sidereon.VelocityObservable.DOPPLER),
     )
 
-    assert np.array_equal(
-        _array_bits(solution.velocity_m_s),
-        _expect_bits(
-            ["0x402800000000000c", "0xc01c00000000000f", "0x4007ffffffffff60"]
-        ),
-    )
-    assert _bits(solution.speed_m_s) == 0x402C6CE322982A44
-    assert _bits(solution.clock_drift_s_s) == 0x3E112E0BE826D4B8
+    _assert_velocity_matches(solution, _VELOCITY["doppler_solution"])
 
 
 def test_ionosphere_free_pseudoranges_report_drop_reasons():
@@ -655,10 +691,14 @@ def test_quality_cn0_model_and_errors():
         model=sidereon.PseudorangeVarianceModel.ELEVATION_CN0
     )
     assert missing.model.label == "elevation_cn0"
-    with pytest.raises(ValueError, match="missing C/N0"):
+    with pytest.raises(sidereon.QualityError, match="missing C/N0") as missing_error:
         sidereon.pseudorange_variance(30.0, missing)
-    with pytest.raises(ValueError, match="invalid elevation"):
+    assert missing_error.value.kind == "missing_cn0"
+    with pytest.raises(
+        sidereon.QualityError, match="invalid elevation"
+    ) as elevation_error:
         sidereon.pseudorange_variance(0.0)
+    assert elevation_error.value.kind == "invalid_elevation"
 
     weak = sidereon.pseudorange_variance(
         30.0,
@@ -695,8 +735,20 @@ def test_raim_weights_expose_sorted_numpy_vector():
         sidereon.RaimWeights.by_satellite(
             ["G01"], np.asarray([1.0, 2.0], dtype=np.float64)
         )
-    with pytest.raises(ValueError, match="positive finite"):
-        sidereon.RaimWeights.by_satellite(["G01"], np.asarray([0.0], dtype=np.float64))
+    for invalid_weight in (0.0, -1.0, np.nan, np.inf, -np.inf):
+        with pytest.raises(sidereon.QualityError) as captured:
+            sidereon.RaimWeights.by_satellite(
+                ["G01"], np.asarray([invalid_weight], dtype=np.float64)
+            )
+
+        assert isinstance(captured.value, ValueError)
+        assert captured.value.kind == "invalid_weight"
+
+    valid = sidereon.RaimWeights.by_satellite(
+        ["G01"], np.asarray([0.25], dtype=np.float64)
+    )
+    assert valid.satellite_ids == ["G01"]
+    assert np.array_equal(valid.weights, np.asarray([0.25], dtype=np.float64))
 
 
 def test_signal_ca_code_and_replica_match_rust_oracle():

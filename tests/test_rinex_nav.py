@@ -101,7 +101,9 @@ def test_parse_mixed_nav_records_and_default_store():
     assert store.leap_seconds == 18.0
     assert store.record_count > 0
     assert store.glonass_record_count == 0
-    assert all(r.sv_health == 0.0 for r in store.records)
+    # The store keeps unhealthy records and excludes them at query time, as
+    # RTKLIB `satexclude` does.
+    assert any(r.sv_health != 0.0 for r in store.records)
     assert all(r.message != sidereon.NavMessage.GALILEO_FNAV for r in store.records)
     assert any(r.satellite == "C05" for r in store.records)
 
@@ -296,17 +298,18 @@ def test_rinex_nav_parse_error_is_typed():
         sidereon.parse_rinex_nav_records(bogus)
 
 
+def _header_line(content, label):
+    # A header record's label sits in columns 61-80 exactly.
+    return content.ljust(60) + label + "\n"
+
+
 def test_public_header_helpers_surface_malformed_fields():
-    bad_iono = (
-        "     3.05           NAVIGATION DATA     M                   RINEX VERSION / TYPE\n"  # noqa: E501
-        "GPSA not-a-float                                             IONOSPHERIC CORR\n"  # noqa: E501
-        "     XXX                                                         END OF HEADER\n"  # noqa: E501
+    version = _header_line(
+        "     3.05           NAVIGATION DATA     M", "RINEX VERSION / TYPE"
     )
-    bad_leap = (
-        "     3.05           NAVIGATION DATA     M                   RINEX VERSION / TYPE\n"  # noqa: E501
-        "bad                                                        LEAP SECONDS\n"
-        "     XXX                                                         END OF HEADER\n"  # noqa: E501
-    )
+    end = _header_line("", "END OF HEADER")
+    bad_iono = version + _header_line("GPSA not-a-float", "IONOSPHERIC CORR") + end
+    bad_leap = version + _header_line("bad", "LEAP SECONDS") + end
 
     with pytest.raises(sidereon.RinexNavParseError):
         sidereon.parse_rinex_iono_corrections(bad_iono)

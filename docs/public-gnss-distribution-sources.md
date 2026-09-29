@@ -266,12 +266,35 @@ priority; mean and median policies leave that list empty.
 merged, report = data.fetch_merged_sp3(day, ["cod", "esa"])
 persisted_report_json = json.dumps(report.to_dict(), sort_keys=True)
 
-path, same_report = data.fetch_merged_sp3_file(
-    day, ["cod", "esa"], "merged.sp3", return_report=True
-)
+try:
+    path, same_report = data.fetch_merged_sp3_file(
+        day, ["cod", "esa"], "merged.sp3", return_report=True
+    )
+except sidereon.Sp3WriteError as error:
+    # Nothing was written: the merged product holds a value SP3 text cannot
+    # state, named by the typed detail.
+    print(error.detail.kind, error.detail.satellite, error.detail.epoch_index)
 
 assert data.verify_merge_report(json.loads(persisted_report_json))
 ```
+
+The file helpers write SP3 text only when every value restates exactly. The
+default mean merge of two centers holds positions finer than the millimetre
+record column wherever the centers differ, and a clock moved onto the reference
+clock datum can be finer than its column; `Sp3WriteError` names the value
+instead of the helper rounding it.
+
+`report.to_dict()` writes merged-SP3 report schema 3. A merge keeps a
+satellite whose orbit is missing but whose clock reached a consensus as a
+clock-only record; its agreement cell has `position_members` 0 and `None`
+position metrics, and an epoch with no multi-source position consensus has
+`None` position spread. Schema 3 also records what the merge did not write
+(dropped input epochs, omitted epochs, withheld arc cells, clock omissions) and
+the continuity and provenance records the merge options asked for, with those
+options in the merge policy. `data.verify_merge_report` also reads schema 2
+records, written before those fields, and schema 1 records, written while
+every merge cell carried an orbit, by the rules they were written under: there
+such an epoch holds a 0.0 spread. See `docs/sp3.md`.
 
 Persisted-report verification is exact-schema and non-coercive at every nested
 level. It rechecks contributor filename, catalog pattern, center, date, and issue

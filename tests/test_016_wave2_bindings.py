@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import sidereon
+from _helpers import core_goldens, hex_to_f64
 
 
 def _engine_dep_is_registry_versioned(manifest: str, name: str) -> bool:
@@ -27,6 +28,32 @@ def _engine_dep_is_registry_versioned(manifest: str, name: str) -> bool:
         re.search(r'version = "\d+\.\d+\.\d+"', value) is not None
         or re.fullmatch(r'"\d+\.\d+\.\d+"', value.strip()) is not None
     )
+
+
+def _assert_engine_manifest_sources_are_approved(manifest: str, repo: Path) -> None:
+    candidate = re.search(
+        r"^sidereon(?:-core)?\s*=\s*\{[^}\n]*\bgit\s*=",
+        manifest,
+        re.M,
+    )
+    if candidate is None:
+        assert _engine_dep_is_registry_versioned(manifest, "sidereon")
+        assert _engine_dep_is_registry_versioned(manifest, "sidereon-core")
+        return
+
+    import runpy
+
+    import tomllib
+
+    dependencies = tomllib.loads(manifest)["dependencies"]
+    release_guard = runpy.run_path(str(repo / "scripts" / "check-release.py"))
+    package_version = tomllib.loads((repo / "pyproject.toml").read_text())["project"][
+        "version"
+    ]
+    revision = release_guard["candidate_fixture_revision"](
+        dependencies, package_version
+    )
+    assert re.fullmatch(r"[0-9a-f]{40}", revision)
 
 
 FIXTURES = Path(__file__).with_name("fixtures")
@@ -146,10 +173,9 @@ def test_016_ecef_sp3_precise_orbit_fit_variants_smoke():
     stats = report.ledger.per_sat[0][1]
     assert report.fit_count == 1
     assert fit.satellite == "G01"
-    # Exact 1.4.1 outputs after the core moved iterative fitting and residual
-    # evaluation through portable kernels.
-    assert fit.fit_rms_3d_m.hex() == "0x1.175616320330ep+7"
-    assert stats.rms_3d_m.hex() == "0x1.175616320330fp+7"
+    orbit_fit = core_goldens()["precise_orbit_fit"]
+    assert fit.fit_rms_3d_m.hex() == hex_to_f64(orbit_fit["fit_rms_3d_m"]).hex()
+    assert stats.rms_3d_m.hex() == hex_to_f64(orbit_fit["ledger_rms_3d_m"]).hex()
     assert fit.covariance.kind == "estimated"
     assert stats.n == 11
     assert stats.low_sample_count is False
@@ -254,13 +280,11 @@ def test_016_troposphere_low_elevation_error_and_oblate_eclipse_bits():
     assert oblate.tobytes() == bytes.fromhex("982b27487675c83f")
 
 
-def test_016_wtest_noncentrality_uses_core_delta_and_manifest_has_no_path_deps():
+def test_016_wtest_noncentrality_uses_core_delta_and_approved_dependencies():
     constants = sidereon.wtest_noncentrality(0.001, 0.80)
     assert constants.delta0.hex() == "0x1.08751cbd0bec7p+2"
     assert constants.lambda0.hex() == "0x1.1131c0d9309e7p+4"
     assert "lambda0.sqrt" not in (REPO / "src" / "reliability.rs").read_text()
 
     manifest = (REPO / "Cargo.toml").read_text()
-    assert _engine_dep_is_registry_versioned(manifest, "sidereon")
-    assert _engine_dep_is_registry_versioned(manifest, "sidereon-core")
-    assert "path =" not in manifest
+    _assert_engine_manifest_sources_are_approved(manifest, REPO)
