@@ -95,4 +95,32 @@ def test_force_components_expose_solid_earth_tide_options():
     assert components.spherical_harmonic_max_order == 0
     assert components.solid_earth_tide
     assert components.solid_earth_pole_tide
+    assert components.tide_system == sidereon.TideSystem.TIDE_FREE
     assert sidereon.ForceModelKind.composite(components).label == "composite"
+
+    alternate = sidereon.ForceModelComponents(
+        zonal_max_degree=6,
+        solid_earth_tide=True,
+        tide_system=sidereon.TideSystem.ZERO_TIDE,
+    )
+    assert alternate.tide_system == sidereon.TideSystem.ZERO_TIDE
+    assert "tide_system=zero_tide" in repr(alternate)
+    tide_only = sidereon.ForceModelComponents(
+        solid_earth_tide=True,
+        tide_system=sidereon.TideSystem.MEAN_TIDE,
+    )
+    zonal_only = sidereon.ForceModelComponents(
+        zonal_max_degree=2,
+        tide_system=sidereon.TideSystem.ZERO_TIDE,
+    )
+    assert tide_only.tide_system == sidereon.TideSystem.MEAN_TIDE
+    assert zonal_only.tide_system == sidereon.TideSystem.ZERO_TIDE
+
+    with np.testing.assert_raises_regex(ValueError, "requires zonal gravity"):
+        sidereon.ForceModelComponents(tide_system=sidereon.TideSystem.MEAN_TIDE)
+    with np.testing.assert_raises_regex(ValueError, "embedded EGM96"):
+        sidereon.ForceModelComponents(
+            spherical_harmonic_max_degree=2,
+            spherical_harmonic_max_order=0,
+            tide_system=sidereon.TideSystem.ZERO_TIDE,
+        )

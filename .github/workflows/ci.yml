@@ -38,19 +38,23 @@ jobs:
   release-metadata:
     name: release metadata
     runs-on: ubuntu-latest
+    outputs:
+      core_fixture_ref: ${{ steps.release-check.outputs.fixture_ref }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python scripts/check-release.py
+      - name: Validate release metadata and select core fixtures
+        id: release-check
+        run: python scripts/check-release.py --ci --github-output "$GITHUB_OUTPUT"
 
   rust:
     name: rustfmt + clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt, clippy
       # shared-key so the tag-triggered release gate reuses this cache instead
@@ -62,13 +66,14 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --check
       - name: cargo clippy -D warnings
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
   python:
     name: ruff + build + pytest
     # arm64 runner: the bit-exact f64 goldens are captured on aarch64, and
     # transcendental libm differs by a few ULP across architectures.
     runs-on: macos-latest
+    needs: release-metadata
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -78,41 +83,48 @@ jobs:
         with:
           version: "0.11.19"
           enable-cache: true
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci
-      - name: Determine sidereon-core version
-        id: core-version
-        shell: bash
-        run: |
-          version=$(python - <<'PY'
-          import tomllib
-
-          with open("Cargo.toml", "rb") as handle:
-              manifest = tomllib.load(handle)
-
-          dep = manifest["dependencies"]["sidereon-core"]
-          if isinstance(dep, str):
-              version = dep
-          else:
-              version = dep["version"]
-
-          if any(ch in version for ch in "<>=, "):
-              raise SystemExit(f"cannot derive a release tag from version requirement: {version}")
-
-          print(version)
-          PY
-          )
-          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Check out sidereon-core fixtures
         uses: actions/checkout@v4
         with:
           repository: neilberkman/sidereon
-          ref: v${{ steps.core-version.outputs.version }}
+          ref: ${{ needs.release-metadata.outputs.core_fixture_ref }}
           path: .core-checkout
       - name: Install locked environment
         run: uv sync --locked --extra test --group dev
+      - name: Test typed precise-sample error mapping
+        env:
+          PYO3_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: |
+          set -euo pipefail
+          test -n "${PYO3_PYTHON:-}" || { echo "PYO3_PYTHON is not set" >&2; exit 1; }
+          test -x "$PYO3_PYTHON" || { echo "PYO3_PYTHON is not executable: $PYO3_PYTHON" >&2; exit 1; }
+          pyo3_home="$(env -u PYTHONHOME "$PYO3_PYTHON" -c 'import sys; print(sys.base_prefix)')"
+          test -n "$pyo3_home" || { echo "Derived PYTHONHOME is empty" >&2; exit 1; }
+          test -d "$pyo3_home" || { echo "Derived PYTHONHOME is not a directory: $pyo3_home" >&2; exit 1; }
+          PYO3_PYTHON="$PYO3_PYTHON" PYTHONHOME="$pyo3_home" \
+            cargo test --locked --no-default-features --features test-harness --lib \
+            ephemeris::precise_samples_error_tests::invalid_accuracy_from_valid_samples_keeps_typed_satellite_payload \
+            -- --exact 2>&1 | tee "$RUNNER_TEMP/precise-sample-invalid-accuracy.log"
+          grep -Fx \
+            'test ephemeris::precise_samples_error_tests::invalid_accuracy_from_valid_samples_keeps_typed_satellite_payload ... ok' \
+            "$RUNNER_TEMP/precise-sample-invalid-accuracy.log"
+          grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in .*s$' \
+            "$RUNNER_TEMP/precise-sample-invalid-accuracy.log"
+      - name: Test registry source identity from the verified archive
+        run: |
+          set -euo pipefail
+          cargo test --locked --manifest-path scripts/core_goldens/Cargo.toml \
+            core_source_identity::tests::registry_revision_reads_vcs_from_checksum_verified_archive \
+            -- --exact 2>&1 | tee "$RUNNER_TEMP/core-source-identity.log"
+          grep -Fx \
+            'test core_source_identity::tests::registry_revision_reads_vcs_from_checksum_verified_archive ... ok' \
+            "$RUNNER_TEMP/core-source-identity.log"
+          grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in .*s$' \
+            "$RUNNER_TEMP/core-source-identity.log"
       - name: ruff check
         run: uv run --locked --extra test --group dev ruff check .
       - name: ruff format --check
@@ -120,13 +132,13 @@ jobs:
       - name: mypy
         run: uv run --locked --extra test --group dev mypy
       - name: Build the extension (maturin develop)
-        run: uv run --locked --extra test --group dev maturin develop --features exact-cache-test-failpoints
+        run: uv run --locked --extra test --group dev maturin develop --locked --features exact-cache-test-failpoints
       - name: stub accuracy
         run: uv run --locked --extra test --group dev pytest tests/test_stub_accuracy.py
       - name: pytest
         env:
           SIDEREON_CORE_FIXTURES: ${{ github.workspace }}/.core-checkout/crates/sidereon-core/tests/fixtures
         run: |
-          # The published sidereon-core crate omits test fixtures, so CI checks
-          # out the matching release tag and points the test resolver at them.
+          # The published crate omits test fixtures, so use the guard-selected
+          # candidate revision or matching registry release tag.
           uv run --locked --extra test --group dev pytest

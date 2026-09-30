@@ -1,8 +1,9 @@
-"""RTCM 3.x decode / encode / round-trip delegates to ``sidereon_core::rtcm``.
+"""RTCM 3.x decode / encode / round-trip delegates to the core codec.
 
-The frames below are emitted by the core encoder (a 1006 station-coordinates
-message and a verbatim unsupported message), so decoding them through the binding
-and re-encoding must reproduce the exact bytes.
+The station frame is encoder-produced. The unsupported-message frame is an
+independent wire fixture: message number 4090 is packed into the first 12 body
+bits, zero-padded to two bytes, and framed with CRC-24Q using the standard
+polynomial and zero initial register.
 """
 
 import pytest
@@ -12,8 +13,7 @@ import sidereon
 STATION_1006_FRAME = bytes.fromhex(
     "d300153ee7d30302aa3c6d183e4605ff0c02ef2b54843a98d8b487"
 )
-# A verbatim unsupported message (number 1230) framed by the core.
-UNSUPPORTED_FRAME = bytes.fromhex("d300044ceabcdeb63c1b")
+UNSUPPORTED_FRAME = bytes.fromhex("d30002ffa0d1a027")
 # The two frames concatenated, to exercise the stream decoder.
 STREAM_TWO = STATION_1006_FRAME + UNSUPPORTED_FRAME
 
@@ -52,12 +52,12 @@ def test_station_round_trips_to_exact_frame_bytes():
 def test_stream_decodes_both_frames_in_order():
     messages = sidereon.decode_rtcm(STREAM_TWO)
     assert [m.kind for m in messages] == ["station_coordinates", "unsupported"]
-    assert [m.message_number for m in messages] == [1006, 1230]
+    assert [m.message_number for m in messages] == [1006, 4090]
 
 
 def test_stream_diagnostics_surface_resync_bytes():
     stream = sidereon.decode_rtcm_stream(b"junk" + STREAM_TWO)
-    assert [m.message_number for m in stream.messages] == [1006, 1230]
+    assert [m.message_number for m in stream.messages] == [1006, 4090]
     assert stream.diagnostics.resync_bytes >= 4
     assert stream.diagnostics.skipped_frames == []
 
@@ -65,10 +65,10 @@ def test_stream_diagnostics_surface_resync_bytes():
 def test_unsupported_message_preserves_body():
     msg = sidereon.decode_rtcm(UNSUPPORTED_FRAME)[0]
     assert msg.kind == "unsupported"
-    assert msg.message_number == 1230
+    assert msg.message_number == 4090
     unsupported = msg.unsupported
     assert unsupported is not None
-    assert isinstance(unsupported.body, bytes)
+    assert unsupported.body == bytes.fromhex("ffa0")
     # The whole unsupported frame round-trips verbatim.
     assert msg.to_frame() == UNSUPPORTED_FRAME
 
@@ -77,6 +77,180 @@ def test_decode_rtcm_message_rejects_truncated_body():
     # A body of fewer than 12 bits cannot yield a message number.
     with pytest.raises(sidereon.RtcmParseError):
         sidereon.rtcm_message_number(b"\x00")
+
+
+def test_typed_rtcms_construct_encode_and_decode():
+    zero_residuals = [(0, 0, 0)] * 16
+    legacy_satellite = sidereon.RtcmLegacySatellite(
+        1,
+        None,
+        sidereon.RtcmLegacyL1(False, 0, 0, 0, None, None),
+        sidereon.RtcmLegacyL2(0, 0, 0, 0, None),
+    )
+    payloads = [
+        (
+            sidereon.RtcmLegacyObservations(
+                1003, 1, 0, False, 1, False, 0, [legacy_satellite]
+            ),
+            sidereon.RtcmMessage.from_legacy_observations,
+            1003,
+            "legacy_observations",
+        ),
+        (
+            sidereon.RtcmSystemParameters(1, 60000, 0, 0, 18, []),
+            sidereon.RtcmMessage.from_system_parameters,
+            1013,
+            "system_parameters",
+        ),
+        (
+            sidereon.RtcmTextMessage(1, 60000, 0, 0, []),
+            sidereon.RtcmMessage.from_text_message,
+            1029,
+            "text_message",
+        ),
+        (
+            sidereon.RtcmNetworkAuxiliaryStation(1, 0, 0, 1, 2, 0, 0, 0),
+            sidereon.RtcmMessage.from_network_auxiliary_station,
+            1014,
+            "network_auxiliary_station",
+        ),
+        (
+            sidereon.RtcmNetworkCorrectionDifferences(
+                1015, 1, 0, 0, False, 1, 2, 0, []
+            ),
+            sidereon.RtcmMessage.from_network_correction_differences,
+            1015,
+            "network_correction_differences",
+        ),
+        (
+            sidereon.RtcmNetworkResiduals(1030, 0, 1, 0, 0, []),
+            sidereon.RtcmMessage.from_network_residuals,
+            1030,
+            "network_residuals",
+        ),
+        (
+            sidereon.RtcmPhysicalReferenceStation(1, 2, 21, 0, 0, 0),
+            sidereon.RtcmMessage.from_physical_reference_station,
+            1032,
+            "physical_reference_station",
+        ),
+        (
+            sidereon.RtcmFkpGradients(1034, 1, 0, 0, []),
+            sidereon.RtcmMessage.from_fkp_gradients,
+            1034,
+            "fkp_gradients",
+        ),
+        (
+            sidereon.RtcmHelmertTransformation(
+                1021,
+                "SRC",
+                "DST",
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                None,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ),
+            sidereon.RtcmMessage.from_helmert_transformation,
+            1021,
+            "helmert_transformation",
+        ),
+        (
+            sidereon.RtcmResidualGrid(
+                1023,
+                1,
+                False,
+                False,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                zero_residuals,
+                0,
+                0,
+                0,
+                0,
+                60000,
+            ),
+            sidereon.RtcmMessage.from_residual_grid,
+            1023,
+            "residual_grid",
+        ),
+        (
+            sidereon.RtcmProjection.natural_origin(1, 0, 0, 0, 0, 0, 0),
+            sidereon.RtcmMessage.from_projection,
+            1025,
+            "projection",
+        ),
+        (
+            sidereon.RtcmNavicEphemeris(
+                satellite_id=1,
+                week_number=0,
+                a_f0=0,
+                a_f1=0,
+                a_f2=0,
+                ura=0,
+                t_oc=0,
+                t_gd=0,
+                delta_n=0,
+                iodec=0,
+                reserved=0,
+                l5_flag=False,
+                s_flag=False,
+                c_uc=0,
+                c_us=0,
+                c_ic=0,
+                c_is=0,
+                c_rc=0,
+                c_rs=0,
+                idot=0,
+                m0=0,
+                t_oe=0,
+                eccentricity=0,
+                sqrt_a=0,
+                omega0=0,
+                omega=0,
+                omega_dot=0,
+                i0=0,
+                spare_df544=0,
+                spare_df545=0,
+            ),
+            sidereon.RtcmMessage.from_navic_ephemeris,
+            1041,
+            "navic_ephemeris",
+        ),
+        (
+            sidereon.RtcmGlonassCodePhaseBiases(1, False, 0, 0, None, 0, None),
+            sidereon.RtcmMessage.from_glonass_code_phase_biases,
+            1230,
+            "glonass_code_phase_biases",
+        ),
+    ]
+
+    for payload, message_factory, message_number, accessor in payloads:
+        decoded = _assert_body_round_trips(message_factory(payload), message_number)
+        assert getattr(decoded, accessor) is not None
 
 
 # --- from-scratch construction -> encode -> decode round-trips --------------
@@ -622,3 +796,88 @@ def test_construct_msm_rejects_bad_system_letter():
             satellites=[],
             signals=[],
         )
+
+
+def _msm4_with(satellites, signals):
+    base = _msm4_message()
+    return sidereon.RtcmMessage.from_msm(
+        sidereon.RtcmMsmMessage(
+            message_number=1074,
+            system="G",
+            kind="msm4",
+            header=base.header,
+            satellites=satellites,
+            signals=signals,
+        )
+    )
+
+
+def _msm4_signal(satellite_id, signal_id):
+    return sidereon.RtcmMsmSignal(
+        satellite_id=satellite_id,
+        signal_id=signal_id,
+        fine_pseudorange=100,
+        fine_phase_range=200,
+        lock_time_indicator=5,
+        half_cycle_ambiguity=False,
+        cnr=30,
+    )
+
+
+def test_msm_lists_the_masks_cannot_state_are_refused_by_name():
+    hand_built_error = sidereon.RtcmEncodeError("manual")
+    assert hand_built_error.kind is None
+    assert hand_built_error.details is None
+
+    base = _msm4_message()
+    [satellite] = base.satellites
+
+    # A signal naming a satellite the satellite list does not hold would be
+    # left out of the body; the encoder refuses it.
+    stray = _msm4_with([satellite], [*base.signals, _msm4_signal(6, 2)])
+    with pytest.raises(sidereon.RtcmEncodeError, match="does not hold") as excinfo:
+        stray.encode()
+    assert isinstance(excinfo.value, sidereon.RtcmParseError)
+    assert isinstance(excinfo.value, ValueError)
+    assert excinfo.value.kind == "msm_mask"
+    assert excinfo.value.details == {
+        "message_number": 1074,
+        "problem": {
+            "kind": "signal_satellite_not_listed",
+            "signal": 2,
+            "satellite": 6,
+        },
+    }
+    with pytest.raises(sidereon.RtcmEncodeError) as policy_error:
+        stray.encode_with_policy(sidereon.RtcmPolicy.STRICT)
+    assert policy_error.value.kind == excinfo.value.kind
+    assert policy_error.value.details == excinfo.value.details
+    with pytest.raises(sidereon.RtcmEncodeError, match="does not hold") as frame_error:
+        stray.to_frame()
+    assert frame_error.value.kind == excinfo.value.kind
+    assert frame_error.value.details == excinfo.value.details
+
+    # Satellite id 65 names no bit of the 64-bit satellite mask.
+    wide = sidereon.RtcmMsmSatellite(id=65, rough_range_ms=100, rough_range_mod1=200)
+    with pytest.raises(sidereon.RtcmEncodeError, match="satellite mask") as wide_error:
+        _msm4_with([wide], [_msm4_signal(65, 2)]).encode()
+    assert wide_error.value.kind == "msm_mask"
+    assert wide_error.value.details["problem"] == {
+        "kind": "satellite_outside_mask",
+        "satellite": 65,
+    }
+
+    # A cell listed twice.
+    twice = _msm4_with([satellite], [_msm4_signal(5, 2), _msm4_signal(5, 2)])
+    with pytest.raises(sidereon.RtcmEncodeError, match="listed twice") as twice_error:
+        twice.encode()
+    assert twice_error.value.kind == "msm_mask"
+    assert twice_error.value.details["problem"] == {
+        "kind": "cell_listed_twice",
+        "satellite": 5,
+        "signal": 2,
+    }
+
+    # A well-formed message still encodes and frames.
+    good = sidereon.RtcmMessage.from_msm(base)
+    assert sidereon.decode_rtcm(good.to_frame())[0].encode() == good.encode()

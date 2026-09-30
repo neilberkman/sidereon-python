@@ -52,9 +52,36 @@ def test_spp_robust_default_canonical_values():
     # Canonical values (sidereon_core::positioning / spp::config).
     assert _bits(sidereon.SPP_DEFAULT_HUBER_K) == _bits(1.345)
     assert _bits(sidereon.SPP_DEFAULT_ROBUST_SCALE_FLOOR_M) == _bits(1.0)
-    assert sidereon.SPP_DEFAULT_ROBUST_MAX_OUTER == 5
+    # A safety cap, not a working budget: the reweighting runs until it
+    # settles, which a +300 m single-satellite fault does within 28 solves.
+    assert sidereon.SPP_DEFAULT_ROBUST_MAX_OUTER == 100
     assert _bits(sidereon.SPP_DEFAULT_ROBUST_OUTER_TOL_M) == _bits(1e-4)
     assert isinstance(sidereon.SPP_DEFAULT_ROBUST_MAX_OUTER, int)
+
+
+def test_fde_defaults_are_core_constants():
+    rows = [sidereon.RangeFdeRow(f"S{i}", 0.5, [1.0], 1.0) for i in range(1, 6)]
+    faulted = rows[:-1] + [sidereon.RangeFdeRow("S5", 10.0, [1.0], 1.0)]
+    implicit = sidereon.qc_raim_fde_design(faulted)
+    explicit = sidereon.qc_raim_fde_design(
+        faulted,
+        p_fa=sidereon.RAIM_DEFAULT_P_FA,
+        max_exclusions=1,
+        max_exclusion_rms_m=sidereon.FDE_DEFAULT_MAX_EXCLUSION_RMS_M,
+    )
+    assert implicit.excluded == explicit.excluded == ["S5"]
+    assert _bits(implicit.global_test.threshold) == _bits(
+        explicit.global_test.threshold
+    )
+
+
+def test_fde_default_canonical_values():
+    # RTKLIB demo5: chisqr alpha 0.001, raim_fde's initial rms of 100 m,
+    # pntpos's n >= 6 condition and raim_fde's nvsat >= 5 floor.
+    assert _bits(sidereon.RAIM_DEFAULT_P_FA) == _bits(1.0e-3)
+    assert _bits(sidereon.FDE_DEFAULT_MAX_EXCLUSION_RMS_M) == _bits(100.0)
+    assert sidereon.FDE_MIN_OBSERVATIONS == 6
+    assert sidereon.FDE_MIN_CANDIDATE_SATELLITES == 5
 
 
 def test_rtk_tolerance_defaults_are_core_constants():

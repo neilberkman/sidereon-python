@@ -5,6 +5,7 @@ import struct
 
 import numpy as np
 import sidereon
+from _helpers import core_goldens
 
 WGS84_A_M = 6_378_137.0
 
@@ -15,6 +16,27 @@ def _bits(value):
 
 def _array_bits(values):
     return [_bits(value) for value in np.asarray(values, dtype=np.float64).ravel()]
+
+
+def _golden_bits(hex_values):
+    return [int(value, 16) for value in hex_values]
+
+
+def _fusion_golden(name):
+    """The core's run of the same filter steps, written by
+    `scripts/core_goldens` to `fixtures/core_goldens.json`."""
+    return core_goldens()["fusion"][name]
+
+
+def _assert_update_matches(update, golden):
+    assert update.applied is golden["applied"]
+    assert (update.rows, update.accepted_rows, update.rejected_rows) == (
+        golden["rows"],
+        golden["accepted_rows"],
+        golden["rejected_rows"],
+    )
+    assert _bits(update.nis) == int(golden["nis"], 16)
+    assert _bits(update.ekf.normalized_innovation_squared) == int(golden["ekf_nis"], 16)
 
 
 def _spec():
@@ -72,25 +94,17 @@ def test_loose_field_mode_default_omission_matches_plain_bits():
     )
     assert plain_counts == (6, 6, 0)
     assert (explicit_update.rows, explicit_update.accepted_rows) == (6, 6)
-    assert _bits(plain_update.nis) == 0x401C6B851EB851E9
-    assert _array_bits(plain.state.nominal.position_ecef_m) == [
-        0x415854A660000000,
-        0x3FEFFFFFFFFFFFFF,
-        0xBFF7FFFFFFFFFFFF,
-    ]
-    assert _array_bits(plain.state.nominal.velocity_ecef_mps) == [
-        0x3FC9999999999999,
-        0xBFB9999999999999,
-        0x3FA9999999999999,
-    ]
-    assert _array_bits(np.diag(plain.state.covariance)[:6]) == [
-        0x3FDFFFFFFFFFFFFF,
-        0x3FDFFFFFFFFFFFFF,
-        0x3FDFFFFFFFFFFFFF,
-        0x3FDFFFFFFFFFFFFF,
-        0x3FDFFFFFFFFFFFFF,
-        0x3FDFFFFFFFFFFFFF,
-    ]
+    golden = _fusion_golden("loose_default")
+    _assert_update_matches(plain_update, golden["update"])
+    assert _array_bits(plain.state.nominal.position_ecef_m) == _golden_bits(
+        golden["state"]["position_ecef_m"]
+    )
+    assert _array_bits(plain.state.nominal.velocity_ecef_mps) == _golden_bits(
+        golden["state"]["velocity_ecef_mps"]
+    )
+    assert _array_bits(np.diag(plain.state.covariance)) == _golden_bits(
+        golden["state"]["covariance_diagonal"]
+    )
     assert _array_bits(explicit.state.nominal.position_ecef_m) == _array_bits(
         plain.state.nominal.position_ecef_m
     )
@@ -122,25 +136,20 @@ def test_stationary_zupt_zaru_update_matches_core_bits():
 
     assert update is not None
     assert (update.rows, update.accepted_rows, update.rejected_rows) == (6, 6, 0)
-    assert _bits(update.nis) == 0x404541AF8E65B9FC
-    assert _array_bits(filter_.state.nominal.velocity_ecef_mps) == [
-        0xBFF16320EDFCD4C0,
-        0xBDE64EF6EFBB7204,
-        0x0000000000000000,
-    ]
-    assert _array_bits(filter_.state.nominal.gyro_bias_rps) == [
-        0x0000000000000000,
-        0x0000000000000000,
-        0xBF131173B6B2C903,
-    ]
-    assert _array_bits(np.diag(filter_.state.covariance)[3:9]) == [
-        0x3FCC71C76E2F216E,
-        0x3FCC71C6F3FF694D,
-        0x3FCC71C6F3B73AFD,
-        0x3FF00A36E71A6702,
-        0x3FF00A36E71A6702,
-        0x3FF00A36E71A2CB0,
-    ]
+    golden = _fusion_golden("stationary")
+    _assert_update_matches(update, golden["update"])
+    assert _array_bits(filter_.state.nominal.position_ecef_m) == _golden_bits(
+        golden["state"]["position_ecef_m"]
+    )
+    assert _array_bits(filter_.state.nominal.velocity_ecef_mps) == _golden_bits(
+        golden["state"]["velocity_ecef_mps"]
+    )
+    assert _array_bits(filter_.state.nominal.gyro_bias_rps) == _golden_bits(
+        golden["state"]["gyro_bias_rps"]
+    )
+    assert _array_bits(np.diag(filter_.state.covariance)) == _golden_bits(
+        golden["state"]["covariance_diagonal"]
+    )
     assert (
         sidereon.InertialFilter.with_config(
             _state(), sidereon.InertialFilterConfig(_spec())
@@ -167,33 +176,15 @@ def test_fix_status_weighting_covariance_ordering_matches_core_bits():
         assert update.applied is True
         assert update.rows == 6
 
-    assert _bits(results["single"][0].nis) == 0x3FF6BC6A7EF9DB22
-    assert _bits(results["float"][0].nis) == 0x4006BC6A7EF9DB22
-    assert _bits(results["fixed"][0].nis) == 0x401C6B851EB851E9
-    assert _array_bits(np.diag(results["single"][1].state.covariance)[:6]) == [
-        0x3FECCCCCCCCCCCCD,
-        0x3FECCCCCCCCCCCCD,
-        0x3FECCCCCCCCCCCCD,
-        0x3FECCCCCCCCCCCCD,
-        0x3FECCCCCCCCCCCCD,
-        0x3FECCCCCCCCCCCCD,
-    ]
-    assert _array_bits(np.diag(results["float"][1].state.covariance)[:6]) == [
-        0x3FE999999999999A,
-        0x3FE999999999999A,
-        0x3FE999999999999A,
-        0x3FE999999999999A,
-        0x3FE999999999999A,
-        0x3FE999999999999A,
-    ]
-    assert _array_bits(np.diag(results["fixed"][1].state.covariance)[:6]) == [
-        0x3FDFFFFFFFFFFFFF,
-        0x3FDFFFFFFFFFFFFF,
-        0x3FDFFFFFFFFFFFFF,
-        0x3FDFFFFFFFFFFFFF,
-        0x3FDFFFFFFFFFFFFF,
-        0x3FDFFFFFFFFFFFFF,
-    ]
+    golden = _fusion_golden("fix_status_weighting")
+    for label, (update, filter_) in results.items():
+        _assert_update_matches(update, golden[label]["update"])
+        assert _array_bits(filter_.state.nominal.position_ecef_m) == _golden_bits(
+            golden[label]["state"]["position_ecef_m"]
+        )
+        assert _array_bits(np.diag(filter_.state.covariance)) == _golden_bits(
+            golden[label]["state"]["covariance_diagonal"]
+        )
     fixed_x = results["fixed"][1].state.covariance[0, 0]
     float_x = results["float"][1].state.covariance[0, 0]
     single_x = results["single"][1].state.covariance[0, 0]

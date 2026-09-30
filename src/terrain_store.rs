@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use numpy::{PyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyModule};
+use pyo3::types::{PyBytes, PyDict, PyModule};
 
-use sidereon_core::terrain::DtedLookupOptions;
+use sidereon_core::geoid::GeoidError;
+use sidereon_core::terrain::{DtedHorizontalDatum, DtedLookupOptions, DtedTileError};
 use sidereon_core::terrain_store::{
     dted_tile_list_to_mmap_store as core_dted_tile_list_to_mmap_store,
     dted_tree_to_mmap_store as core_dted_tree_to_mmap_store,
@@ -16,11 +17,15 @@ use sidereon_core::terrain_store::{
     write_dted_tree_to_mmap_store as core_write_dted_tree_to_mmap_store, DtedTileListEntry,
     Egm96FifteenMinuteGeoid, EllipsoidalHeightM, MmapTerrain, OrthometricHeightM,
     TerrainDatumError, TerrainGeoidModel, TerrainStoreError, TerrainStoreTileIndex, TerrainTileId,
-    VerticalDatum,
+    VerticalDatum, TERRAIN_STORE_NULL_POSTING,
 };
 use sidereon_core::DigestProvenance;
+use sidereon_core::Error as CoreError;
 
-use crate::terrain::PyDtedLookupOptions;
+use crate::terrain::{
+    heights_with_validity, terrain_error, to_lookup_err, HeightsWithValidity, PyDtedLookupOptions,
+    TerrainFailure,
+};
 use crate::{np_array, parse_claimed_checksum64};
 
 fn points_lon_lat(name: &str, points: &PyReadonlyArray2<'_, f64>) -> PyResult<Vec<(f64, f64)>> {
@@ -34,26 +39,340 @@ fn points_lon_lat(name: &str, points: &PyReadonlyArray2<'_, f64>) -> PyResult<Ve
     Ok(view.outer_iter().map(|row| (row[0], row[1])).collect())
 }
 
-fn store_error_text(err: TerrainStoreError) -> String {
-    let typed = PyTerrainStoreError::from(err);
-    typed.error_text()
+fn set_tile_id(dict: &Bound<'_, PyDict>, key: &str, tile_id: TerrainTileId) -> PyResult<()> {
+    dict.set_item(key, PyTerrainTileId::from(tile_id))
 }
 
-fn to_store_err(err: TerrainStoreError) -> PyErr {
-    PyValueError::new_err(store_error_text(err))
+fn copy_details_dict<'py>(
+    py: Python<'py>,
+    source: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let copy = PyDict::new(py);
+    for (key, value) in source.iter() {
+        if let Ok(nested) = value.downcast::<PyDict>() {
+            copy.set_item(key, copy_details_dict(py, nested)?)?;
+        } else {
+            copy.set_item(key, value)?;
+        }
+    }
+    Ok(copy)
 }
 
-fn to_lookup_err<E: std::fmt::Display>(err: E) -> PyErr {
-    PyValueError::new_err(err.to_string())
+fn dted_datum_fields(datum: &DtedHorizontalDatum) -> (&'static str, Option<String>) {
+    match datum {
+        DtedHorizontalDatum::Wgs84 => ("Wgs84", None),
+        DtedHorizontalDatum::Wgs72 => ("Wgs72", None),
+        DtedHorizontalDatum::Unstated => ("Unstated", None),
+        DtedHorizontalDatum::Other(text) => ("Other", Some(text.clone())),
+        other => ("Other", Some(format!("{other:?}"))),
+    }
 }
 
-fn datum_error_text(err: TerrainDatumError) -> String {
-    let typed = PyTerrainDatumError::from(err);
-    typed.error_text()
+fn dted_tile_kind(err: &DtedTileError) -> &'static str {
+    match err {
+        DtedTileError::Io { .. } => "Io",
+        DtedTileError::TooShort { .. } => "TooShort",
+        DtedTileError::MissingUhl1 { .. } => "MissingUhl1",
+        DtedTileError::InvalidEncoding(_) => "InvalidEncoding",
+        DtedTileError::InvalidField(_) => "InvalidField",
+        DtedTileError::InvalidDimensions { .. } => "InvalidDimensions",
+        DtedTileError::Truncated { .. } => "Truncated",
+        DtedTileError::Outside { .. } => "Outside",
+        DtedTileError::PostingIndexOutOfBounds { .. } => "PostingIndexOutOfBounds",
+        DtedTileError::MissingDataSentinel { .. } => "MissingDataSentinel",
+        DtedTileError::Checksum { .. } => "Checksum",
+        DtedTileError::EmptyCoordinate => "EmptyCoordinate",
+        DtedTileError::InvalidHemisphere { .. } => "InvalidHemisphere",
+        DtedTileError::NegativePostingIndex { .. } => "NegativePostingIndex",
+        DtedTileError::CoordinateOutOfRange { .. } => "CoordinateOutOfRange",
+        DtedTileError::WrongHemisphere { .. } => "WrongHemisphere",
+        DtedTileError::OriginNotWholeDegree { .. } => "OriginNotWholeDegree",
+        DtedTileError::IntervalCountMismatch { .. } => "IntervalCountMismatch",
+        DtedTileError::ProfileLongitudeCountMismatch { .. } => "ProfileLongitudeCountMismatch",
+        DtedTileError::UnsupportedPartialProfile { .. } => "UnsupportedPartialProfile",
+        DtedTileError::NullPosting { .. } => "NullPosting",
+        _ => "Other",
+    }
 }
 
-fn to_datum_err(err: TerrainDatumError) -> PyErr {
-    PyValueError::new_err(datum_error_text(err))
+fn dted_tile_details(dict: &Bound<'_, PyDict>, err: &DtedTileError) -> PyResult<()> {
+    match err {
+        DtedTileError::Io { path, message } => {
+            dict.set_item("path", path)?;
+            dict.set_item("message", message)?;
+        }
+        DtedTileError::TooShort { path } | DtedTileError::MissingUhl1 { path } => {
+            dict.set_item("path", path)?;
+        }
+        DtedTileError::InvalidEncoding(text) | DtedTileError::InvalidField(text) => {
+            dict.set_item("text", text)?;
+        }
+        DtedTileError::InvalidDimensions {
+            path,
+            lon_count,
+            lat_count,
+        } => {
+            dict.set_item("path", path)?;
+            dict.set_item("lon_count", *lon_count)?;
+            dict.set_item("lat_count", *lat_count)?;
+        }
+        DtedTileError::Truncated {
+            path,
+            actual,
+            expected,
+        } => {
+            dict.set_item("path", path)?;
+            dict.set_item("actual", *actual)?;
+            dict.set_item("expected", *expected)?;
+        }
+        DtedTileError::Outside {
+            longitude,
+            latitude,
+            origin_longitude,
+            origin_latitude,
+        } => {
+            dict.set_item("longitude", *longitude)?;
+            dict.set_item("latitude", *latitude)?;
+            dict.set_item("origin_longitude", *origin_longitude)?;
+            dict.set_item("origin_latitude", *origin_latitude)?;
+        }
+        DtedTileError::PostingIndexOutOfBounds {
+            longitude_index,
+            latitude_index,
+        }
+        | DtedTileError::NullPosting {
+            longitude_index,
+            latitude_index,
+        } => {
+            dict.set_item("longitude_index", *longitude_index)?;
+            dict.set_item("latitude_index", *latitude_index)?;
+        }
+        DtedTileError::MissingDataSentinel { longitude_index } => {
+            dict.set_item("longitude_index", *longitude_index)?;
+        }
+        DtedTileError::Checksum {
+            longitude_index,
+            checksum,
+            sum,
+        } => {
+            dict.set_item("longitude_index", *longitude_index)?;
+            dict.set_item("checksum", *checksum)?;
+            dict.set_item("sum", *sum)?;
+        }
+        DtedTileError::EmptyCoordinate => {}
+        DtedTileError::InvalidHemisphere { hemisphere } => {
+            dict.set_item("hemisphere", *hemisphere)?;
+        }
+        DtedTileError::NegativePostingIndex { index } => {
+            dict.set_item("index", *index)?;
+        }
+        DtedTileError::CoordinateOutOfRange { field, text }
+        | DtedTileError::OriginNotWholeDegree { field, text } => {
+            dict.set_item("field", *field)?;
+            dict.set_item("text", text)?;
+        }
+        DtedTileError::WrongHemisphere {
+            field,
+            hemisphere,
+            expected,
+        } => {
+            dict.set_item("field", *field)?;
+            dict.set_item("hemisphere", *hemisphere)?;
+            dict.set_item("expected", *expected)?;
+        }
+        DtedTileError::IntervalCountMismatch {
+            field,
+            interval_tenths_arcsec,
+            count,
+        } => {
+            dict.set_item("field", *field)?;
+            dict.set_item("interval_tenths_arcsec", *interval_tenths_arcsec)?;
+            dict.set_item("count", *count)?;
+        }
+        DtedTileError::ProfileLongitudeCountMismatch {
+            longitude_index,
+            declared,
+        } => {
+            dict.set_item("longitude_index", *longitude_index)?;
+            dict.set_item("declared", *declared)?;
+        }
+        DtedTileError::UnsupportedPartialProfile {
+            longitude_index,
+            first_latitude_index,
+        } => {
+            dict.set_item("longitude_index", *longitude_index)?;
+            dict.set_item("first_latitude_index", *first_latitude_index)?;
+        }
+        other => {
+            dict.set_item("debug", format!("{other:?}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn geoid_error_fields<'py>(
+    py: Python<'py>,
+    err: &GeoidError,
+) -> PyResult<(String, Bound<'py, PyDict>)> {
+    let details = PyDict::new(py);
+    let kind = match err {
+        GeoidError::InvalidDimensions { expected, found } => {
+            details.set_item("expected", *expected)?;
+            details.set_item("found", *found)?;
+            "InvalidDimensions"
+        }
+        GeoidError::InvalidSpacing { field } => {
+            details.set_item("field", *field)?;
+            "InvalidSpacing"
+        }
+        GeoidError::NonFiniteValue { index } => {
+            details.set_item("index", *index)?;
+            "NonFiniteValue"
+        }
+        GeoidError::Parse { reason } => {
+            details.set_item("reason", reason)?;
+            "Parse"
+        }
+    };
+    Ok((kind.to_string(), details))
+}
+
+fn core_terrain_error_fields<'py>(
+    py: Python<'py>,
+    err: &CoreError,
+) -> PyResult<(String, Bound<'py, PyDict>)> {
+    let details = PyDict::new(py);
+    let kind = match err {
+        CoreError::MissingTerrainTile {
+            lat_index,
+            lon_index,
+        } => {
+            details.set_item("lat_index", *lat_index)?;
+            details.set_item("lon_index", *lon_index)?;
+            "MissingTerrainTile"
+        }
+        CoreError::UnknownTerrainElevation {
+            lat_index,
+            lon_index,
+            latitude_posting,
+            longitude_posting,
+        } => {
+            details.set_item("lat_index", *lat_index)?;
+            details.set_item("lon_index", *lon_index)?;
+            details.set_item("latitude_posting", *latitude_posting)?;
+            details.set_item("longitude_posting", *longitude_posting)?;
+            "UnknownTerrainElevation"
+        }
+        CoreError::NonWgs84TerrainTile {
+            lat_index,
+            lon_index,
+            datum,
+        } => {
+            details.set_item("lat_index", *lat_index)?;
+            details.set_item("lon_index", *lon_index)?;
+            let (kind, text) = dted_datum_fields(datum);
+            let nested = PyDict::new(py);
+            nested.set_item("kind", kind)?;
+            nested.set_item("text", text)?;
+            details.set_item("datum", nested)?;
+            "NonWgs84TerrainTile"
+        }
+        CoreError::TerrainTile {
+            lat_index,
+            lon_index,
+            error,
+        } => {
+            details.set_item("lat_index", *lat_index)?;
+            details.set_item("lon_index", *lon_index)?;
+            let nested = PyDict::new(py);
+            nested.set_item("kind", dted_tile_kind(error))?;
+            nested.set_item("message", error.to_string())?;
+            dted_tile_details(&nested, error)?;
+            details.set_item("error", nested)?;
+            "TerrainTile"
+        }
+        CoreError::TerrainTileOrigin {
+            path,
+            lat_index,
+            lon_index,
+            origin_latitude,
+            origin_longitude,
+        } => {
+            details.set_item("path", path.display().to_string())?;
+            details.set_item("lat_index", *lat_index)?;
+            details.set_item("lon_index", *lon_index)?;
+            details.set_item("origin_latitude", *origin_latitude)?;
+            details.set_item("origin_longitude", *origin_longitude)?;
+            "TerrainTileOrigin"
+        }
+        CoreError::InvalidInput(reason) => {
+            details.set_item("reason", reason)?;
+            "InvalidInput"
+        }
+        other => {
+            details.set_item("debug", format!("{other:?}"))?;
+            "Other"
+        }
+    };
+    Ok((kind.to_string(), details))
+}
+
+fn to_store_err(py: Python<'_>, err: TerrainStoreError) -> PyErr {
+    let typed = match PyTerrainStoreError::from_core(py, err) {
+        Ok(typed) => typed,
+        Err(error) => return error,
+    };
+    let py_err = PyValueError::new_err(typed.error_text());
+    let detail = match Py::new(py, typed) {
+        Ok(detail) => detail,
+        Err(error) => return error,
+    };
+    if let Err(error) = py_err.value(py).setattr("detail", detail) {
+        return error;
+    }
+    py_err
+}
+
+/// A datum-conversion refusal. A terrain lookup refusal inside it raises
+/// `TerrainError` with the lookup error as `detail`; every other refusal
+/// raises `ValueError`. Both keep the `kind: message` text.
+fn to_datum_err(py: Python<'_>, err: TerrainDatumError) -> PyErr {
+    match err {
+        TerrainDatumError::Terrain(lookup) => {
+            let outer = match PyTerrainDatumError::from_core(
+                py,
+                TerrainDatumError::Terrain(lookup.clone()),
+            ) {
+                Ok(outer) => outer,
+                Err(error) => return error,
+            };
+            let message = outer.error_text();
+            let detail = match Py::new(py, outer) {
+                Ok(detail) => detail,
+                Err(error) => return error,
+            };
+            let py_err = terrain_error(py, TerrainFailure::Lookup(lookup), message, None);
+            if let Err(error) = py_err.value(py).setattr("datum_error", detail) {
+                return error;
+            }
+            py_err
+        }
+        other => {
+            let typed = match PyTerrainDatumError::from_core(py, other) {
+                Ok(typed) => typed,
+                Err(error) => return error,
+            };
+            let py_err = PyValueError::new_err(typed.error_text());
+            let detail = match Py::new(py, typed) {
+                Ok(detail) => detail,
+                Err(error) => return error,
+            };
+            if let Err(error) = py_err.value(py).setattr("detail", detail) {
+                return error;
+            }
+            py_err
+        }
+    }
 }
 
 fn options_or_default(options: Option<&PyDtedLookupOptions>) -> DtedLookupOptions {
@@ -156,7 +475,7 @@ impl PyOrthometricHeightM {
                     TerrainGeoidModel::Egm96OneDegree,
                 )
                 .map(Into::into)
-                .map_err(to_datum_err),
+                .map_err(|err| to_datum_err(py, err)),
             PyTerrainGeoidModelKind::Egm96FifteenMinute(grid) => {
                 let grid = grid.borrow(py);
                 self.inner
@@ -166,7 +485,7 @@ impl PyOrthometricHeightM {
                         TerrainGeoidModel::Egm96FifteenMinute(&grid.inner),
                     )
                     .map(Into::into)
-                    .map_err(to_datum_err)
+                    .map_err(|err| to_datum_err(py, err))
             }
         }
     }
@@ -191,7 +510,7 @@ impl PyOrthometricHeightM {
                     TerrainGeoidModel::Egm96OneDegree,
                 )
                 .map(Into::into)
-                .map_err(to_datum_err),
+                .map_err(|err| to_datum_err(py, err)),
             PyTerrainGeoidModelKind::Egm96FifteenMinute(grid) => {
                 let grid = grid.borrow(py);
                 self.inner
@@ -201,7 +520,7 @@ impl PyOrthometricHeightM {
                         TerrainGeoidModel::Egm96FifteenMinute(&grid.inner),
                     )
                     .map(Into::into)
-                    .map_err(to_datum_err)
+                    .map_err(|err| to_datum_err(py, err))
             }
         }
     }
@@ -449,10 +768,10 @@ pub struct PyEgm96FifteenMinuteGeoid {
 impl PyEgm96FifteenMinuteGeoid {
     /// Load `WW15MGH.DAC` bytes as an EGM96 15-arcminute geoid grid.
     #[staticmethod]
-    fn from_ww15mgh_dac_bytes(data: &[u8]) -> PyResult<Self> {
+    fn from_ww15mgh_dac_bytes(py: Python<'_>, data: &[u8]) -> PyResult<Self> {
         Egm96FifteenMinuteGeoid::from_ww15mgh_dac_bytes(data)
             .map(|inner| Self { inner })
-            .map_err(to_datum_err)
+            .map_err(|err| to_datum_err(py, err))
     }
 
     /// Read and load `WW15MGH.DAC` from disk.
@@ -460,10 +779,10 @@ impl PyEgm96FifteenMinuteGeoid {
     /// A missing file raises `ValueError` whose message starts with
     /// `MissingEgm96Dac`; it does not fall back to the embedded 1-degree grid.
     #[staticmethod]
-    fn from_ww15mgh_dac_path(path: PathBuf) -> PyResult<Self> {
+    fn from_ww15mgh_dac_path(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
         Egm96FifteenMinuteGeoid::from_ww15mgh_dac_path(path)
             .map(|inner| Self { inner })
-            .map_err(to_datum_err)
+            .map_err(|err| to_datum_err(py, err))
     }
 
     fn __repr__(&self) -> &'static str {
@@ -517,73 +836,123 @@ impl PyTerrainGeoidModel {
 
 /// Terrain store conversion, serialization, and parsing error details.
 #[pyclass(module = "sidereon._sidereon", name = "TerrainStoreError")]
-#[derive(Clone)]
 pub struct PyTerrainStoreError {
     kind: String,
     message: String,
     path: Option<String>,
     remediation: Option<String>,
+    details: Py<PyDict>,
 }
 
 impl PyTerrainStoreError {
     fn error_text(&self) -> String {
         format!("{}: {}", self.kind, self.message)
     }
-}
 
-impl From<TerrainStoreError> for PyTerrainStoreError {
-    fn from(err: TerrainStoreError) -> Self {
+    fn from_core(py: Python<'_>, err: TerrainStoreError) -> PyResult<Self> {
         let message = err.to_string();
-        match err {
-            TerrainStoreError::Io { path, .. } => Self {
-                kind: "Io".to_string(),
-                message,
-                path: Some(path.display().to_string()),
-                remediation: None,
-            },
-            TerrainStoreError::Parse { .. } => Self {
-                kind: "Parse".to_string(),
-                message,
-                path: None,
-                remediation: None,
-            },
-            TerrainStoreError::UnsupportedVersion { .. } => Self {
-                kind: "UnsupportedVersion".to_string(),
-                message,
-                path: None,
-                remediation: None,
-            },
-            TerrainStoreError::UnsupportedDatum { .. } => Self {
-                kind: "UnsupportedDatum".to_string(),
-                message,
-                path: None,
-                remediation: None,
-            },
-            TerrainStoreError::DuplicateTile { .. } => Self {
-                kind: "DuplicateTile".to_string(),
-                message,
-                path: None,
-                remediation: None,
-            },
-            TerrainStoreError::TileIdMismatch { path, .. } => Self {
-                kind: "TileIdMismatch".to_string(),
-                message,
-                path: Some(path.display().to_string()),
-                remediation: None,
-            },
-            TerrainStoreError::Checksum { .. } => Self {
-                kind: "Checksum".to_string(),
-                message,
-                path: None,
-                remediation: None,
-            },
-            TerrainStoreError::AttestedChecksumMismatch { .. } => Self {
-                kind: "AttestedChecksumMismatch".to_string(),
-                message,
-                path: None,
-                remediation: None,
-            },
-        }
+        let details = PyDict::new(py);
+        let (kind, path) = match &err {
+            TerrainStoreError::Io { path, message } => {
+                details.set_item("path", path.display().to_string())?;
+                details.set_item("message", message)?;
+                ("Io", Some(path.display().to_string()))
+            }
+            TerrainStoreError::Parse { reason } => {
+                details.set_item("reason", reason)?;
+                ("Parse", None)
+            }
+            TerrainStoreError::UnsupportedVersion { version } => {
+                details.set_item("version", *version)?;
+                ("UnsupportedVersion", None)
+            }
+            TerrainStoreError::UnsupportedDatum { tag } => {
+                details.set_item("tag", *tag)?;
+                ("UnsupportedDatum", None)
+            }
+            TerrainStoreError::DuplicateTile {
+                lat_index,
+                lon_index,
+            } => {
+                details.set_item("lat_index", *lat_index)?;
+                details.set_item("lon_index", *lon_index)?;
+                ("DuplicateTile", None)
+            }
+            TerrainStoreError::TileIdMismatch {
+                path,
+                expected,
+                found,
+            } => {
+                details.set_item("path", path.display().to_string())?;
+                set_tile_id(&details, "expected", *expected)?;
+                set_tile_id(&details, "found", *found)?;
+                ("TileIdMismatch", Some(path.display().to_string()))
+            }
+            TerrainStoreError::Checksum {
+                lat_index,
+                lon_index,
+                expected,
+                found,
+            } => {
+                details.set_item("lat_index", *lat_index)?;
+                details.set_item("lon_index", *lon_index)?;
+                details.set_item("expected", *expected)?;
+                details.set_item("found", *found)?;
+                ("Checksum", None)
+            }
+            TerrainStoreError::AttestedChecksumMismatch { expected, found } => {
+                details.set_item("expected", *expected)?;
+                details.set_item("found", *found)?;
+                ("AttestedChecksumMismatch", None)
+            }
+            TerrainStoreError::TileIdOutOfRange {
+                lat_index,
+                lon_index,
+            } => {
+                details.set_item("lat_index", *lat_index)?;
+                details.set_item("lon_index", *lon_index)?;
+                ("TileIdOutOfRange", None)
+            }
+            TerrainStoreError::TileBoundsMismatch {
+                lat_index,
+                lon_index,
+                field,
+            } => {
+                details.set_item("lat_index", *lat_index)?;
+                details.set_item("lon_index", *lon_index)?;
+                details.set_item("field", field)?;
+                ("TileBoundsMismatch", None)
+            }
+            TerrainStoreError::NonWgs84Tile { path, datum } => {
+                details.set_item("path", path.display().to_string())?;
+                let (datum_kind, datum_text) = dted_datum_fields(datum);
+                details.set_item("datum_kind", datum_kind)?;
+                if let Some(text) = datum_text {
+                    details.set_item("datum_text", text)?;
+                }
+                ("NonWgs84Tile", Some(path.display().to_string()))
+            }
+            TerrainStoreError::Tile { path, error } => {
+                details.set_item("path", path.display().to_string())?;
+                let nested = PyDict::new(py);
+                nested.set_item("kind", dted_tile_kind(error))?;
+                nested.set_item("message", error.to_string())?;
+                dted_tile_details(&nested, error)?;
+                details.set_item("error", nested)?;
+                ("Tile", Some(path.display().to_string()))
+            }
+            other => {
+                details.set_item("debug", format!("{other:?}"))?;
+                ("Other", None)
+            }
+        };
+        Ok(Self {
+            kind: kind.to_string(),
+            message,
+            path,
+            remediation: None,
+            details: details.unbind(),
+        })
     }
 }
 
@@ -613,6 +982,11 @@ impl PyTerrainStoreError {
         self.remediation.clone()
     }
 
+    /// Complete payload fields from the core error variant.
+    fn details(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        Ok(copy_details_dict(py, self.details.bind(py))?.unbind())
+    }
+
     fn __repr__(&self) -> String {
         format!("TerrainStoreError(kind={:?})", self.kind)
     }
@@ -620,12 +994,12 @@ impl PyTerrainStoreError {
 
 /// Terrain datum conversion and optional geoid-grid loading error details.
 #[pyclass(module = "sidereon._sidereon", name = "TerrainDatumError")]
-#[derive(Clone)]
 pub struct PyTerrainDatumError {
     kind: String,
     message: String,
     path: Option<String>,
     remediation: Option<String>,
+    details: Py<PyDict>,
 }
 
 impl PyTerrainDatumError {
@@ -634,35 +1008,45 @@ impl PyTerrainDatumError {
     }
 }
 
-impl From<TerrainDatumError> for PyTerrainDatumError {
-    fn from(err: TerrainDatumError) -> Self {
+impl PyTerrainDatumError {
+    fn from_core(py: Python<'_>, err: TerrainDatumError) -> PyResult<Self> {
         let message = err.to_string();
-        match err {
-            TerrainDatumError::Terrain(_) => Self {
-                kind: "Terrain".to_string(),
-                message,
-                path: None,
-                remediation: None,
-            },
-            TerrainDatumError::Geoid(_) => Self {
-                kind: "Geoid".to_string(),
-                message,
-                path: None,
-                remediation: None,
-            },
-            TerrainDatumError::Io { path, .. } => Self {
-                kind: "Io".to_string(),
-                message,
-                path: Some(path.display().to_string()),
-                remediation: None,
-            },
-            TerrainDatumError::MissingEgm96Dac { path, remediation } => Self {
-                kind: "MissingEgm96Dac".to_string(),
-                message,
-                path: Some(path.display().to_string()),
-                remediation: Some(remediation.to_string()),
-            },
-        }
+        let details = PyDict::new(py);
+        let (kind, path, remediation) = match &err {
+            TerrainDatumError::Terrain(core_err) => {
+                let (error_kind, error_details) = core_terrain_error_fields(py, core_err)?;
+                details.set_item("error_kind", error_kind)?;
+                details.set_item("error", error_details)?;
+                ("Terrain", None, None)
+            }
+            TerrainDatumError::Geoid(error) => {
+                let (nested_kind, nested) = geoid_error_fields(py, error)?;
+                details.set_item("error_kind", nested_kind)?;
+                details.set_item("error", nested)?;
+                ("Geoid", None, None)
+            }
+            TerrainDatumError::Io { path, message } => {
+                details.set_item("path", path.display().to_string())?;
+                details.set_item("message", message)?;
+                ("Io", Some(path.display().to_string()), None)
+            }
+            TerrainDatumError::MissingEgm96Dac { path, remediation } => {
+                details.set_item("path", path.display().to_string())?;
+                details.set_item("remediation", remediation)?;
+                (
+                    "MissingEgm96Dac",
+                    Some(path.display().to_string()),
+                    Some(remediation.to_string()),
+                )
+            }
+        };
+        Ok(Self {
+            kind: kind.to_string(),
+            message,
+            path,
+            remediation,
+            details: details.unbind(),
+        })
     }
 }
 
@@ -690,6 +1074,11 @@ impl PyTerrainDatumError {
     #[getter]
     fn remediation(&self) -> Option<String> {
         self.remediation.clone()
+    }
+
+    /// Complete payload fields from the core error variant.
+    fn details(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        Ok(copy_details_dict(py, self.details.bind(py))?.unbind())
     }
 
     fn __repr__(&self) -> String {
@@ -722,7 +1111,7 @@ impl PyMmapTerrain {
                     TerrainGeoidModel::Egm96OneDegree,
                 )
                 .map(Into::into)
-                .map_err(to_datum_err),
+                .map_err(|err| to_datum_err(py, err)),
             PyTerrainGeoidModelKind::Egm96FifteenMinute(grid) => {
                 let grid = grid.borrow(py);
                 self.inner
@@ -733,7 +1122,7 @@ impl PyMmapTerrain {
                         TerrainGeoidModel::Egm96FifteenMinute(&grid.inner),
                     )
                     .map(Into::into)
-                    .map_err(to_datum_err)
+                    .map_err(|err| to_datum_err(py, err))
             }
         }
     }
@@ -746,26 +1135,26 @@ impl PyMmapTerrain {
     /// The terrain store keeps orthometric postings `H` in metres. Inputs to
     /// lookup methods are `(longitude_deg, latitude_deg)`.
     #[staticmethod]
-    fn from_bytes(data: &[u8]) -> PyResult<Self> {
+    fn from_bytes(py: Python<'_>, data: &[u8]) -> PyResult<Self> {
         MmapTerrain::from_vec(data.to_vec())
             .map(|inner| Self { inner })
-            .map_err(to_store_err)
+            .map_err(|err| to_store_err(py, err))
     }
 
     /// Parse an owned terrain store byte vector into a Python reader.
     ///
     /// This has the same Python behavior as [`MmapTerrain.from_bytes`].
     #[staticmethod]
-    fn from_vec(data: &[u8]) -> PyResult<Self> {
-        Self::from_bytes(data)
+    fn from_vec(py: Python<'_>, data: &[u8]) -> PyResult<Self> {
+        Self::from_bytes(py, data)
     }
 
     /// Read and parse a terrain store file from disk.
     #[staticmethod]
-    fn from_path(path: PathBuf) -> PyResult<Self> {
+    fn from_path(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
         MmapTerrain::from_path(path)
             .map(|inner| Self { inner })
-            .map_err(to_store_err)
+            .map_err(|err| to_store_err(py, err))
     }
 
     /// Open a terrain store from disk using a caller-attested checksum.
@@ -774,20 +1163,24 @@ impl PyMmapTerrain {
     /// layout without hashing its payload; call [`MmapTerrain.verify`] to
     /// escalate the handle to verified provenance.
     #[staticmethod]
-    fn from_path_attested(path: PathBuf, claimed_checksum64: &Bound<'_, PyAny>) -> PyResult<Self> {
+    fn from_path_attested(
+        py: Python<'_>,
+        path: PathBuf,
+        claimed_checksum64: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
         let claimed_checksum64 = parse_claimed_checksum64(claimed_checksum64)?;
         MmapTerrain::from_path_attested(path, claimed_checksum64)
             .map(|inner| Self { inner })
-            .map_err(to_store_err)
+            .map_err(|err| to_store_err(py, err))
     }
 
     /// Return the bilinearly interpolated orthometric height `H` in metres.
     ///
     /// The input position is `(longitude_deg, latitude_deg)`.
-    fn height_m(&mut self, longitude_deg: f64, latitude_deg: f64) -> PyResult<f64> {
+    fn height_m(&mut self, py: Python<'_>, longitude_deg: f64, latitude_deg: f64) -> PyResult<f64> {
         self.inner
             .height_m(longitude_deg, latitude_deg)
-            .map_err(to_lookup_err)
+            .map_err(|err| to_lookup_err(py, err))
     }
 
     /// Return the orthometric height `H` in metres using explicit lookup
@@ -796,13 +1189,14 @@ impl PyMmapTerrain {
     /// The input position is `(longitude_deg, latitude_deg)`.
     fn height_m_with_options(
         &mut self,
+        py: Python<'_>,
         longitude_deg: f64,
         latitude_deg: f64,
         options: &PyDtedLookupOptions,
     ) -> PyResult<f64> {
         self.inner
             .height_m_with_options(longitude_deg, latitude_deg, options.inner())
-            .map_err(to_lookup_err)
+            .map_err(|err| to_lookup_err(py, err))
     }
 
     /// Return the bilinearly interpolated orthometric height `H` as a typed
@@ -811,13 +1205,14 @@ impl PyMmapTerrain {
     /// The input position is `(longitude_deg, latitude_deg)`.
     fn orthometric_height_m(
         &self,
+        py: Python<'_>,
         longitude_deg: f64,
         latitude_deg: f64,
     ) -> PyResult<PyOrthometricHeightM> {
         self.inner
             .orthometric_height_m(longitude_deg, latitude_deg)
             .map(Into::into)
-            .map_err(to_lookup_err)
+            .map_err(|err| to_lookup_err(py, err))
     }
 
     /// Return the orthometric height `H` as a typed value using explicit lookup
@@ -826,6 +1221,7 @@ impl PyMmapTerrain {
     /// The input position is `(longitude_deg, latitude_deg)`.
     fn orthometric_height_m_with_options(
         &self,
+        py: Python<'_>,
         longitude_deg: f64,
         latitude_deg: f64,
         options: &PyDtedLookupOptions,
@@ -833,7 +1229,7 @@ impl PyMmapTerrain {
         self.inner
             .orthometric_height_m_with_options(longitude_deg, latitude_deg, options.inner())
             .map(Into::into)
-            .map_err(to_lookup_err)
+            .map_err(|err| to_lookup_err(py, err))
     }
 
     /// Evaluate `(longitude_deg, latitude_deg)` rows as orthometric heights
@@ -855,10 +1251,32 @@ impl PyMmapTerrain {
             .enumerate()
         {
             heights.push(result.map_err(|err| {
-                PyValueError::new_err(format!("terrain store point {index}: {err}"))
+                let message = format!("terrain store point {index}: {err}");
+                terrain_error(py, TerrainFailure::Lookup(err), message, Some(index))
             })?);
         }
         Ok(np_array(py, &heights))
+    }
+
+    /// Evaluate `(longitude_deg, latitude_deg)` rows as `(heights, valid)`: a
+    /// numpy `(n,)` float64 array of orthometric heights `H` in metres, NaN at
+    /// a row whose lookup weights a null posting (an unknown elevation), and a
+    /// row-aligned bool array, False at those rows. Any other refusal raises
+    /// `TerrainError` with the failing row as `point_index`.
+    #[pyo3(signature = (points_lon_lat_deg, options=None))]
+    fn height_batch_with_validity<'py>(
+        &mut self,
+        py: Python<'py>,
+        points_lon_lat_deg: PyReadonlyArray2<'_, f64>,
+        options: Option<&PyDtedLookupOptions>,
+    ) -> PyResult<HeightsWithValidity<'py>> {
+        let points = points_lon_lat("points_lon_lat_deg", &points_lon_lat_deg)?;
+        let options = options_or_default(options);
+        heights_with_validity(
+            py,
+            self.inner.height_batch(&points, options),
+            "terrain store point",
+        )
     }
 
     /// Evaluate `(longitude_deg, latitude_deg)` rows as typed orthometric
@@ -866,6 +1284,7 @@ impl PyMmapTerrain {
     #[pyo3(signature = (points_lon_lat_deg, options=None))]
     fn orthometric_height_batch(
         &self,
+        py: Python<'_>,
         points_lon_lat_deg: PyReadonlyArray2<'_, f64>,
         options: Option<&PyDtedLookupOptions>,
     ) -> PyResult<Vec<PyOrthometricHeightM>> {
@@ -879,7 +1298,8 @@ impl PyMmapTerrain {
             .enumerate()
         {
             heights.push(result.map(Into::into).map_err(|err| {
-                PyValueError::new_err(format!("terrain store point {index}: {err}"))
+                let message = format!("terrain store point {index}: {err}");
+                terrain_error(py, TerrainFailure::Lookup(err), message, Some(index))
             })?);
         }
         Ok(heights)
@@ -891,13 +1311,14 @@ impl PyMmapTerrain {
     /// The input position is terrain order `(longitude_deg, latitude_deg)`.
     fn ellipsoidal_height_m(
         &self,
+        py: Python<'_>,
         longitude_deg: f64,
         latitude_deg: f64,
     ) -> PyResult<PyEllipsoidalHeightM> {
         self.inner
             .ellipsoidal_height_m(longitude_deg, latitude_deg)
             .map(Into::into)
-            .map_err(to_datum_err)
+            .map_err(|err| to_datum_err(py, err))
     }
 
     /// Return ellipsoidal height `h` in metres using explicit terrain lookup
@@ -906,6 +1327,7 @@ impl PyMmapTerrain {
     /// The input position is terrain order `(longitude_deg, latitude_deg)`.
     fn ellipsoidal_height_m_with_options(
         &self,
+        py: Python<'_>,
         longitude_deg: f64,
         latitude_deg: f64,
         options: &PyDtedLookupOptions,
@@ -913,7 +1335,7 @@ impl PyMmapTerrain {
         self.inner
             .ellipsoidal_height_m_with_options(longitude_deg, latitude_deg, options.inner())
             .map(Into::into)
-            .map_err(to_datum_err)
+            .map_err(|err| to_datum_err(py, err))
     }
 
     /// Return ellipsoidal height `h` in metres using an explicit geoid model.
@@ -989,8 +1411,8 @@ impl PyMmapTerrain {
     /// Verify payload and full-store checksums for this handle.
     ///
     /// Success changes [`MmapTerrain.digest_provenance`] to `"verified"`.
-    fn verify(&mut self) -> PyResult<()> {
-        self.inner.verify().map_err(to_store_err)
+    fn verify(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.inner.verify().map_err(|err| to_store_err(py, err))
     }
 
     /// Return the store bytes accepted by this reader.
@@ -1013,7 +1435,7 @@ impl PyMmapTerrain {
 /// Input DTED postings are orthometric heights `H` in metres.
 #[pyfunction]
 fn dted_tree_to_mmap_store<'py>(py: Python<'py>, root: PathBuf) -> PyResult<Bound<'py, PyBytes>> {
-    let bytes = core_dted_tree_to_mmap_store(root).map_err(to_store_err)?;
+    let bytes = core_dted_tree_to_mmap_store(root).map_err(|err| to_store_err(py, err))?;
     Ok(PyBytes::new(py, &bytes))
 }
 
@@ -1027,7 +1449,7 @@ fn dted_tile_list_to_mmap_store<'py>(
         .iter()
         .map(PyDtedTileListEntry::inner)
         .collect::<Vec<_>>();
-    let bytes = core_dted_tile_list_to_mmap_store(&entries).map_err(to_store_err)?;
+    let bytes = core_dted_tile_list_to_mmap_store(&entries).map_err(|err| to_store_err(py, err))?;
     Ok(PyBytes::new(py, &bytes))
 }
 
@@ -1035,13 +1457,18 @@ fn dted_tile_list_to_mmap_store<'py>(
 ///
 /// Input DTED postings are orthometric heights `H` in metres.
 #[pyfunction]
-fn write_dted_tree_to_mmap_store(root: PathBuf, output_path: PathBuf) -> PyResult<()> {
-    core_write_dted_tree_to_mmap_store(root, output_path).map_err(to_store_err)
+fn write_dted_tree_to_mmap_store(
+    py: Python<'_>,
+    root: PathBuf,
+    output_path: PathBuf,
+) -> PyResult<()> {
+    core_write_dted_tree_to_mmap_store(root, output_path).map_err(|err| to_store_err(py, err))
 }
 
 /// Convert an explicit DTED tile list and write terrain store bytes.
 #[pyfunction]
 fn write_dted_tile_list_to_mmap_store(
+    py: Python<'_>,
     entries: Vec<PyDtedTileListEntry>,
     output_path: PathBuf,
 ) -> PyResult<()> {
@@ -1049,7 +1476,8 @@ fn write_dted_tile_list_to_mmap_store(
         .iter()
         .map(PyDtedTileListEntry::inner)
         .collect::<Vec<_>>();
-    core_write_dted_tile_list_to_mmap_store(&entries, output_path).map_err(to_store_err)
+    core_write_dted_tile_list_to_mmap_store(&entries, output_path)
+        .map_err(|err| to_store_err(py, err))
 }
 
 /// Return an FNV-1a checksum for terrain store bytes.
@@ -1059,6 +1487,7 @@ fn terrain_store_checksum64(data: &[u8]) -> u64 {
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    crate::terrain_error_type(m.py())?.setattr("datum_error", m.py().None())?;
     m.add_class::<PyVerticalDatum>()?;
     m.add_class::<PyOrthometricHeightM>()?;
     m.add_class::<PyEllipsoidalHeightM>()?;
@@ -1068,6 +1497,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEgm96FifteenMinuteGeoid>()?;
     m.add_class::<PyTerrainGeoidModel>()?;
     m.add_class::<PyTerrainStoreError>()?;
+    // The stored posting value a DTED null (unknown elevation) converts to;
+    // lookups that weight it raise `TerrainError`.
+    m.add("TERRAIN_STORE_NULL_POSTING", TERRAIN_STORE_NULL_POSTING)?;
     m.add_class::<PyTerrainDatumError>()?;
     m.add_class::<PyMmapTerrain>()?;
     m.add_function(wrap_pyfunction!(dted_tree_to_mmap_store, m)?)?;

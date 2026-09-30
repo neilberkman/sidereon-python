@@ -44,18 +44,20 @@ use sidereon_core::rtk_filter::{
     RtkDualFrequencySatelliteObservation, RtkIonosphereFreeArcConfig, RtkIonosphereFreeArcSolution,
     RtkRinexArc as CoreRtkRinexArc, RtkRinexArcOptions as CoreRtkRinexArcOptions,
     RtkRinexDualArcOptions, RtkRinexDualFrequencyArc as CoreRtkRinexDualFrequencyArc,
-    RtkRinexDualSignalPair, RtkRinexSignalPair, RtkStaticArcConfig, RtkStaticArcSolution,
-    RtkWideLaneArcConfig, RtkWideLaneArcSolution, RtkWideLaneFixedArcConfig,
+    RtkRinexDualSignalPair, RtkRinexReceiver as CoreRtkRinexReceiver, RtkRinexSignalPair,
+    RtkRinexUnresolvedCarrier as CoreRtkRinexUnresolvedCarrier, RtkStaticArcConfig,
+    RtkStaticArcSolution, RtkWideLaneArcConfig, RtkWideLaneArcSolution, RtkWideLaneFixedArcConfig,
     RtkWideLaneFixedArcSolution, RtkWideLaneFixedArcSolveConfig, RtkWideLaneFixedStaticArcSolution,
     SatMeas, SearchOpts, StochasticModel, UpdateOpts, ValidatedFixedBaselineSolution,
     ValidatedFixedSolveOpts, WideLaneOptions,
 };
 
 use crate::ephemeris::with_observable_source;
+use crate::exact_time::PyExactEpoch;
 use crate::geometry_quality::PyGeometryQuality;
 use crate::marshal::{mat3_to_array, option_py_or_default, PyGnssSystem};
 use crate::rinex::PyRinexObs;
-use crate::{np_array, to_solve_err, PySp3};
+use crate::{np_array, PySp3};
 
 // --- input value/config objects -------------------------------------------
 
@@ -1006,8 +1008,8 @@ impl PyRtkFixedSolution {
 
 #[pyfunction]
 #[pyo3(signature = (config))]
-fn solve_rtk_float(config: &PyRtkFloatConfig) -> PyResult<PyRtkFloatSolution> {
-    let inner = sidereon::solve_rtk_float(
+fn solve_rtk_float(py: Python<'_>, config: &PyRtkFloatConfig) -> PyResult<PyRtkFloatSolution> {
+    let inner = sidereon_core::rtk_filter::solve_float_baseline(
         &config.epochs,
         config.base,
         &config.ambiguity_ids,
@@ -1016,13 +1018,13 @@ fn solve_rtk_float(config: &PyRtkFloatConfig) -> PyResult<PyRtkFloatSolution> {
         config.opts,
         None,
     )
-    .map_err(to_solve_err)?;
+    .map_err(|error| crate::solve_error_detail::rtk_float_error(py, error))?;
     Ok(PyRtkFloatSolution { inner })
 }
 
 #[pyfunction]
 #[pyo3(signature = (config))]
-fn solve_rtk_fixed(config: &PyRtkFixedConfig) -> PyResult<PyRtkFixedSolution> {
+fn solve_rtk_fixed(py: Python<'_>, config: &PyRtkFixedConfig) -> PyResult<PyRtkFixedSolution> {
     let ambiguities = AmbiguitySet {
         ids: &config.ambiguity_ids,
         satellites: &config.ambiguity_satellites,
@@ -1033,7 +1035,7 @@ fn solve_rtk_fixed(config: &PyRtkFixedConfig) -> PyResult<PyRtkFixedSolution> {
         float_only_systems: &config.float_only_systems,
     };
 
-    let inner = sidereon::solve_rtk_fixed(
+    let inner = sidereon_core::rtk_filter::solve_fixed_baseline_validated(
         &config.epochs,
         config.base,
         ambiguities,
@@ -1042,7 +1044,7 @@ fn solve_rtk_fixed(config: &PyRtkFixedConfig) -> PyResult<PyRtkFixedSolution> {
         config.opts,
         None,
     )
-    .map_err(to_solve_err)?;
+    .map_err(|error| crate::solve_error_detail::rtk_fixed_error(py, error))?;
     Ok(PyRtkFixedSolution { inner })
 }
 
@@ -1257,7 +1259,8 @@ fn solve_moving_baseline(
         })
         .collect();
 
-    let solutions = core_solve_moving_baseline(&mb_epochs, opts, None).map_err(to_solve_err)?;
+    let solutions = core_solve_moving_baseline(&mb_epochs, opts, None)
+        .map_err(|error| crate::solve_error_detail::moving_sequence_error(py, error))?;
     Ok(solutions
         .into_iter()
         .map(|inner| PyMovingBaselineEpochSolution { inner })
@@ -1365,6 +1368,7 @@ impl PyRtkArcEpoch {
         rover_satellite_positions_m=BTreeMap::new(),
         velocity_mps=None,
         prediction_time_s=None,
+        prediction_epoch=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1376,6 +1380,7 @@ impl PyRtkArcEpoch {
         rover_satellite_positions_m: BTreeMap<String, [f64; 3]>,
         velocity_mps: Option<[f64; 3]>,
         prediction_time_s: Option<f64>,
+        prediction_epoch: Option<&PyExactEpoch>,
     ) -> Self {
         let base = base.iter().map(|o| o.borrow(py).inner.clone()).collect();
         let rover = rover.iter().map(|o| o.borrow(py).inner.clone()).collect();
@@ -1388,6 +1393,7 @@ impl PyRtkArcEpoch {
                 rover_satellite_positions_m,
                 velocity_mps,
                 prediction_time_s,
+                prediction_epoch: prediction_epoch.map(|epoch| epoch.inner),
             },
         }
     }
@@ -1410,6 +1416,13 @@ impl PyRtkArcEpoch {
     #[getter]
     fn prediction_time_s(&self) -> Option<f64> {
         self.inner.prediction_time_s
+    }
+
+    #[getter]
+    fn prediction_epoch(&self) -> Option<PyExactEpoch> {
+        self.inner
+            .prediction_epoch
+            .map(|inner| PyExactEpoch { inner })
     }
 
     fn __repr__(&self) -> String {
@@ -2196,7 +2209,8 @@ fn solve_rtk_arc(
         .iter()
         .map(|epoch| epoch.borrow(py).inner.clone())
         .collect();
-    let inner = core_solve_rtk_arc(&epochs, &config.inner).map_err(to_solve_err)?;
+    let inner = core_solve_rtk_arc(&epochs, &config.inner)
+        .map_err(|error| crate::solve_error_detail::rtk_arc_error(py, error))?;
     Ok(PyRtkArcSolution { inner })
 }
 
@@ -2252,10 +2266,33 @@ impl PyRtkStaticArcConfig {
 #[pyclass(module = "sidereon._sidereon", name = "RtkStaticArcSolution")]
 pub struct PyRtkStaticArcSolution {
     inner: RtkStaticArcSolution,
+    /// The measurements the RINEX arc builder left out for want of a carrier
+    /// frequency, when this binding built the arc from RINEX observations.
+    unresolved_carriers: Option<Vec<CoreRtkRinexUnresolvedCarrier>>,
+}
+
+impl PyRtkStaticArcSolution {
+    fn from_arc_records(inner: RtkStaticArcSolution) -> Self {
+        Self {
+            inner,
+            unresolved_carriers: None,
+        }
+    }
 }
 
 #[pymethods]
 impl PyRtkStaticArcSolution {
+    /// Measurements the RINEX arc builder left out of an epoch because a
+    /// selected phase observable has no carrier frequency, for a solution
+    /// solved directly from RINEX by `solve_static_rinex_rtk_baseline` or
+    /// `solve_wide_lane_fixed_rinex_rtk_baseline`. None for a solution solved
+    /// from arc records the caller supplied, and for the reference-station
+    /// solve, whose core entry point does not return the list.
+    #[getter]
+    fn unresolved_carriers(&self) -> Option<Vec<PyRtkRinexUnresolvedCarrier>> {
+        self.unresolved_carriers.as_deref().map(unresolved_carriers)
+    }
+
     #[getter]
     fn references(&self) -> BTreeMap<String, String> {
         self.inner.references.clone()
@@ -2333,8 +2370,9 @@ fn solve_static_rtk_arc(
         .iter()
         .map(|epoch| epoch.borrow(py).inner.clone())
         .collect();
-    let inner = core_solve_static_rtk_arc(&epochs, &config.inner).map_err(to_solve_err)?;
-    Ok(PyRtkStaticArcSolution { inner })
+    let inner = core_solve_static_rtk_arc(&epochs, &config.inner)
+        .map_err(|error| crate::solve_error_detail::rtk_static_arc_error(py, error))?;
+    Ok(PyRtkStaticArcSolution::from_arc_records(inner))
 }
 
 /// One single-frequency RINEX code/carrier pair used to build RTK arc records.
@@ -2476,6 +2514,87 @@ impl PyRtkRinexArcOptions {
     }
 }
 
+/// The receiver whose observation file a reported RTK measurement comes from.
+#[pyclass(module = "sidereon._sidereon", name = "RtkRinexReceiver", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum PyRtkRinexReceiver {
+    /// The base receiver's file.
+    BASE,
+    /// The rover receiver's file.
+    ROVER,
+}
+
+impl From<CoreRtkRinexReceiver> for PyRtkRinexReceiver {
+    fn from(receiver: CoreRtkRinexReceiver) -> Self {
+        match receiver {
+            CoreRtkRinexReceiver::Base => Self::BASE,
+            CoreRtkRinexReceiver::Rover => Self::ROVER,
+        }
+    }
+}
+
+/// A satellite's measurement left out of one epoch because a selected phase
+/// observable has no carrier frequency in the file's context.
+///
+/// `epoch_index` indexes the epochs of the receiver's own file.
+#[pyclass(module = "sidereon._sidereon", name = "RtkRinexUnresolvedCarrier")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PyRtkRinexUnresolvedCarrier {
+    inner: CoreRtkRinexUnresolvedCarrier,
+}
+
+fn unresolved_carriers(
+    carriers: &[CoreRtkRinexUnresolvedCarrier],
+) -> Vec<PyRtkRinexUnresolvedCarrier> {
+    carriers
+        .iter()
+        .cloned()
+        .map(|inner| PyRtkRinexUnresolvedCarrier { inner })
+        .collect()
+}
+
+#[pymethods]
+impl PyRtkRinexUnresolvedCarrier {
+    /// The receiver whose file holds the measurement.
+    #[getter]
+    fn receiver(&self) -> PyRtkRinexReceiver {
+        self.inner.receiver.into()
+    }
+
+    /// Index of the epoch in that receiver's file.
+    #[getter]
+    fn epoch_index(&self) -> usize {
+        self.inner.epoch_index
+    }
+
+    /// Satellite token.
+    #[getter]
+    fn satellite_id(&self) -> &str {
+        &self.inner.satellite_id
+    }
+
+    /// Full RINEX phase observable code with no carrier frequency.
+    #[getter]
+    fn observable_code(&self) -> &str {
+        &self.inner.observable_code
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RtkRinexUnresolvedCarrier(receiver=RtkRinexReceiver.{:?}, epoch_index={}, satellite_id={:?}, observable_code={:?})",
+            PyRtkRinexReceiver::from(self.inner.receiver),
+            self.inner.epoch_index,
+            self.inner.satellite_id,
+            self.inner.observable_code
+        )
+    }
+
+    fn __eq__(&self, other: &PyRtkRinexUnresolvedCarrier) -> bool {
+        self.inner == other.inner
+    }
+}
+
 /// Single-frequency RTK arc records built from RINEX.
 #[pyclass(module = "sidereon._sidereon", name = "RinexRtkArc")]
 pub struct PyRinexRtkArc {
@@ -2509,11 +2628,22 @@ impl PyRinexRtkArc {
         self.inner.skipped_epoch_count
     }
 
+    /// Measurements left out of an epoch because no configured signal pair of
+    /// the satellite has a carrier frequency in the file's context - a GLONASS
+    /// slot with no `GLONASS SLOT / FRQ #` channel, or one outside `-7..=6`.
+    /// Only that satellite is left out of that epoch; the arc is built from
+    /// the rest.
+    #[getter]
+    fn unresolved_carriers(&self) -> Vec<PyRtkRinexUnresolvedCarrier> {
+        unresolved_carriers(&self.inner.unresolved_carriers)
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "RinexRtkArc(epochs={}, ambiguities={})",
+            "RinexRtkArc(epochs={}, ambiguities={}, unresolved_carriers={})",
             self.inner.epochs.len(),
-            self.inner.wavelengths_m.len()
+            self.inner.wavelengths_m.len(),
+            self.inner.unresolved_carriers.len()
         )
     }
 }
@@ -2705,10 +2835,18 @@ impl PyRinexDualFrequencyRtkArc {
         self.inner.skipped_epoch_count
     }
 
+    /// Measurements left out of an epoch because no configured signal pair of
+    /// the satellite has both carrier frequencies in the file's context.
+    #[getter]
+    fn unresolved_carriers(&self) -> Vec<PyRtkRinexUnresolvedCarrier> {
+        unresolved_carriers(&self.inner.unresolved_carriers)
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "RinexDualFrequencyRtkArc(epochs={})",
-            self.inner.epochs.len()
+            "RinexDualFrequencyRtkArc(epochs={}, unresolved_carriers={})",
+            self.inner.epochs.len(),
+            self.inner.unresolved_carriers.len()
         )
     }
 }
@@ -2832,7 +2970,7 @@ fn build_rinex_rtk_arc(
     with_observable_source(ephemeris, |source| {
         core_build_rinex_rtk_arc(source, base_obs.inner(), rover_obs.inner(), &options)
             .map(|inner| PyRinexRtkArc { inner })
-            .map_err(to_solve_err)
+            .map_err(|error| crate::solve_error_detail::rtk_rinex_arc_error(py, error))
     })
 }
 
@@ -2855,7 +2993,7 @@ fn build_dual_frequency_rinex_rtk_arc(
             &options,
         )
         .map(|inner| PyRinexDualFrequencyRtkArc { inner })
-        .map_err(to_solve_err)
+        .map_err(|error| crate::solve_error_detail::rtk_rinex_arc_error(py, error))
     })
 }
 
@@ -2900,7 +3038,7 @@ fn solve_static_rinex_rtk_baseline(
     with_observable_source(ephemeris, |source| {
         let arc =
             core_build_rinex_rtk_arc(source, base_obs.inner(), rover_obs.inner(), &arc_options)
-                .map_err(to_solve_err)?;
+                .map_err(|error| crate::solve_error_detail::rtk_rinex_arc_error(py, error))?;
         let config = static_arc_config_from_parts(
             py,
             base,
@@ -2917,8 +3055,11 @@ fn solve_static_rinex_rtk_baseline(
             residual_options,
         );
         core_solve_static_rtk_arc(&arc.epochs, &config)
-            .map(|inner| PyRtkStaticArcSolution { inner })
-            .map_err(to_solve_err)
+            .map(|inner| PyRtkStaticArcSolution {
+                inner,
+                unresolved_carriers: Some(arc.unresolved_carriers.clone()),
+            })
+            .map_err(|error| crate::solve_error_detail::rtk_static_arc_error(py, error))
     })
 }
 
@@ -2958,6 +3099,7 @@ fn reference_mode_error_kind(error: &StaticReferenceModeError) -> &'static str {
         StaticReferenceModeError::InvalidCorrectedSatelliteId { .. } => {
             "invalid_corrected_satellite_id"
         }
+        StaticReferenceModeError::Ut1OutsideCoverage(_) => "ut1_outside_coverage",
     }
 }
 
@@ -3012,7 +3154,20 @@ impl PyStaticReferenceModeError {
             | StaticReferenceModeError::Frame { reason, .. }
             | StaticReferenceModeError::CorrectedObservation { reason } => Some(reason.clone()),
             StaticReferenceModeError::NoMatchedCodeEpochs
-            | StaticReferenceModeError::InvalidCorrectedSatelliteId { .. } => None,
+            | StaticReferenceModeError::InvalidCorrectedSatelliteId { .. }
+            | StaticReferenceModeError::Ut1OutsideCoverage(_) => None,
+        }
+    }
+
+    /// The UT1 departure, `before_coverage` or `after_coverage`, when
+    /// `kind == "ut1_outside_coverage"`.
+    #[getter]
+    fn ut1_reason(&self) -> Option<&'static str> {
+        match &self.inner {
+            StaticReferenceModeError::Ut1OutsideCoverage(reason) => {
+                Some(crate::degrade_reason_label(*reason))
+            }
+            _ => None,
         }
     }
 
@@ -3179,6 +3334,12 @@ pub struct PyStaticReferenceCodeSolution {
 
 #[pymethods]
 impl PyStaticReferenceCodeSolution {
+    /// The UT1 departure a permissive UT1 policy accepted, `before_coverage` or `after_coverage`; `None` when every UT1 read was inside the table.
+    #[getter]
+    fn ut1_degraded(&self) -> Option<&'static str> {
+        self.inner.ut1_degraded.map(crate::degrade_reason_label)
+    }
+
     /// ECEF coordinate as a numpy array `[x, y, z]` metres.
     #[getter]
     fn position<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -3242,6 +3403,12 @@ pub struct PyStaticReferenceCarrierSolution {
 
 #[pymethods]
 impl PyStaticReferenceCarrierSolution {
+    /// The UT1 departure a permissive UT1 policy accepted, `before_coverage` or `after_coverage`; `None` when every UT1 read was inside the table.
+    #[getter]
+    fn ut1_degraded(&self) -> Option<&'static str> {
+        self.inner.ut1_degraded.map(crate::degrade_reason_label)
+    }
+
     /// ECEF coordinate as a numpy array `[x, y, z]` metres.
     #[getter]
     fn position<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -3289,9 +3456,7 @@ impl PyStaticReferenceCarrierSolution {
 
     #[getter]
     fn rtk_solution(&self) -> PyRtkStaticArcSolution {
-        PyRtkStaticArcSolution {
-            inner: self.inner.rtk_solution.clone(),
-        }
+        PyRtkStaticArcSolution::from_arc_records(self.inner.rtk_solution.clone())
     }
 
     #[getter]
@@ -3321,6 +3486,12 @@ pub struct PyStaticReferenceStationSolution {
 
 #[pymethods]
 impl PyStaticReferenceStationSolution {
+    /// The selected mode's UT1 departure a permissive UT1 policy accepted, `before_coverage` or `after_coverage`; `None` when there was none.
+    #[getter]
+    fn ut1_degraded(&self) -> Option<&'static str> {
+        self.inner.ut1_degraded.map(crate::degrade_reason_label)
+    }
+
     #[getter]
     fn mode(&self) -> &'static str {
         reference_station_mode_label(self.inner.mode)
@@ -3512,10 +3683,18 @@ fn solve_static_reference_station_rinex(
 #[pyclass(module = "sidereon._sidereon", name = "RinexWideLaneFixedRtkSolution")]
 pub struct PyRinexWideLaneFixedRtkSolution {
     inner: RtkWideLaneFixedStaticArcSolution,
+    unresolved_carriers: Vec<CoreRtkRinexUnresolvedCarrier>,
 }
 
 #[pymethods]
 impl PyRinexWideLaneFixedRtkSolution {
+    /// Measurements the dual-frequency RINEX arc builder left out of an epoch
+    /// because a selected phase observable has no carrier frequency.
+    #[getter]
+    fn unresolved_carriers(&self) -> Vec<PyRtkRinexUnresolvedCarrier> {
+        unresolved_carriers(&self.unresolved_carriers)
+    }
+
     #[getter]
     fn wide_lane(&self) -> PyRtkWideLaneArcSolution {
         PyRtkWideLaneArcSolution {
@@ -3534,6 +3713,7 @@ impl PyRinexWideLaneFixedRtkSolution {
     fn solution(&self) -> PyRtkStaticArcSolution {
         PyRtkStaticArcSolution {
             inner: self.inner.solution.clone(),
+            unresolved_carriers: Some(self.unresolved_carriers.clone()),
         }
     }
 
@@ -3660,7 +3840,7 @@ fn solve_wide_lane_fixed_rinex_rtk_baseline(
             rover_obs.inner(),
             &arc_options,
         )
-        .map_err(to_solve_err)?;
+        .map_err(|error| crate::solve_error_detail::rtk_rinex_arc_error(py, error))?;
         let static_config = static_arc_config_from_parts(
             py,
             base,
@@ -3717,12 +3897,13 @@ fn solve_wide_lane_fixed_rinex_rtk_baseline(
         config.wide_lane = wide_lane;
         config.ionosphere_free = ionosphere_free;
         config.solve = solve;
-        let inner =
-            core_solve_wide_lane_fixed_rtk_arc(&arc.epochs, &config).map_err(to_solve_err)?;
+        let inner = core_solve_wide_lane_fixed_rtk_arc(&arc.epochs, &config)
+            .map_err(|error| crate::solve_error_detail::rtk_wide_lane_fixed_arc_error(py, error))?;
         match inner {
-            RtkWideLaneFixedArcSolution::Static(inner) => {
-                Ok(PyRinexWideLaneFixedRtkSolution { inner })
-            }
+            RtkWideLaneFixedArcSolution::Static(inner) => Ok(PyRinexWideLaneFixedRtkSolution {
+                inner,
+                unresolved_carriers: arc.unresolved_carriers.clone(),
+            }),
             RtkWideLaneFixedArcSolution::Sequential(_) => Err(PyTypeError::new_err(
                 "wide-lane RINEX convenience expected a static solution",
             )),
@@ -3910,6 +4091,8 @@ impl PyRtkDualFrequencyArcEpoch {
         rover_satellite_positions_m=BTreeMap::new(),
         velocity_mps=None,
         prediction_time_s=None,
+        gap_epoch=None,
+        prediction_epoch=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3924,6 +4107,8 @@ impl PyRtkDualFrequencyArcEpoch {
         rover_satellite_positions_m: BTreeMap<String, [f64; 3]>,
         velocity_mps: Option<[f64; 3]>,
         prediction_time_s: Option<f64>,
+        gap_epoch: Option<&PyExactEpoch>,
+        prediction_epoch: Option<&PyExactEpoch>,
     ) -> Self {
         let observations = observations
             .iter()
@@ -3935,12 +4120,14 @@ impl PyRtkDualFrequencyArcEpoch {
                 jd_fraction,
                 epoch_sort_key,
                 gap_time_s,
+                gap_epoch: gap_epoch.map(|epoch| epoch.inner),
                 observations,
                 satellite_positions_m,
                 base_satellite_positions_m,
                 rover_satellite_positions_m,
                 velocity_mps,
                 prediction_time_s,
+                prediction_epoch: prediction_epoch.map(|epoch| epoch.inner),
             },
         }
     }
@@ -3966,6 +4153,11 @@ impl PyRtkDualFrequencyArcEpoch {
     }
 
     #[getter]
+    fn gap_epoch(&self) -> Option<PyExactEpoch> {
+        self.inner.gap_epoch.map(|inner| PyExactEpoch { inner })
+    }
+
+    #[getter]
     fn observation_count(&self) -> usize {
         self.inner.observations.len()
     }
@@ -3978,6 +4170,13 @@ impl PyRtkDualFrequencyArcEpoch {
     #[getter]
     fn prediction_time_s(&self) -> Option<f64> {
         self.inner.prediction_time_s
+    }
+
+    #[getter]
+    fn prediction_epoch(&self) -> Option<PyExactEpoch> {
+        self.inner
+            .prediction_epoch
+            .map(|inner| PyExactEpoch { inner })
     }
 
     fn __repr__(&self) -> String {
@@ -4230,7 +4429,8 @@ fn fix_wide_lane_rtk_arc(
         .iter()
         .map(|epoch| epoch.borrow(py).inner.clone())
         .collect();
-    let inner = core_fix_wide_lane_rtk_arc(&epochs, &config.inner).map_err(to_solve_err)?;
+    let inner = core_fix_wide_lane_rtk_arc(&epochs, &config.inner)
+        .map_err(|error| crate::solve_error_detail::rtk_wide_lane_arc_error(py, error))?;
     Ok(PyRtkWideLaneArcSolution { inner })
 }
 
@@ -4356,7 +4556,7 @@ fn prepare_ionosphere_free_rtk_arc(
         .map(|epoch| epoch.borrow(py).inner.clone())
         .collect();
     let inner = core_prepare_ionosphere_free_rtk_arc(&epochs, &wide_lane_cycles, &config.inner)
-        .map_err(to_solve_err)?;
+        .map_err(|error| crate::solve_error_detail::rtk_ionosphere_free_arc_error(py, error))?;
     Ok(PyRtkIonosphereFreeArcSolution { inner })
 }
 
@@ -4411,6 +4611,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRinexDualFrequencyRtkArc>()?;
     m.add_function(wrap_pyfunction!(build_dual_frequency_rinex_rtk_arc, m)?)?;
     m.add_class::<PyRinexWideLaneFixedRtkSolution>()?;
+    m.add_class::<PyRtkRinexReceiver>()?;
+    m.add_class::<PyRtkRinexUnresolvedCarrier>()?;
     m.add_function(wrap_pyfunction!(
         solve_wide_lane_fixed_rinex_rtk_baseline,
         m

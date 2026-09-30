@@ -45,9 +45,10 @@ jobs:
       - name: Build abi3 wheel
         uses: PyO3/maturin-action@v1
         with:
+          rust-toolchain: "1.98.1"
           target: ${{ matrix.target }}
           manylinux: auto
-          args: --release --out dist
+          args: --release --locked --out dist
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-${{ matrix.target }}
@@ -67,8 +68,9 @@ jobs:
       - name: Build abi3 wheel
         uses: PyO3/maturin-action@v1
         with:
+          rust-toolchain: "1.98.1"
           target: ${{ matrix.target }}
-          args: --release --out dist
+          args: --release --locked --out dist
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.target }}
@@ -85,8 +87,9 @@ jobs:
       - name: Build abi3 wheel
         uses: PyO3/maturin-action@v1
         with:
+          rust-toolchain: "1.98.1"
           target: x64
-          args: --release --out dist
+          args: --release --locked --out dist
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-windows-x64
@@ -97,9 +100,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: Verify the Cargo lock before packaging the source distribution
+        run: cargo metadata --locked --format-version 1 --manifest-path Cargo.toml
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
+          rust-toolchain: "1.98.1"
           command: sdist
           args: --out dist
       - uses: actions/upload-artifact@v4
@@ -116,7 +123,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-wheels
@@ -146,10 +153,10 @@ jobs:
             done
             for source in mod.rs ocean.rs pole.rs; do
               unzip -p "$wheel" \
-                "third_party_source/sidereon-core-0.35.0/tides/$source" \
+                "third_party_source/sidereon-core-3.0.0/tides/$source" \
                 >"$RUNNER_TEMP/$source"
               cmp "$RUNNER_TEMP/$source" \
-                "third_party_source/sidereon-core-0.35.0/tides/$source"
+                "third_party_source/sidereon-core-3.0.0/tides/$source"
             done
           done
           notice="$RUNNER_TEMP/sdist.notices"
@@ -166,10 +173,10 @@ jobs:
           done
           for source in mod.rs ocean.rs pole.rs; do
             tar -xOf "${sdists[0]}" --wildcards \
-              "*/third_party_source/sidereon-core-0.35.0/tides/$source" \
+              "*/third_party_source/sidereon-core-3.0.0/tides/$source" \
               >"$RUNNER_TEMP/sdist-$source"
             cmp "$RUNNER_TEMP/sdist-$source" \
-              "third_party_source/sidereon-core-0.35.0/tides/$source"
+              "third_party_source/sidereon-core-3.0.0/tides/$source"
           done
       - name: Smoke-test installed x86_64 Linux wheel
         shell: bash
@@ -189,7 +196,8 @@ jobs:
           python -m venv .venv-sdist
           . .venv-sdist/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install "${sdists[0]}"
+          python -m pip install "${sdists[0]}" \
+            --config-settings="maturin.build-args=--locked"
           SIDEREON_EXPECTED_VERSION="${GITHUB_REF_NAME#v}" python scripts/smoke-release.py
 
   publish:

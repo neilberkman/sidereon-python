@@ -5,8 +5,11 @@ core `SolvePolicy` and `SolveInputs.robust`:
 
 - `SppConfig(robust=...)` delegates to `sidereon_core::positioning::RobustConfig`
   (Huber/IRLS). On a clean set it tracks the static solve; on a set with one
-  gross blunder it down-weights the outlier and lands far closer to truth than
-  the static elevation-weighted solve.
+  gross blunder on a satellite whose own residual keeps at least half of the
+  bias (its redundancy, from `core_goldens.json`), it down-weights the outlier
+  and lands far closer to truth than the static variance-weighted solve. A
+  blunder on the low-redundancy G08 is beyond raw-residual reweighting; that
+  case checks delegation to the core robust solve only.
 - `solve_spp(..., coarse_search_seeds=n)` delegates to
   `SolvePolicy.coarse_search_seeds`: from an antipodal cold start the static solve
   is refused, while the golden-spiral seed lattice recovers the reference fix.
@@ -27,11 +30,18 @@ import os
 import numpy as np
 import pytest
 import sidereon
-from _helpers import CORE_FIXTURES, hex_to_f64
+from _helpers import CORE_FIXTURES, STATUS_LABELS, core_goldens, hex_to_f64
 
 TRACE = os.path.join(CORE_FIXTURES, "spp_trace_L0_minimal.json")
-# The mutually consistent satellite subset this trace solves on (zero residuals).
-CONSISTENT_SATS = ["G08", "G10", "G16", "G18", "G20", "G21", "G26", "G27"]
+# The satellites this trace solves on, with pseudoranges the core's default
+# model fits with zero residuals (to the last bits of a 2e7 m range): the
+# trace's own pseudoranges, each moved by its post-fit residual until none is
+# left, written by `scripts/core_goldens`. The trace was synthesized without
+# the relativistic clock term and with the geometric light time, which the
+# core's default model applies as RTKLIB does, so its raw pseudoranges no
+# longer fit with zero residuals.
+_CONSISTENT = core_goldens()["spp_consistent"]
+CONSISTENT_SATS = _CONSISTENT["satellites"]
 AGREEMENT_BOUND_M = 1.0e-6
 
 
@@ -47,12 +57,14 @@ def _load_sp3(fx):
 
 
 def _truth(fx):
-    return np.array([hex_to_f64(x) for x in fx["final_solution"]["x"][:3]])
+    return np.array([hex_to_f64(x) for x in _CONSISTENT["position_m"]])
 
 
 def _consistent_observations(fx):
-    obs = {o["sat_id"]: hex_to_f64(o["p_meas_m"]) for o in fx["inputs"]["observations"]}
-    return [(s, obs[s]) for s in CONSISTENT_SATS]
+    return [
+        (sat, hex_to_f64(p))
+        for sat, p in zip(CONSISTENT_SATS, _CONSISTENT["pseudoranges_m"])
+    ]
 
 
 def _config(fx, observations, initial_guess, robust=None):
@@ -130,20 +142,49 @@ def test_robust_solve_tracks_static_on_a_clean_set():
     assert np.linalg.norm(robust.position - truth) < 1.0e-3
 
 
-def test_robust_solve_downweights_a_gross_blunder():
+# A satellite's redundancy is the share of a bias on its pseudorange that the
+# static variance-weighted solve leaves in its own residual (the diagonal of
+# I - H (H^T W H)^-1 H^T W); `scripts/core_goldens` measures it for this
+# scenario's bias. The rest of the bias moves the position and shows up in the
+# other satellites' residuals. Huber reweighting of raw residuals down-weights
+# the satellites whose residuals stand out, so it can reject a bias only on a
+# satellite that keeps enough of the bias in its own residual.
+_ROBUST_FAULTS = core_goldens()["spp_robust_faults"]
+BLUNDER_M = 300.0
+IDENTIFIABLE_REDUNDANCY = 0.5
+IDENTIFIABLE_SATS = sorted(
+    sat
+    for sat, share in _ROBUST_FAULTS["redundancy"].items()
+    if share >= IDENTIFIABLE_REDUNDANCY
+)
+
+
+def _blunder(fx, blunder_sat):
+    return [
+        (sat, pr + (BLUNDER_M if sat == blunder_sat else 0.0))
+        for sat, pr in _consistent_observations(fx)
+    ]
+
+
+def test_robust_fault_golden_covers_this_scenario():
+    assert _ROBUST_FAULTS["bias_m"] == BLUNDER_M
+    assert sorted(_ROBUST_FAULTS["redundancy"]) == sorted(CONSISTENT_SATS)
+    assert all(0.0 < share < 1.0 for share in _ROBUST_FAULTS["redundancy"].values())
+    # The satellites the reweighting is expected to reject are not an empty set.
+    assert len(IDENTIFIABLE_SATS) >= 3
+
+
+@pytest.mark.parametrize("blunder_sat", IDENTIFIABLE_SATS)
+def test_robust_solve_downweights_a_gross_blunder(blunder_sat):
     fx = _trace()
     sp3 = _load_sp3(fx)
     guess = _warm_guess(fx)
     truth = _truth(fx)
-
-    blunder_sat = "G08"
-    blunder_m = 300.0
-    observations = [
-        (sat, pr + (blunder_m if sat == blunder_sat else 0.0))
-        for sat, pr in _consistent_observations(fx)
-    ]
+    observations = _blunder(fx, blunder_sat)
 
     static = sidereon.solve_spp(sp3, _config(fx, observations, guess))
+    # The default reweighting runs until it settles; its outer-solve cap is a
+    # safeguard, not a working budget.
     robust = sidereon.solve_spp(
         sp3, _config(fx, observations, guess, robust=sidereon.SppRobustConfig())
     )
@@ -151,12 +192,52 @@ def test_robust_solve_downweights_a_gross_blunder():
     static_err = float(np.linalg.norm(static.position - truth))
     robust_err = float(np.linalg.norm(robust.position - truth))
 
-    # The static elevation-weighted solve smears the 300 m blunder across the
-    # geometry; the IRLS reweighting down-weights the outlier and recovers a
-    # near-truth fix.
+    # The static variance-weighted solve smears the 300 m blunder across the
+    # geometry; the settled IRLS reweighting down-weights the outlier and
+    # recovers a near-truth fix.
+    assert robust.converged
+    assert robust.status == "selection_settled"
     assert static_err > 50.0
     assert robust_err < 10.0
     assert robust_err < static_err / 10.0
+
+
+def test_robust_solve_on_a_low_redundancy_blunder_matches_core():
+    # G08 sits 18.6 degrees above the horizon, alone in its part of the sky: its
+    # own residual keeps only about 17% of a bias on it (redundancy 0.168 in the
+    # golden), and the rest lands on the other satellites, G27 most of all.
+    # Huber reweighting of raw residuals then down-weights G27 rather than G08,
+    # and the settled Huber estimate lies about 314 m from truth; no
+    # reweighting budget changes that. Only delegation to the core robust solve
+    # is checked here, against the core's own result for the same inputs.
+    golden = _ROBUST_FAULTS["g08_robust_default"]
+    assert _ROBUST_FAULTS["redundancy"]["G08"] < IDENTIFIABLE_REDUNDANCY
+
+    fx = _trace()
+    sp3 = _load_sp3(fx)
+    robust = sidereon.solve_spp(
+        sp3,
+        _config(
+            fx,
+            _blunder(fx, "G08"),
+            _warm_guess(fx),
+            robust=sidereon.SppRobustConfig(),
+        ),
+    )
+
+    expected_position = np.array([hex_to_f64(x) for x in golden["position_m"]])
+    assert np.array_equal(
+        robust.position.view(np.int64), expected_position.view(np.int64)
+    )
+    assert robust.rx_clock_s == hex_to_f64(golden["rx_clock_s"])
+    assert robust.used_sats == golden["used_sats"]
+    expected_residuals = np.array([hex_to_f64(x) for x in golden["residuals_m"]])
+    assert np.array_equal(
+        np.array(robust.residuals_m).view(np.int64),
+        expected_residuals.view(np.int64),
+    )
+    assert robust.status == STATUS_LABELS[golden["status"]]
+    assert robust.converged == golden["converged"]
 
 
 def test_robust_composes_with_batch():

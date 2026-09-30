@@ -6,6 +6,8 @@ pattern helper in ``_helpers``). The golden certifies 0 ULP on
 aarch64-apple-darwin, so every comparison is exact bit equality, not a tolerance.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import struct
@@ -58,6 +60,8 @@ def test_load_ionex_accepts_bytes_and_path(grid_from_bytes, grid_from_path):
         grid_from_bytes.lat_nodes_deg, grid_from_path.lat_nodes_deg
     )
     np.testing.assert_array_equal(grid_from_bytes.tec_maps, grid_from_path.tec_maps)
+    np.testing.assert_array_equal(grid_from_bytes.tec_mask, grid_from_path.tec_mask)
+    np.testing.assert_array_equal(grid_from_bytes.tec_valid, grid_from_path.tec_valid)
 
 
 def test_parsed_grid_matches_golden(grid_from_bytes):
@@ -96,6 +100,13 @@ def test_parsed_grid_matches_golden(grid_from_bytes):
                     float(tec[ei, li, oi]), want_hex, f"maps_vtec[{ei}][{li}][{oi}]"
                 )
 
+    assert grid_from_bytes.tec_mask.dtype == bool
+    assert grid_from_bytes.tec_mask.shape == tec.shape
+    assert np.all(grid_from_bytes.tec_mask)
+    np.testing.assert_array_equal(grid_from_bytes.tec_mask, grid_from_bytes.tec_valid)
+    assert not grid_from_bytes.has_rms
+    assert not grid_from_bytes.has_height
+
 
 def test_slant_delay_cases_bit_exact(grid_from_bytes):
     cases = GOLDEN["cases"]
@@ -122,6 +133,8 @@ def test_repr_and_dtypes(grid_from_bytes):
     assert grid_from_bytes.map_epochs_j2000_s.dtype == np.int64
     assert grid_from_bytes.tec_maps.dtype == np.float64
     assert grid_from_bytes.tec_maps.ndim == 3
+    assert grid_from_bytes.tec_mask.dtype == bool
+    assert grid_from_bytes.tec_valid.dtype == bool
     assert isinstance(grid_from_bytes.shell_height_km, float)
     assert isinstance(grid_from_bytes.exponent, int)
 
@@ -171,3 +184,56 @@ def test_to_ionex_string_round_trips_product(grid_from_bytes):
     )
     np.testing.assert_array_equal(reparsed.tec_maps, grid_from_bytes.tec_maps)
     np.testing.assert_array_equal(reparsed.rms_maps, grid_from_bytes.rms_maps)
+    np.testing.assert_array_equal(reparsed.tec_mask, grid_from_bytes.tec_mask)
+    np.testing.assert_array_equal(reparsed.tec_valid, grid_from_bytes.tec_valid)
+
+
+def test_extraction_constructor_roundtrip_retaining_optional_map_distinctions(
+    grid_from_bytes,
+):
+    # Extract fields from parsed product with absent optional maps
+    assert not grid_from_bytes.has_rms
+    assert not grid_from_bytes.has_height
+    assert grid_from_bytes.rms_maps.shape == (0, 0, 0)
+    assert grid_from_bytes.rms_mask.shape == (0, 0, 0)
+    assert grid_from_bytes.height_maps.shape == (0, 0, 0)
+    assert grid_from_bytes.height_mask.shape == (0, 0, 0)
+
+    # Reconstruct TecGridSamples transparently using the extracted arrays
+    samples = sidereon.TecGridSamples(
+        map_epochs_j2000_s=grid_from_bytes.map_epochs_j2000_s,
+        lat_nodes_deg=grid_from_bytes.lat_nodes_deg,
+        lon_nodes_deg=grid_from_bytes.lon_nodes_deg,
+        dlat_deg=grid_from_bytes.dlat_deg,
+        dlon_deg=grid_from_bytes.dlon_deg,
+        shell_height_km=grid_from_bytes.shell_height_km,
+        base_radius_km=grid_from_bytes.base_radius_km,
+        exponent=grid_from_bytes.exponent,
+        tec_maps=grid_from_bytes.tec_maps,
+        rms_maps=grid_from_bytes.rms_maps,
+        height_maps=grid_from_bytes.height_maps,
+        tec_mask=grid_from_bytes.tec_mask,
+        rms_mask=grid_from_bytes.rms_mask,
+        height_mask=grid_from_bytes.height_mask,
+        header=grid_from_bytes.header,
+    )
+    reconstructed = sidereon.Ionex.from_samples(samples)
+
+    assert not reconstructed.has_rms
+    assert not reconstructed.has_height
+    assert reconstructed.rms_maps.shape == (0, 0, 0)
+    assert reconstructed.rms_mask.shape == (0, 0, 0)
+    assert reconstructed.height_maps.shape == (0, 0, 0)
+    assert reconstructed.height_mask.shape == (0, 0, 0)
+    assert reconstructed.exponent == grid_from_bytes.exponent
+    np.testing.assert_array_equal(
+        reconstructed.lat_nodes_deg, grid_from_bytes.lat_nodes_deg
+    )
+    np.testing.assert_array_equal(
+        reconstructed.lon_nodes_deg, grid_from_bytes.lon_nodes_deg
+    )
+    np.testing.assert_array_equal(
+        reconstructed.map_epochs_j2000_s, grid_from_bytes.map_epochs_j2000_s
+    )
+    np.testing.assert_array_equal(reconstructed.tec_maps, grid_from_bytes.tec_maps)
+    np.testing.assert_array_equal(reconstructed.tec_mask, grid_from_bytes.tec_mask)

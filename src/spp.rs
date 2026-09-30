@@ -10,21 +10,75 @@ use std::str::FromStr;
 use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyModule};
+use pyo3::types::{PyAny, PyDict, PyModule};
 
 use sidereon_core::positioning::{
-    residual_rms as core_residual_rms, Corrections, KlobucharCoeffs, Observation, ReceiverSolution,
+    residual_rms as core_residual_rms, Corrections, ExactSolveInputs, KlobucharCoeffs, Observation,
+    PseudorangeCode, QzssClock, ReceiverSolution, RejectedSat, RejectionReason,
     RinexSppEpochInputs, RinexSppEpochSolution, RinexSppOptions, RinexSppSource, RobustConfig,
-    SolveInputs, SolvePolicy, SurfaceMet,
+    SolveInputs, SolvePolicy, SurfaceMet, TroposphereModel,
 };
 use sidereon_core::quality::SolutionValidationOptions;
 use sidereon_core::GnssSatelliteId;
 
 use crate::events::PyDop;
+use crate::exact_time::PyExactEpoch;
 use crate::geometry_quality::PyGeometryQuality;
 use crate::marshal::{mat3_to_array, option_py_or_default, PyGnssSystem};
 use crate::rinex::{PyBroadcastEphemeris, PyObsEpochTime, PyRinexObs, PySignalPolicy};
-use crate::{np_array, to_solve_err, PySp3, SolveError};
+use crate::{np_array, PySp3};
+
+type PyRejectedSatelliteRow = (String, &'static str, Option<(f64, f64)>);
+
+/// The core `RejectionReason` variant name a rejected satellite reports.
+///
+/// SPP selection tests a satellite in the order RTKLIB `rescode` does and
+/// reports the first reason that applies: `NoEphemeris` (or strict SSR-size
+/// refusal), `LowElevation`, `SbasIonoUncovered`, then `IonosphereCarrierUnresolved` (an
+/// ionosphere-corrected solve with no carrier frequency for the satellite, a
+/// GLONASS satellite with no channel or one outside `-7..=6`).
+pub(crate) fn rejection_reason_label(reason: RejectionReason) -> &'static str {
+    match reason {
+        RejectionReason::NoEphemeris => "NoEphemeris",
+        RejectionReason::SsrCorrectionExceedsLimit(_) => "SsrCorrectionExceedsLimit",
+        RejectionReason::LowElevation => "LowElevation",
+        RejectionReason::SbasWithdrawn => "SbasWithdrawn",
+        RejectionReason::SbasIonoUncovered => "SbasIonoUncovered",
+        RejectionReason::IonosphereCarrierUnresolved => "IonosphereCarrierUnresolved",
+    }
+}
+
+/// `(satellite, reason)` rows for rejected satellites, in the core's order.
+pub(crate) fn rejected_rows(rejected: &[RejectedSat]) -> Vec<(String, &'static str)> {
+    rejected
+        .iter()
+        .map(|sat| {
+            (
+                sat.satellite_id.to_string(),
+                rejection_reason_label(sat.reason),
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn rejected_rows_with_details(rejected: &[RejectedSat]) -> Vec<PyRejectedSatelliteRow> {
+    rejected
+        .iter()
+        .map(|satellite| {
+            let size = match satellite.reason {
+                RejectionReason::SsrCorrectionExceedsLimit(size) => {
+                    Some((size.orbit_m, size.clock_m))
+                }
+                _ => None,
+            };
+            (
+                satellite.satellite_id.to_string(),
+                rejection_reason_label(satellite.reason),
+                size,
+            )
+        })
+        .collect()
+}
 
 /// One pseudorange observation for an SPP solve.
 #[pyclass(module = "sidereon._sidereon", name = "SppObservation")]
@@ -183,7 +237,7 @@ impl Default for PySppKlobucharCoeffs {
 /// Surface meteorology for troposphere-corrected SPP.
 ///
 /// The default is the core standard atmosphere
-/// ([`sidereon_core::spp::SurfaceMet::default()`]); the binding holds no copy of
+/// ([`sidereon_core::positioning::SurfaceMet::default()`]); the binding holds no copy of
 /// those values.
 #[pyclass(module = "sidereon._sidereon", name = "SppSurfaceMet")]
 #[derive(Clone, Copy, Default)]
@@ -238,10 +292,17 @@ impl PySppSurfaceMet {
 /// Pass an instance as `SppConfig(robust=...)` to route the solve through the
 /// outer iteratively-reweighted least-squares loop in the core
 /// ([`sidereon_core::positioning::RobustConfig`]): a warm start at the static
-/// elevation weights (bit-identical to the non-robust solve), then resolves that
-/// rebuild each weight as `base_weight * huber(residual / scale)`. With no
-/// `robust` config the solve is byte-identical to the static path. The defaults
-/// match the core `RobustConfig::default()` (textbook `huber_k = 1.345`).
+/// variance weights (bit-identical to the non-robust solve), then resolves that
+/// rebuild each weight as `inverse_variance * huber(residual / scale)`, with a
+/// floored MAD scale. The loop settles when the position moves less than
+/// `outer_tol_m` and the selection holds (status `selection_settled`); a loop
+/// that returns to an earlier state without settling stops with
+/// `outer_oscillation`, and one that reaches `max_outer` solves with
+/// `outer_budget_exhausted`; neither has converged. With no `robust` config the
+/// solve is byte-identical to the static path. The defaults match the core
+/// `RobustConfig::default()` (textbook `huber_k = 1.345`; `max_outer = 100`, a
+/// safety cap rather than a working budget, so the reweighting runs to its
+/// settled fixed point).
 #[pyclass(module = "sidereon._sidereon", name = "SppRobustConfig")]
 #[derive(Clone, Copy, Default)]
 pub struct PySppRobustConfig {
@@ -286,7 +347,8 @@ impl PySppRobustConfig {
         self.inner.scale_floor_m
     }
 
-    /// Maximum total outer solves (the warm start plus reweighted resolves).
+    /// Maximum total outer solves (the warm start plus reweighted resolves), a
+    /// cap the reweighting reaches only when it does not settle.
     #[getter]
     fn max_outer(&self) -> usize {
         self.inner.max_outer
@@ -309,6 +371,120 @@ impl PySppRobustConfig {
     }
 }
 
+/// Which pseudorange an SPP or static solve reads, mirroring the core
+/// `PseudorangeCode`. The broadcast single-frequency group delay (GPS/QZSS
+/// TGD, Galileo BGD, BeiDou TGD1) applies to single-frequency code only, as
+/// RTKLIB `prange` applies it to `P1` and none under `IFLC`.
+#[pyclass(module = "sidereon._sidereon", name = "PseudorangeCode", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyPseudorangeCode {
+    /// A single-frequency code (L1 C/A, E1, B1I): the group delay applies.
+    SINGLE_FREQUENCY,
+    /// The ionosphere-free combination: no group delay applies.
+    IONOSPHERE_FREE,
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "QzssClock", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyQzssClock {
+    GPS,
+    SEPARATE,
+}
+
+impl From<PyQzssClock> for QzssClock {
+    fn from(value: PyQzssClock) -> Self {
+        match value {
+            PyQzssClock::GPS => Self::Gps,
+            PyQzssClock::SEPARATE => Self::Separate,
+        }
+    }
+}
+
+impl From<QzssClock> for PyQzssClock {
+    fn from(value: QzssClock) -> Self {
+        match value {
+            QzssClock::Gps => Self::GPS,
+            QzssClock::Separate => Self::SEPARATE,
+        }
+    }
+}
+
+#[pymethods]
+impl PyQzssClock {
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::GPS => "gps",
+            Self::SEPARATE => "separate",
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("QzssClock.{}", self.label().to_ascii_uppercase())
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "TroposphereModel", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyTroposphereModel {
+    RTKLIB,
+    SAASTAMOINEN_NIELL,
+}
+
+impl From<PyTroposphereModel> for TroposphereModel {
+    fn from(value: PyTroposphereModel) -> Self {
+        match value {
+            PyTroposphereModel::RTKLIB => Self::Rtklib,
+            PyTroposphereModel::SAASTAMOINEN_NIELL => Self::SaastamoinenNiell,
+        }
+    }
+}
+
+impl From<TroposphereModel> for PyTroposphereModel {
+    fn from(value: TroposphereModel) -> Self {
+        match value {
+            TroposphereModel::Rtklib => Self::RTKLIB,
+            TroposphereModel::SaastamoinenNiell => Self::SAASTAMOINEN_NIELL,
+        }
+    }
+}
+
+#[pymethods]
+impl PyTroposphereModel {
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::RTKLIB => "rtklib",
+            Self::SAASTAMOINEN_NIELL => "saastamoinen_niell",
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("TroposphereModel.{}", self.label().to_ascii_uppercase())
+    }
+}
+
+impl From<PyPseudorangeCode> for PseudorangeCode {
+    fn from(code: PyPseudorangeCode) -> Self {
+        match code {
+            PyPseudorangeCode::SINGLE_FREQUENCY => PseudorangeCode::SingleFrequency,
+            PyPseudorangeCode::IONOSPHERE_FREE => PseudorangeCode::IonosphereFree,
+        }
+    }
+}
+
+impl From<PseudorangeCode> for PyPseudorangeCode {
+    fn from(code: PseudorangeCode) -> Self {
+        match code {
+            PseudorangeCode::SingleFrequency => PyPseudorangeCode::SINGLE_FREQUENCY,
+            PseudorangeCode::IonosphereFree => PyPseudorangeCode::IONOSPHERE_FREE,
+        }
+    }
+}
+
 /// Complete typed input bundle for an SPP solve.
 #[pyclass(module = "sidereon._sidereon", name = "SppConfig")]
 pub struct PySppConfig {
@@ -323,6 +499,9 @@ pub struct PySppConfig {
     met: SurfaceMet,
     with_geodetic: bool,
     robust: Option<RobustConfig>,
+    pseudorange_code: PseudorangeCode,
+    qzss_clock: QzssClock,
+    troposphere_model: TroposphereModel,
 }
 
 #[pymethods]
@@ -341,6 +520,9 @@ impl PySppConfig {
         met=None,
         with_geodetic=true,
         robust=None,
+        pseudorange_code=PyPseudorangeCode::SINGLE_FREQUENCY,
+        qzss_clock=PyQzssClock::GPS,
+        troposphere_model=PyTroposphereModel::RTKLIB,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -356,6 +538,9 @@ impl PySppConfig {
         met: Option<Py<PySppSurfaceMet>>,
         with_geodetic: bool,
         robust: Option<Py<PySppRobustConfig>>,
+        pseudorange_code: PyPseudorangeCode,
+        qzss_clock: PyQzssClock,
+        troposphere_model: PyTroposphereModel,
     ) -> Self {
         let observations = observations
             .iter()
@@ -392,7 +577,27 @@ impl PySppConfig {
             met,
             with_geodetic,
             robust,
+            pseudorange_code: pseudorange_code.into(),
+            qzss_clock: qzss_clock.into(),
+            troposphere_model: troposphere_model.into(),
         }
+    }
+
+    /// Which pseudorange the observations carry; the broadcast group delay
+    /// applies to single-frequency code only.
+    #[getter]
+    fn pseudorange_code(&self) -> PyPseudorangeCode {
+        self.pseudorange_code.into()
+    }
+
+    #[getter]
+    fn qzss_clock(&self) -> PyQzssClock {
+        self.qzss_clock.into()
+    }
+
+    #[getter]
+    fn troposphere_model(&self) -> PyTroposphereModel {
+        self.troposphere_model.into()
     }
 
     /// Number of observations in this solve.
@@ -443,10 +648,12 @@ impl PySppConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "SppConfig(observations={}, t_rx_j2000_s={:.3}, with_geodetic={})",
+            "SppConfig(observations={}, t_rx_j2000_s={:.3}, with_geodetic={}, qzss_clock={}, troposphere_model={})",
             self.observations.len(),
             self.t_rx_j2000_s,
-            self.with_geodetic
+            self.with_geodetic,
+            PyQzssClock::from(self.qzss_clock).label(),
+            PyTroposphereModel::from(self.troposphere_model).label()
         )
     }
 }
@@ -471,7 +678,10 @@ impl PySppConfig {
             sbas_iono: None,
             glonass_channels: self.glonass_channels.clone(),
             met: self.met,
+            troposphere_model: self.troposphere_model,
             robust: self.robust,
+            pseudorange_code: self.pseudorange_code,
+            qzss_clock: self.qzss_clock,
         }
     }
 }
@@ -512,7 +722,9 @@ fn parse_satellite_token(token: &str) -> PyResult<GnssSatelliteId> {
         .map_err(|_| PyValueError::new_err(format!("invalid satellite token: {token}")))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rinex_spp_options(
+    py: Python<'_>,
     obs: &PyRinexObs,
     signal_policy: Option<&PySignalPolicy>,
     corrections: Option<&PySppCorrections>,
@@ -520,11 +732,13 @@ fn rinex_spp_options(
     satellites: Option<Vec<String>>,
     met: Option<&PySppSurfaceMet>,
     robust: Option<&PySppRobustConfig>,
+    qzss_clock: PyQzssClock,
+    troposphere_model: PyTroposphereModel,
 ) -> PyResult<RinexSppOptions> {
     let mut options = match signal_policy {
         Some(policy) => RinexSppOptions::new(policy.inner()),
         None => RinexSppOptions::default_for(obs.inner())
-            .map_err(|err| PyValueError::new_err(err.to_string()))?,
+            .map_err(|err| crate::spp_error_detail::rinex_spp_error(py, err))?,
     };
     if let Some(corrections) = corrections {
         options = options.with_corrections(corrections.inner);
@@ -545,6 +759,9 @@ fn rinex_spp_options(
     if let Some(robust) = robust {
         options = options.with_robust(Some(robust.inner()));
     }
+    options = options
+        .with_qzss_clock(qzss_clock.into())
+        .with_troposphere_model(troposphere_model.into());
     Ok(options)
 }
 
@@ -570,8 +787,12 @@ impl PyRinexSppOptions {
         satellites=None,
         met=None,
         robust=None,
+        qzss_clock=PyQzssClock::GPS,
+        troposphere_model=PyTroposphereModel::RTKLIB,
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python<'_>,
         obs: &PyRinexObs,
         signal_policy: Option<&PySignalPolicy>,
         corrections: Option<&PySppCorrections>,
@@ -579,9 +800,12 @@ impl PyRinexSppOptions {
         satellites: Option<Vec<String>>,
         met: Option<&PySppSurfaceMet>,
         robust: Option<&PySppRobustConfig>,
+        qzss_clock: PyQzssClock,
+        troposphere_model: PyTroposphereModel,
     ) -> PyResult<Self> {
         Ok(Self {
             inner: rinex_spp_options(
+                py,
                 obs,
                 signal_policy,
                 corrections,
@@ -589,15 +813,29 @@ impl PyRinexSppOptions {
                 satellites,
                 met,
                 robust,
+                qzss_clock,
+                troposphere_model,
             )?,
         })
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "RinexSppOptions(satellites={})",
-            self.inner.satellites.as_ref().map_or(0, BTreeSet::len)
+            "RinexSppOptions(satellites={}, qzss_clock={:?}, troposphere_model={:?})",
+            self.inner.satellites.as_ref().map_or(0, BTreeSet::len),
+            self.inner.qzss_clock,
+            self.inner.troposphere_model
         )
+    }
+
+    #[getter]
+    fn qzss_clock(&self) -> PyQzssClock {
+        self.inner.qzss_clock.into()
+    }
+
+    #[getter]
+    fn troposphere_model(&self) -> PyTroposphereModel {
+        self.inner.troposphere_model.into()
     }
 }
 
@@ -681,6 +919,23 @@ impl PyRinexSppEpochInputs {
     }
 
     #[getter]
+    fn qzss_clock(&self) -> PyQzssClock {
+        self.inner.inputs.qzss_clock.into()
+    }
+
+    #[getter]
+    fn troposphere_model(&self) -> PyTroposphereModel {
+        self.inner.inputs.troposphere_model.into()
+    }
+
+    #[getter]
+    fn exact_receive_epoch(&self) -> Option<PyExactEpoch> {
+        self.inner.exact_solve_inputs().map(|inputs| PyExactEpoch {
+            inner: inputs.receive_epoch,
+        })
+    }
+
+    #[getter]
     fn initial_guess(&self) -> [f64; 4] {
         self.inner.inputs.initial_guess
     }
@@ -741,6 +996,20 @@ impl PyRinexSppEpochSolution {
     #[getter]
     fn error(&self) -> Option<String> {
         self.inner.solution.as_ref().err().map(ToString::to_string)
+    }
+
+    /// Owned typed detail for a failed solve, or `None` after a successful solve.
+    #[getter]
+    fn error_detail(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
+        self.inner
+            .solution
+            .as_ref()
+            .err()
+            .map(|error| {
+                crate::spp_error_detail::policy_detail(py, error, Some(self.inner.epoch_index), "")
+                    .map(Bound::unbind)
+            })
+            .transpose()
     }
 
     fn __repr__(&self) -> String {
@@ -852,6 +1121,44 @@ impl PySppSolution {
         self.inner.residuals_m.clone()
     }
 
+    /// The pseudorange error variance of each used satellite, square metres,
+    /// index-aligned to `used_sats`: the RTKLIB `rescode` variance the solve
+    /// weighted the satellite by (ephemeris, code-bias, ionosphere, troposphere
+    /// and code-error terms), taken at the selection the solution reports.
+    /// Residual chi-square fault detection standardizes `residuals_m` by these,
+    /// as RTKLIB `valsol` forms `sum (v / sigma)^2`.
+    #[getter]
+    fn pseudorange_variances_m2(&self) -> Vec<f64> {
+        self.inner.pseudorange_variances_m2.clone()
+    }
+
+    /// The weight each used satellite carried in the reported solve, inverse
+    /// square metres, index-aligned to `used_sats`: `1 /
+    /// pseudorange_variances_m2` on the least-squares path, and that inverse
+    /// variance times the final Huber factor on the robust path.
+    /// `position_covariance_ecef_m2` is `(H^T W H)^-1` with these weights.
+    #[getter]
+    fn weights(&self) -> Vec<f64> {
+        self.inner.weights.clone()
+    }
+
+    /// Satellites excluded from the solve as `(satellite, reason)` rows, the
+    /// reason being the core `RejectionReason` variant name: `NoEphemeris`,
+    /// `SsrCorrectionExceedsLimit`, `LowElevation`, `SbasWithdrawn`, `SbasIonoUncovered` or
+    /// `IonosphereCarrierUnresolved`. An ionosphere-corrected solve excludes a
+    /// satellite it has no carrier frequency for (a GLONASS satellite with no
+    /// channel, or one outside `-7..=6`) with the last reason and solves the
+    /// rest of the epoch.
+    #[getter]
+    fn rejected_sats(&self) -> Vec<(String, &'static str)> {
+        rejected_rows(&self.inner.rejected_sats)
+    }
+
+    #[getter]
+    fn rejected_sats_with_details(&self) -> Vec<PyRejectedSatelliteRow> {
+        rejected_rows_with_details(&self.inner.rejected_sats)
+    }
+
     /// Absolute per-constellation receiver clock as `(system, clock_s)` pairs,
     /// one entry per GNSS in the solve in ascending system order. The first
     /// entry's value equals `rx_clock_s` (the reference clock); an inter-system
@@ -892,6 +1199,31 @@ impl PySppSolution {
         self.inner.geometry_quality.into()
     }
 
+    /// How the whole solve ended: `selection_settled` for a solve whose last
+    /// least-squares step at a held selection fell below 1e-4 m (or a robust
+    /// solve whose position and selection settled), `outer_budget_exhausted`
+    /// for a robust solve whose reweighting budget ran out first,
+    /// `outer_oscillation` for a robust reweighting that returned to an earlier
+    /// state without settling. A robust solve whose last trust-region solve
+    /// spent its evaluations reports that solve's own status.
+    #[getter]
+    fn status(&self) -> &'static str {
+        crate::static_positioning::status_label(self.inner.metadata.status)
+    }
+
+    /// Whether the whole solve converged.
+    #[getter]
+    fn converged(&self) -> bool {
+        self.inner.metadata.converged
+    }
+
+    /// Trust-region iterations of every solve plus one per least-squares
+    /// step.
+    #[getter]
+    fn iterations(&self) -> usize {
+        self.inner.metadata.iterations
+    }
+
     /// Solution degrees of freedom, `used_count - (3 + systems)`.
     #[getter]
     fn redundancy(&self) -> isize {
@@ -902,6 +1234,16 @@ impl PySppSolution {
     #[getter]
     fn raim_checkable(&self) -> bool {
         self.inner.metadata.raim_checkable
+    }
+
+    /// The UT1 departure a permissive UT1 policy accepted, `before_coverage`
+    /// or `after_coverage`; `None` when every UT1 read was inside the table.
+    #[getter]
+    fn ut1_degraded(&self) -> Option<&'static str> {
+        self.inner
+            .metadata
+            .ut1_degraded
+            .map(crate::degrade_reason_label)
     }
 
     fn __repr__(&self) -> String {
@@ -933,6 +1275,7 @@ fn spp_residual_rms_m(residuals_m: Vec<f64>) -> f64 {
 #[pyfunction]
 #[pyo3(signature = (sp3, config, *, max_pdop=None, coarse_search_seeds=None))]
 fn solve_spp(
+    py: Python<'_>,
     sp3: &PySp3,
     config: &PySppConfig,
     max_pdop: Option<f64>,
@@ -941,7 +1284,34 @@ fn solve_spp(
     let inputs = config.to_inputs();
     let policy = build_policy(max_pdop, coarse_search_seeds)?;
     let inner = sidereon::solve_spp(&sp3.inner, &inputs, config.with_geodetic, policy)
-        .map_err(to_solve_err)?;
+        .map_err(|err| crate::spp_error_detail::facade_spp_error(py, err, "", None))?;
+    Ok(PySppSolution { inner })
+}
+
+#[pyfunction]
+#[pyo3(signature = (sp3, config, receive_epoch, *, max_pdop=None, coarse_search_seeds=None))]
+fn solve_spp_exact(
+    py: Python<'_>,
+    sp3: &PySp3,
+    config: &PySppConfig,
+    receive_epoch: &PyExactEpoch,
+    max_pdop: Option<f64>,
+    coarse_search_seeds: Option<usize>,
+) -> PyResult<PySppSolution> {
+    let exact_inputs = ExactSolveInputs {
+        inputs: config.to_inputs(),
+        receive_epoch: receive_epoch.inner,
+    };
+    let policy = build_policy(max_pdop, coarse_search_seeds)?;
+    let inner = sidereon_core::positioning::solve_with_exact_epoch_and_policy(
+        &sp3.inner,
+        &exact_inputs,
+        config.with_geodetic,
+        policy,
+    )
+    .map_err(|err| {
+        crate::spp_error_detail::facade_spp_error(py, sidereon::Error::Spp(err), "", None)
+    })?;
     Ok(PySppSolution { inner })
 }
 
@@ -990,19 +1360,87 @@ fn solve_spp_batch(
         .map(|(idx, result)| {
             result
                 .map(|inner| PySppSolution { inner })
-                .map_err(|e| SolveError::new_err(format!("epoch {idx}: {e}")))
+                .map_err(|error| {
+                    crate::spp_error_detail::facade_spp_error(
+                        py,
+                        error,
+                        &format!("epoch {idx}: "),
+                        Some(idx),
+                    )
+                })
+        })
+        .collect()
+}
+
+#[pyfunction]
+#[pyo3(signature = (sp3, configs, receive_epochs, *, max_pdop=None, coarse_search_seeds=None))]
+fn solve_spp_batch_exact(
+    py: Python<'_>,
+    sp3: &PySp3,
+    configs: Vec<PyRef<'_, PySppConfig>>,
+    receive_epochs: Vec<PyRef<'_, PyExactEpoch>>,
+    max_pdop: Option<f64>,
+    coarse_search_seeds: Option<usize>,
+) -> PyResult<Vec<PySppSolution>> {
+    if configs.len() != receive_epochs.len() {
+        return Err(PyValueError::new_err(
+            "configs and receive_epochs must have equal lengths",
+        ));
+    }
+    let with_geodetic = configs
+        .first()
+        .map(|config| config.with_geodetic)
+        .unwrap_or(false);
+    let exact_inputs: Vec<ExactSolveInputs> = configs
+        .iter()
+        .zip(receive_epochs.iter())
+        .map(|(config, epoch)| ExactSolveInputs {
+            inputs: config.to_inputs(),
+            receive_epoch: epoch.inner,
+        })
+        .collect();
+    let policy = build_policy(max_pdop, coarse_search_seeds)?;
+    let ephemeris = &sp3.inner;
+    let results = py.allow_threads(move || {
+        exact_inputs
+            .iter()
+            .map(|inputs| {
+                sidereon_core::positioning::solve_with_exact_epoch_and_policy(
+                    ephemeris,
+                    inputs,
+                    with_geodetic,
+                    policy,
+                )
+            })
+            .collect::<Vec<_>>()
+    });
+    results
+        .into_iter()
+        .enumerate()
+        .map(|(epoch_index, result)| {
+            result
+                .map(|inner| PySppSolution { inner })
+                .map_err(|error| {
+                    crate::spp_error_detail::facade_spp_error(
+                        py,
+                        sidereon::Error::Spp(error),
+                        &format!("epoch {epoch_index}: "),
+                        Some(epoch_index),
+                    )
+                })
         })
         .collect()
 }
 
 fn default_or_supplied_rinex_options(
+    py: Python<'_>,
     obs: &PyRinexObs,
     options: Option<&PyRinexSppOptions>,
 ) -> PyResult<RinexSppOptions> {
     match options {
         Some(options) => Ok(options.inner()),
         None => RinexSppOptions::default_for(obs.inner())
-            .map_err(|err| PyValueError::new_err(err.to_string())),
+            .map_err(|err| crate::spp_error_detail::rinex_spp_error(py, err)),
     }
 }
 
@@ -1031,24 +1469,25 @@ fn with_source<T>(
 #[pyfunction]
 #[pyo3(signature = (source, obs, options=None, *, broadcast_context=None))]
 fn spp_inputs_from_rinex_obs(
+    py: Python<'_>,
     source: &Bound<'_, PyAny>,
     obs: &PyRinexObs,
     options: Option<&PyRinexSppOptions>,
     broadcast_context: Option<&PyBroadcastEphemeris>,
 ) -> PyResult<Vec<PyRinexSppEpochInputs>> {
-    let options = default_or_supplied_rinex_options(obs, options)?;
+    let options = default_or_supplied_rinex_options(py, obs, options)?;
     with_source(
         source,
         broadcast_context,
         |source| {
             sidereon_core::positioning::spp_inputs_from_rinex_obs(obs.inner(), source, &options)
                 .map(|epochs| epochs.into_iter().map(Into::into).collect())
-                .map_err(|err| PyValueError::new_err(err.to_string()))
+                .map_err(|err| crate::spp_error_detail::rinex_spp_error(py, err))
         },
         |source| {
             sidereon_core::positioning::spp_inputs_from_rinex_obs(obs.inner(), source, &options)
                 .map(|epochs| epochs.into_iter().map(Into::into).collect())
-                .map_err(|err| PyValueError::new_err(err.to_string()))
+                .map_err(|err| crate::spp_error_detail::rinex_spp_error(py, err))
         },
     )
 }
@@ -1067,6 +1506,7 @@ fn spp_inputs_from_rinex_obs(
 ))]
 #[allow(clippy::too_many_arguments)]
 fn solve_spp_from_rinex_obs(
+    py: Python<'_>,
     source: &Bound<'_, PyAny>,
     obs: &PyRinexObs,
     options: Option<&PyRinexSppOptions>,
@@ -1075,13 +1515,13 @@ fn solve_spp_from_rinex_obs(
     coarse_search_seeds: Option<usize>,
     broadcast_context: Option<&PyBroadcastEphemeris>,
 ) -> PyResult<Vec<PyRinexSppEpochSolution>> {
-    let options = default_or_supplied_rinex_options(obs, options)?;
+    let options = default_or_supplied_rinex_options(py, obs, options)?;
     let policy = build_policy(max_pdop, coarse_search_seeds)?;
     with_source(
         source,
         broadcast_context,
         |source| {
-            sidereon_core::positioning::solve_spp_from_rinex_obs(
+            sidereon_core::positioning::solve_spp_from_rinex_obs_exact_with_policy(
                 source,
                 obs.inner(),
                 &options,
@@ -1089,10 +1529,10 @@ fn solve_spp_from_rinex_obs(
                 policy,
             )
             .map(|epochs| epochs.into_iter().map(Into::into).collect())
-            .map_err(|err| PyValueError::new_err(err.to_string()))
+            .map_err(|err| crate::spp_error_detail::rinex_spp_error(py, err))
         },
         |source| {
-            sidereon_core::positioning::solve_spp_from_rinex_obs(
+            sidereon_core::positioning::solve_spp_from_rinex_obs_exact_with_policy(
                 source,
                 obs.inner(),
                 &options,
@@ -1100,19 +1540,24 @@ fn solve_spp_from_rinex_obs(
                 policy,
             )
             .map(|epochs| epochs.into_iter().map(Into::into).collect())
-            .map_err(|err| PyValueError::new_err(err.to_string()))
+            .map_err(|err| crate::spp_error_detail::rinex_spp_error(py, err))
         },
     )
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySppSolution>()?;
+    m.add_class::<PyPseudorangeCode>()?;
+    m.add_class::<PyQzssClock>()?;
+    m.add_class::<PyTroposphereModel>()?;
     m.add_class::<PyRinexSppOptions>()?;
     m.add_class::<PyRinexSppEpochInputs>()?;
     m.add_class::<PyRinexSppEpochSolution>()?;
     m.add_function(wrap_pyfunction!(spp_residual_rms_m, m)?)?;
     m.add_function(wrap_pyfunction!(solve_spp, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_spp_exact, m)?)?;
     m.add_function(wrap_pyfunction!(solve_spp_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_spp_batch_exact, m)?)?;
     m.add_function(wrap_pyfunction!(spp_inputs_from_rinex_obs, m)?)?;
     m.add_function(wrap_pyfunction!(solve_spp_from_rinex_obs, m)?)?;
     m.add_class::<PySppObservation>()?;

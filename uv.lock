@@ -847,7 +847,7 @@ wheels = [
 
 [[package]]
 name = "sidereon"
-version = "2.1.1"
+version = "3.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

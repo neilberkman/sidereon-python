@@ -9,14 +9,42 @@
 
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use pyo3::types::PyModule;
 
 use sidereon_core::astro::iod::{
-    gauss_angles as core_gauss, gibbs as core_gibbs, hgibbs as core_hgibbs,
+    gauss_angles as core_gauss, gibbs as core_gibbs, hgibbs as core_hgibbs, IodError,
 };
 
 use crate::marshal::{fixed_array, matrix3_from_array, ArrayPairF64, FinitePolicy};
-use crate::{np_array, to_solve_err};
+use crate::{np_array, SolveError};
+
+fn iod_error(py: Python<'_>, error: IodError) -> PyErr {
+    let message = error.to_string();
+    let detail = PyDict::new(py);
+    let kind = match error {
+        IodError::DeterminantTooSmall => "determinant_too_small",
+        IodError::OrbitNotPossible => "orbit_not_possible",
+        IodError::ZeroVector => "zero_vector",
+        IodError::CollinearVectors => "collinear_vectors",
+        IodError::NotCoplanar => "not_coplanar",
+        IodError::InvalidTimeGeometry => "invalid_time_geometry",
+        IodError::NoPositiveRoot => "no_positive_root",
+        IodError::RootSolveFailed => "root_solve_failed",
+        IodError::NonFiniteValue => "non_finite_value",
+    };
+    if let Err(error) = detail.set_item("family", "IodError") {
+        return error;
+    }
+    if let Err(error) = detail.set_item("kind", kind) {
+        return error;
+    }
+    let python_error = SolveError::new_err(message);
+    if let Err(error) = python_error.value(py).setattr("detail", detail) {
+        return error;
+    }
+    python_error
+}
 
 /// Gibbs three-position velocity solve.
 ///
@@ -36,7 +64,7 @@ fn gibbs<'py>(
     let r1 = fixed_array::<3>("r1", &r1, FinitePolicy::RequireFinite)?;
     let r2 = fixed_array::<3>("r2", &r2, FinitePolicy::RequireFinite)?;
     let r3 = fixed_array::<3>("r3", &r3, FinitePolicy::RequireFinite)?;
-    let (v2, theta12, theta23, copa) = core_gibbs(&r1, &r2, &r3).map_err(to_solve_err)?;
+    let (v2, theta12, theta23, copa) = core_gibbs(&r1, &r2, &r3).map_err(|e| iod_error(py, e))?;
     Ok((np_array(py, &v2), theta12, theta23, copa))
 }
 
@@ -64,7 +92,7 @@ fn hgibbs<'py>(
     let r2 = fixed_array::<3>("r2", &r2, FinitePolicy::RequireFinite)?;
     let r3 = fixed_array::<3>("r3", &r3, FinitePolicy::RequireFinite)?;
     let (v2, theta12, theta23, copa) =
-        core_hgibbs(&r1, &r2, &r3, jd1, jd2, jd3).map_err(to_solve_err)?;
+        core_hgibbs(&r1, &r2, &r3, jd1, jd2, jd3).map_err(|e| iod_error(py, e))?;
     Ok((np_array(py, &v2), theta12, theta23, copa))
 }
 
@@ -93,7 +121,7 @@ fn gauss_angles<'py>(
     let jd = fixed_array::<3>("jd", &jd, FinitePolicy::RequireFinite)?;
     let jdf = fixed_array::<3>("jdf", &jdf, FinitePolicy::RequireFinite)?;
     let rseci = matrix3_from_array(&rseci, "rseci", FinitePolicy::RequireFinite)?;
-    let (r2, v2) = core_gauss(&decl, &rtasc, &jd, &jdf, &rseci).map_err(to_solve_err)?;
+    let (r2, v2) = core_gauss(&decl, &rtasc, &jd, &jdf, &rseci).map_err(|e| iod_error(py, e))?;
     Ok((np_array(py, &r2), np_array(py, &v2)))
 }
 

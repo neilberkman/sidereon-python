@@ -11,12 +11,13 @@ use numpy::ndarray::Array2;
 use numpy::{PyArray1, PyArray2, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyByteArray, PyBytes, PyModule};
+use pyo3::types::{PyAny, PyByteArray, PyBytes, PyDict, PyModule};
 
 use sidereon_core::fusion::{
     smooth_fusion_rts as core_smooth_fusion_rts,
     velocity_match_outage as core_velocity_match_outage, EkfCorrectionReport, EkfUpdateOptions,
-    ErrorStateLayout, FusionFilterKind, FusionRtsEpoch, FusionRtsHistory, FusionRtsHistoryBuilder,
+    ErrorStateLayout, FusionError as CoreFusionError, FusionFilterKind, FusionRtsEpoch,
+    FusionRtsHistory, FusionRtsHistoryBuilder, FusionStateCodecError as CoreFusionStateCodecError,
     FusionUpdate, GnssFixMeasurement, GnssFixStatus, GnssFixStatusWeighting,
     IggIiiMeasurementReweighting, InertialFilter, InertialFilterConfig, InertialFilterSnapshot,
     InnovationGate, InnovationGateReport, InsFilterState, LooseCouplingConfig,
@@ -29,7 +30,21 @@ use sidereon_core::fusion::{
     YangPredictionAdaptiveFactor,
 };
 use sidereon_core::inertial::{
-    ImuGrade, ImuSample, ImuSampleKind, ImuSpec, MechanizationConfig, NavState,
+    attitude_yaw_pitch_roll_rad as core_attitude_yaw_pitch_roll_rad,
+    dcm_to_quaternion as core_dcm_to_quaternion,
+    gauss_markov_bias_decay as core_gauss_markov_bias_decay,
+    gauss_markov_bias_variance_increment as core_gauss_markov_bias_variance_increment,
+    gravity_ecef_mps2 as core_gravity_ecef_mps2, mechanize_ecef as core_mechanize_ecef,
+    normal_gravity_mps2 as core_normal_gravity_mps2, quaternion_to_dcm as core_quaternion_to_dcm,
+    reorthonormalize_dcm as core_reorthonormalize_dcm,
+    rodrigues_delta_dcm as core_rodrigues_delta_dcm,
+    simulate_imu_samples as core_simulate_imu_samples,
+    simulate_imu_samples_from_increments as core_simulate_imu_samples_from_increments,
+    true_imu_increment_between as core_true_imu_increment_between, AttitudeQuaternion,
+    ConingCorrection, CorrectedImuIncrement, ImuBias, ImuCalibration, ImuErrorModel, ImuGrade,
+    ImuRateRandomWalk, ImuSample, ImuSampleKind, ImuSimulationOptions, ImuSimulationOutput,
+    ImuSimulator, ImuSpec, InertialError as CoreInertialError, MechanizationConfig, NavState,
+    StrapdownMechanizer,
 };
 use sidereon_core::GnssSatelliteId;
 
@@ -37,8 +52,148 @@ use crate::ephemeris::with_observable_source;
 use crate::marshal::{mat3_to_array, matrix3_from_array, FinitePolicy};
 use crate::np_array;
 
-fn fusion_err(err: impl std::fmt::Display) -> PyErr {
-    PyValueError::new_err(err.to_string())
+trait FusionBindingError: std::fmt::Display {
+    fn family(&self) -> &'static str;
+    fn kind(&self) -> &'static str;
+    fn add_detail_fields(&self, detail: &Bound<'_, PyDict>) -> PyResult<()>;
+}
+
+impl FusionBindingError for CoreFusionError {
+    fn family(&self) -> &'static str {
+        "fusion"
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::InvalidInput { .. } => "invalid_input",
+            Self::DimensionMismatch { .. } => "dimension_mismatch",
+            Self::SingularInnovation => "singular_innovation",
+            Self::NonPositiveSemidefinite { .. } => "non_positive_semidefinite",
+            Self::NonPositiveDefinite { .. } => "non_positive_definite",
+            Self::NominalState => "nominal_state",
+            Self::Ut1OutsideCoverage(_) => "ut1_outside_coverage",
+        }
+    }
+
+    fn add_detail_fields(&self, detail: &Bound<'_, PyDict>) -> PyResult<()> {
+        match self {
+            Self::InvalidInput { field, reason } => {
+                detail.set_item("field", field)?;
+                detail.set_item("reason", reason)?;
+            }
+            Self::DimensionMismatch {
+                field,
+                expected,
+                actual,
+            } => {
+                detail.set_item("field", field)?;
+                detail.set_item("expected", *expected)?;
+                detail.set_item("actual", *actual)?;
+            }
+            Self::NonPositiveSemidefinite { field } | Self::NonPositiveDefinite { field } => {
+                detail.set_item("field", field)?;
+            }
+            Self::Ut1OutsideCoverage(reason) => {
+                let reason_kind = match reason {
+                    sidereon_core::astro::time::DegradeReason::BeforeCoverage => "before_coverage",
+                    sidereon_core::astro::time::DegradeReason::AfterCoverage => "after_coverage",
+                };
+                detail.set_item("reason", reason.to_string())?;
+                detail.set_item("reason_kind", reason_kind)?;
+            }
+            Self::SingularInnovation | Self::NominalState => {}
+        }
+        Ok(())
+    }
+}
+
+impl FusionBindingError for CoreFusionStateCodecError {
+    fn family(&self) -> &'static str {
+        "fusion_state_codec"
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::InvalidMagic => "invalid_magic",
+            Self::UnsupportedVersion { .. } => "unsupported_version",
+            Self::Truncated { .. } => "truncated",
+            Self::Checksum { .. } => "checksum",
+            Self::TrailingBytes { .. } => "trailing_bytes",
+            Self::InvalidState { .. } => "invalid_state",
+            Self::Json { .. } => "json",
+        }
+    }
+
+    fn add_detail_fields(&self, detail: &Bound<'_, PyDict>) -> PyResult<()> {
+        match self {
+            Self::InvalidMagic => {}
+            Self::UnsupportedVersion { version } => detail.set_item("version", *version)?,
+            Self::Truncated {
+                offset,
+                needed,
+                actual,
+            } => {
+                detail.set_item("offset", *offset)?;
+                detail.set_item("needed", *needed)?;
+                detail.set_item("actual", *actual)?;
+            }
+            Self::Checksum { expected, found } => {
+                detail.set_item("expected", *expected)?;
+                detail.set_item("found", *found)?;
+            }
+            Self::TrailingBytes { remaining } => detail.set_item("remaining", *remaining)?,
+            Self::InvalidState { reason } => detail.set_item("reason", reason)?,
+            Self::Json { message } => detail.set_item("message", message)?,
+        }
+        Ok(())
+    }
+}
+
+fn fusion_err(err: impl FusionBindingError) -> PyErr {
+    Python::with_gil(|py| {
+        let py_error = PyValueError::new_err(err.to_string());
+        let detail = PyDict::new(py);
+        let result = detail
+            .set_item("family", err.family())
+            .and_then(|()| detail.set_item("kind", err.kind()))
+            .and_then(|()| err.add_detail_fields(&detail));
+        if let Err(error) = result {
+            return error;
+        }
+        if let Err(error) = py_error.value(py).setattr("detail", detail) {
+            return error;
+        }
+        py_error
+    })
+}
+
+fn inertial_err(py: Python<'_>, err: CoreInertialError) -> PyErr {
+    let (kind, field, reason) = match err {
+        CoreInertialError::InvalidInput { field, reason } => {
+            ("invalid_input", Some(field), Some(reason))
+        }
+        CoreInertialError::NonMonotonicSample => ("non_monotonic_sample", None, None),
+        CoreInertialError::SingularCalibration => ("singular_calibration", None, None),
+        CoreInertialError::DegenerateAttitude => ("degenerate_attitude", None, None),
+    };
+    let error_type = match crate::inertial_error_type(py) {
+        Ok(error_type) => error_type,
+        Err(error) => return error,
+    };
+    let exception = PyErr::from_type(error_type, err.to_string());
+    let details = PyDict::new(py);
+    if let Some(field) = field {
+        let _ = details.set_item("field", field);
+    }
+    if let Some(reason) = reason {
+        let _ = details.set_item("reason", reason);
+    }
+    let value = exception.value(py);
+    let _ = value.setattr("kind", kind);
+    let _ = value.setattr("field", field);
+    let _ = value.setattr("reason", reason);
+    let _ = value.setattr("details", details);
+    exception
 }
 
 fn parse_satellite_id(token: &str) -> PyResult<GnssSatelliteId> {
@@ -151,6 +306,48 @@ impl PyImuGrade {
     }
 }
 
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "ImuSimulationOutput",
+    eq,
+    eq_int
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyImuSimulationOutput {
+    RATE,
+    INCREMENT,
+}
+
+impl From<PyImuSimulationOutput> for ImuSimulationOutput {
+    fn from(value: PyImuSimulationOutput) -> Self {
+        match value {
+            PyImuSimulationOutput::RATE => Self::Rate,
+            PyImuSimulationOutput::INCREMENT => Self::Increment,
+        }
+    }
+}
+
+impl From<ImuSimulationOutput> for PyImuSimulationOutput {
+    fn from(value: ImuSimulationOutput) -> Self {
+        match value {
+            ImuSimulationOutput::Rate => Self::RATE,
+            ImuSimulationOutput::Increment => Self::INCREMENT,
+        }
+    }
+}
+
+#[pymethods]
+impl PyImuSimulationOutput {
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::RATE => "rate",
+            Self::INCREMENT => "increment",
+        }
+    }
+}
+
 /// Datasheet-level IMU stochastic parameters.
 #[pyclass(module = "sidereon._sidereon", name = "ImuSpec")]
 #[derive(Clone, Copy)]
@@ -180,6 +377,7 @@ impl PyImuSpec {
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python<'_>,
         accel_vrw_mps_sqrt_s: f64,
         gyro_arw_rad_sqrt_s: f64,
         accel_bias_instab_mps2: f64,
@@ -199,7 +397,7 @@ impl PyImuSpec {
             accel_scale_instab_ppm,
             gyro_scale_instab_ppm,
         );
-        inner.validate().map_err(fusion_err)?;
+        inner.validate().map_err(|error| inertial_err(py, error))?;
         Ok(Self { inner })
     }
 
@@ -283,11 +481,136 @@ impl PyImuSpec {
         self.inner.gyro_scale_instab_ppm
     }
 
+    fn accel_bias_decay(&self, py: Python<'_>, dt_s: f64) -> PyResult<f64> {
+        self.inner
+            .accel_bias_decay(dt_s)
+            .map_err(|error| inertial_err(py, error))
+    }
+
+    fn gyro_bias_decay(&self, py: Python<'_>, dt_s: f64) -> PyResult<f64> {
+        self.inner
+            .gyro_bias_decay(dt_s)
+            .map_err(|error| inertial_err(py, error))
+    }
+
+    fn accel_bias_variance_increment(&self, py: Python<'_>, dt_s: f64) -> PyResult<f64> {
+        self.inner
+            .accel_bias_variance_increment(dt_s)
+            .map_err(|error| inertial_err(py, error))
+    }
+
+    fn gyro_bias_variance_increment(&self, py: Python<'_>, dt_s: f64) -> PyResult<f64> {
+        self.inner
+            .gyro_bias_variance_increment(dt_s)
+            .map_err(|error| inertial_err(py, error))
+    }
+
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        self.inner
+            .validate()
+            .map_err(|error| inertial_err(py, error))
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "ImuSpec(accel_vrw_mps_sqrt_s={}, gyro_arw_rad_sqrt_s={})",
             self.inner.accel_vrw_mps_sqrt_s, self.inner.gyro_arw_rad_sqrt_s
         )
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "ConingCorrection", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyConingCorrection {
+    OFF,
+}
+
+impl From<PyConingCorrection> for ConingCorrection {
+    fn from(value: PyConingCorrection) -> Self {
+        match value {
+            PyConingCorrection::OFF => Self::Off,
+        }
+    }
+}
+
+impl From<ConingCorrection> for PyConingCorrection {
+    fn from(value: ConingCorrection) -> Self {
+        match value {
+            ConingCorrection::Off => Self::OFF,
+        }
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "AttitudeQuaternion")]
+#[derive(Clone, Copy)]
+pub struct PyAttitudeQuaternion {
+    inner: AttitudeQuaternion,
+}
+
+#[pymethods]
+impl PyAttitudeQuaternion {
+    #[new]
+    fn new(py: Python<'_>, w: f64, x: f64, y: f64, z: f64) -> PyResult<Self> {
+        AttitudeQuaternion::new(w, x, y, z)
+            .map(|inner| Self { inner })
+            .map_err(|error| inertial_err(py, error))
+    }
+
+    #[getter]
+    fn components(&self) -> (f64, f64, f64, f64) {
+        (self.inner.w, self.inner.x, self.inner.y, self.inner.z)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "ImuErrorModel")]
+#[derive(Clone, Copy)]
+pub struct PyImuErrorModel {
+    inner: ImuErrorModel,
+}
+
+#[pymethods]
+impl PyImuErrorModel {
+    #[new]
+    #[pyo3(signature = (bias=None, calibration=None))]
+    fn new(bias: Option<&PyImuBias>, calibration: Option<&PyImuCalibration>) -> Self {
+        Self {
+            inner: ImuErrorModel {
+                bias: bias.map_or_else(ImuBias::default, PyImuBias::inner),
+                calibration: calibration
+                    .map_or_else(ImuCalibration::default, PyImuCalibration::inner),
+            },
+        }
+    }
+
+    fn correct_sample(
+        &self,
+        py: Python<'_>,
+        sample: &PyImuSample,
+        previous_t_j2000_s: f64,
+    ) -> PyResult<PyCorrectedImuIncrement> {
+        self.inner
+            .correct_sample(&sample.inner(), previous_t_j2000_s)
+            .map(|inner| PyCorrectedImuIncrement { inner })
+            .map_err(|error| inertial_err(py, error))
+    }
+
+    #[getter]
+    fn bias(&self) -> PyImuBias {
+        PyImuBias {
+            inner: self.inner.bias,
+        }
+    }
+
+    #[getter]
+    fn calibration(&self) -> PyImuCalibration {
+        PyImuCalibration {
+            inner: self.inner.calibration,
+        }
     }
 }
 
@@ -316,8 +639,8 @@ impl PyMechanizationConfig {
 
     /// Coning correction mode label.
     #[getter]
-    fn coning_correction(&self) -> &'static str {
-        "off"
+    fn coning_correction(&self) -> PyConingCorrection {
+        self.inner.coning_correction.into()
     }
 
     fn __repr__(&self) -> &'static str {
@@ -460,6 +783,7 @@ impl PyNavState {
         gyro_bias_rps=[0.0; 3],
     ))]
     fn new(
+        py: Python<'_>,
         t_j2000_s: f64,
         position_ecef_m: [f64; 3],
         velocity_ecef_mps: [f64; 3],
@@ -477,16 +801,27 @@ impl PyNavState {
         };
         let inner = NavState::new(t_j2000_s, position_ecef_m, velocity_ecef_mps, attitude)
             .and_then(|state| state.with_biases(accel_bias_mps2, gyro_bias_rps))
-            .map_err(fusion_err)?;
+            .map_err(|error| inertial_err(py, error))?;
         Ok(Self { inner })
     }
 
     /// Return a copy of this state with closed-loop IMU bias estimates.
-    fn with_biases(&self, accel_bias_mps2: [f64; 3], gyro_bias_rps: [f64; 3]) -> PyResult<Self> {
+    fn with_biases(
+        &self,
+        py: Python<'_>,
+        accel_bias_mps2: [f64; 3],
+        gyro_bias_rps: [f64; 3],
+    ) -> PyResult<Self> {
         self.inner
             .with_biases(accel_bias_mps2, gyro_bias_rps)
             .map(Self::from)
-            .map_err(fusion_err)
+            .map_err(|error| inertial_err(py, error))
+    }
+
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        self.inner
+            .validate()
+            .map_err(|error| inertial_err(py, error))
     }
 
     /// State time in seconds since J2000.
@@ -525,6 +860,21 @@ impl PyNavState {
         np_array(py, &self.inner.gyro_bias_rps)
     }
 
+    #[getter]
+    fn attitude_yaw_pitch_roll_rad(&self) -> (f64, f64, f64) {
+        let [yaw, pitch, roll] = self.inner.attitude_yaw_pitch_roll_rad();
+        (yaw, pitch, roll)
+    }
+
+    #[getter]
+    fn attitude_quaternion_body_to_ecef(&self, py: Python<'_>) -> PyResult<(f64, f64, f64, f64)> {
+        let quaternion = self
+            .inner
+            .attitude_quaternion_body_to_ecef()
+            .map_err(|error| inertial_err(py, error))?;
+        Ok((quaternion.w, quaternion.x, quaternion.y, quaternion.z))
+    }
+
     fn __repr__(&self) -> String {
         format!("NavState(t_j2000_s={})", self.inner.t_j2000_s)
     }
@@ -541,6 +891,604 @@ impl PyImuSample {
     fn inner(&self) -> ImuSample {
         self.inner
     }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "CorrectedImuIncrement")]
+#[derive(Clone, Copy)]
+pub struct PyCorrectedImuIncrement {
+    inner: CorrectedImuIncrement,
+}
+
+impl PyCorrectedImuIncrement {
+    fn inner(&self) -> CorrectedImuIncrement {
+        self.inner
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "ImuBias")]
+#[derive(Clone, Copy)]
+pub struct PyImuBias {
+    inner: ImuBias,
+}
+
+impl PyImuBias {
+    fn inner(&self) -> ImuBias {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyImuBias {
+    #[new]
+    #[pyo3(signature = (accel_mps2=[0.0; 3], gyro_rps=[0.0; 3]))]
+    fn new(py: Python<'_>, accel_mps2: [f64; 3], gyro_rps: [f64; 3]) -> PyResult<Self> {
+        let inner = ImuBias {
+            accel_mps2,
+            gyro_rps,
+        };
+        inner.validate().map_err(|error| inertial_err(py, error))?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn accel_mps2(&self) -> [f64; 3] {
+        self.inner.accel_mps2
+    }
+
+    #[getter]
+    fn gyro_rps(&self) -> [f64; 3] {
+        self.inner.gyro_rps
+    }
+
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        self.inner
+            .validate()
+            .map_err(|error| inertial_err(py, error))
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "ImuCalibration")]
+#[derive(Clone, Copy)]
+pub struct PyImuCalibration {
+    inner: ImuCalibration,
+}
+
+impl PyImuCalibration {
+    fn inner(&self) -> ImuCalibration {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyImuCalibration {
+    #[new]
+    #[pyo3(signature = (accel_scale_misalignment=None, gyro_scale_misalignment=None))]
+    fn new(
+        py: Python<'_>,
+        accel_scale_misalignment: Option<PyReadonlyArray2<'_, f64>>,
+        gyro_scale_misalignment: Option<PyReadonlyArray2<'_, f64>>,
+    ) -> PyResult<Self> {
+        let default = ImuCalibration::default();
+        let inner = ImuCalibration {
+            accel_scale_misalignment: accel_scale_misalignment
+                .map(|values| {
+                    matrix3_from_array(
+                        &values,
+                        "accel_scale_misalignment",
+                        FinitePolicy::RequireFinite,
+                    )
+                })
+                .transpose()?
+                .unwrap_or(default.accel_scale_misalignment),
+            gyro_scale_misalignment: gyro_scale_misalignment
+                .map(|values| {
+                    matrix3_from_array(
+                        &values,
+                        "gyro_scale_misalignment",
+                        FinitePolicy::RequireFinite,
+                    )
+                })
+                .transpose()?
+                .unwrap_or(default.gyro_scale_misalignment),
+        };
+        inner.validate().map_err(|error| inertial_err(py, error))?;
+        Ok(Self { inner })
+    }
+
+    #[staticmethod]
+    fn from_scale_ppm(
+        py: Python<'_>,
+        accel_scale_ppm: [f64; 3],
+        gyro_scale_ppm: [f64; 3],
+    ) -> PyResult<Self> {
+        ImuCalibration::from_scale_ppm(accel_scale_ppm, gyro_scale_ppm)
+            .map(|inner| Self { inner })
+            .map_err(|error| inertial_err(py, error))
+    }
+
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        self.inner
+            .validate()
+            .map_err(|error| inertial_err(py, error))
+    }
+
+    #[getter]
+    fn accel_scale_misalignment<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.accel_scale_misalignment)
+    }
+
+    #[getter]
+    fn gyro_scale_misalignment<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        mat3_to_array(py, &self.inner.gyro_scale_misalignment)
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "ImuRateRandomWalk")]
+#[derive(Clone, Copy)]
+pub struct PyImuRateRandomWalk {
+    inner: ImuRateRandomWalk,
+}
+
+impl PyImuRateRandomWalk {
+    fn inner(&self) -> ImuRateRandomWalk {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyImuRateRandomWalk {
+    #[new]
+    fn new(py: Python<'_>, accel_mps2_sqrt_s: f64, gyro_rps_sqrt_s: f64) -> PyResult<Self> {
+        let inner = ImuRateRandomWalk::new(accel_mps2_sqrt_s, gyro_rps_sqrt_s);
+        inner.validate().map_err(|error| inertial_err(py, error))?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn accel_mps2_sqrt_s(&self) -> f64 {
+        self.inner.accel_mps2_sqrt_s
+    }
+
+    #[getter]
+    fn gyro_rps_sqrt_s(&self) -> f64 {
+        self.inner.gyro_rps_sqrt_s
+    }
+
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        self.inner
+            .validate()
+            .map_err(|error| inertial_err(py, error))
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "ImuSimulationOptions")]
+#[derive(Clone, Copy)]
+pub struct PyImuSimulationOptions {
+    inner: ImuSimulationOptions,
+}
+
+impl PyImuSimulationOptions {
+    fn inner(&self) -> ImuSimulationOptions {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyImuSimulationOptions {
+    #[new]
+    #[pyo3(signature = (seed=None, output=PyImuSimulationOutput::INCREMENT, initial_bias=None, calibration=None, rate_random_walk=None))]
+    fn new(
+        py: Python<'_>,
+        seed: Option<u64>,
+        output: PyImuSimulationOutput,
+        initial_bias: Option<&PyImuBias>,
+        calibration: Option<&PyImuCalibration>,
+        rate_random_walk: Option<&PyImuRateRandomWalk>,
+    ) -> PyResult<Self> {
+        let mut inner = ImuSimulationOptions::default();
+        inner.seed = seed.unwrap_or(sidereon_core::inertial::DEFAULT_IMU_SIM_SEED);
+        inner.output = output.into();
+        inner.initial_bias = initial_bias.map_or_else(ImuBias::default, PyImuBias::inner);
+        inner.calibration =
+            calibration.map_or_else(ImuCalibration::default, PyImuCalibration::inner);
+        inner.rate_random_walk = rate_random_walk.map(PyImuRateRandomWalk::inner);
+        inner.validate().map_err(|error| inertial_err(py, error))?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn seed(&self) -> u64 {
+        self.inner.seed
+    }
+
+    fn validate(&self, py: Python<'_>) -> PyResult<()> {
+        self.inner
+            .validate()
+            .map_err(|error| inertial_err(py, error))
+    }
+
+    #[getter]
+    fn output(&self) -> PyImuSimulationOutput {
+        self.inner.output.into()
+    }
+
+    #[getter]
+    fn initial_bias(&self) -> PyImuBias {
+        PyImuBias {
+            inner: self.inner.initial_bias,
+        }
+    }
+
+    #[getter]
+    fn calibration(&self) -> PyImuCalibration {
+        PyImuCalibration {
+            inner: self.inner.calibration,
+        }
+    }
+
+    #[getter]
+    fn rate_random_walk(&self) -> Option<PyImuRateRandomWalk> {
+        self.inner
+            .rate_random_walk
+            .map(|inner| PyImuRateRandomWalk { inner })
+    }
+}
+
+#[pymethods]
+impl PyCorrectedImuIncrement {
+    #[new]
+    fn new(
+        py: Python<'_>,
+        t_j2000_s: f64,
+        delta_velocity_mps: [f64; 3],
+        delta_theta_rad: [f64; 3],
+        dt_s: f64,
+    ) -> PyResult<Self> {
+        let inner = CorrectedImuIncrement {
+            t_j2000_s,
+            delta_velocity_mps,
+            delta_theta_rad,
+            dt_s,
+        };
+        if !t_j2000_s.is_finite()
+            || !dt_s.is_finite()
+            || dt_s <= 0.0
+            || delta_velocity_mps
+                .iter()
+                .chain(delta_theta_rad.iter())
+                .any(|value| !value.is_finite())
+        {
+            return Err(inertial_err(
+                py,
+                CoreInertialError::InvalidInput {
+                    field: "corrected_imu_increment",
+                    reason: "must have finite components and positive dt_s",
+                },
+            ));
+        }
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn t_j2000_s(&self) -> f64 {
+        self.inner.t_j2000_s
+    }
+
+    #[getter]
+    fn delta_velocity_mps(&self) -> [f64; 3] {
+        self.inner.delta_velocity_mps
+    }
+
+    #[getter]
+    fn delta_theta_rad(&self) -> [f64; 3] {
+        self.inner.delta_theta_rad
+    }
+
+    #[getter]
+    fn dt_s(&self) -> f64 {
+        self.inner.dt_s
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "StrapdownMechanizer")]
+pub struct PyStrapdownMechanizer {
+    inner: StrapdownMechanizer,
+}
+
+#[pymethods]
+impl PyStrapdownMechanizer {
+    #[new]
+    #[pyo3(signature = (state, config=None, bias=None, calibration=None))]
+    fn new(
+        py: Python<'_>,
+        state: &PyNavState,
+        config: Option<&PyMechanizationConfig>,
+        bias: Option<&PyImuBias>,
+        calibration: Option<&PyImuCalibration>,
+    ) -> PyResult<Self> {
+        let mut mechanizer =
+            StrapdownMechanizer::new(state.inner()).map_err(|error| inertial_err(py, error))?;
+        if bias.is_some() || calibration.is_some() {
+            let model = sidereon_core::inertial::ImuErrorModel {
+                bias: bias.map_or_else(ImuBias::default, PyImuBias::inner),
+                calibration: calibration
+                    .map_or_else(ImuCalibration::default, PyImuCalibration::inner),
+            };
+            mechanizer = mechanizer
+                .with_imu_model(model)
+                .map_err(|error| inertial_err(py, error))?;
+        }
+        let inner =
+            config.map_or_else(|| mechanizer, |value| mechanizer.with_config(value.inner()));
+        Ok(Self { inner })
+    }
+
+    fn propagate(&mut self, py: Python<'_>, sample: &PyImuSample) -> PyResult<PyNavState> {
+        self.inner
+            .propagate(sample.inner())
+            .map(|state| PyNavState::from(*state))
+            .map_err(|error| inertial_err(py, error))
+    }
+
+    #[getter]
+    fn state(&self) -> PyNavState {
+        PyNavState::from(*self.inner.state())
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "ImuSimulator")]
+pub struct PyImuSimulator {
+    inner: ImuSimulator,
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "SimulatedImuSequence")]
+pub struct PySimulatedImuSequence {
+    inner: sidereon_core::inertial::SimulatedImuSequence,
+}
+
+#[pymethods]
+impl PySimulatedImuSequence {
+    #[getter]
+    fn samples(&self) -> Vec<PyImuSample> {
+        self.inner
+            .samples
+            .iter()
+            .copied()
+            .map(|inner| PyImuSample { inner })
+            .collect()
+    }
+
+    #[getter]
+    fn bias_history(&self) -> Vec<PyImuBias> {
+        self.inner
+            .bias_history
+            .iter()
+            .copied()
+            .map(|inner| PyImuBias { inner })
+            .collect()
+    }
+
+    #[getter]
+    fn rate_random_walk_history(&self) -> Vec<PyImuBias> {
+        self.inner
+            .rate_random_walk_history
+            .iter()
+            .copied()
+            .map(|inner| PyImuBias { inner })
+            .collect()
+    }
+}
+
+#[pymethods]
+impl PyImuSimulator {
+    #[new]
+    #[pyo3(signature = (spec, seed=None, output=PyImuSimulationOutput::INCREMENT, options=None))]
+    fn new(
+        py: Python<'_>,
+        spec: &PyImuSpec,
+        seed: Option<u64>,
+        output: PyImuSimulationOutput,
+        options: Option<&PyImuSimulationOptions>,
+    ) -> PyResult<Self> {
+        let simulation_options = if let Some(options) = options {
+            if seed.is_some() || output != PyImuSimulationOutput::INCREMENT {
+                return Err(PyValueError::new_err(
+                    "options cannot be combined with seed or non-default output",
+                ));
+            }
+            options.inner()
+        } else {
+            let mut defaults = ImuSimulationOptions::default();
+            defaults.seed = seed.unwrap_or(sidereon_core::inertial::DEFAULT_IMU_SIM_SEED);
+            defaults.output = output.into();
+            defaults
+        };
+        Ok(Self {
+            inner: ImuSimulator::new(spec.inner(), simulation_options)
+                .map_err(|error| inertial_err(py, error))?,
+        })
+    }
+
+    fn sample_increment(
+        &mut self,
+        py: Python<'_>,
+        truth: &PyCorrectedImuIncrement,
+    ) -> PyResult<PyImuSample> {
+        self.inner
+            .sample_increment(&truth.inner())
+            .map(|inner| PyImuSample { inner })
+            .map_err(|error| inertial_err(py, error))
+    }
+
+    #[getter]
+    fn bias(&self) -> PyImuBias {
+        PyImuBias {
+            inner: self.inner.bias(),
+        }
+    }
+
+    #[getter]
+    fn rate_random_walk(&self) -> PyImuBias {
+        PyImuBias {
+            inner: self.inner.rate_random_walk(),
+        }
+    }
+}
+
+#[pyfunction(signature = (state, increment, config=None))]
+fn mechanize_ecef(
+    py: Python<'_>,
+    state: &PyNavState,
+    increment: &PyCorrectedImuIncrement,
+    config: Option<&PyMechanizationConfig>,
+) -> PyResult<PyNavState> {
+    let config = config.map_or_else(MechanizationConfig::default, PyMechanizationConfig::inner);
+    core_mechanize_ecef(&state.inner(), &increment.inner(), config)
+        .map(PyNavState::from)
+        .map_err(|error| inertial_err(py, error))
+}
+
+#[pyfunction]
+fn normal_gravity_mps2(py: Python<'_>, latitude_rad: f64, height_m: f64) -> PyResult<f64> {
+    core_normal_gravity_mps2(latitude_rad, height_m).map_err(|error| inertial_err(py, error))
+}
+
+#[pyfunction]
+fn gravity_ecef_mps2(py: Python<'_>, position_ecef_m: [f64; 3]) -> PyResult<[f64; 3]> {
+    core_gravity_ecef_mps2(position_ecef_m).map_err(|error| inertial_err(py, error))
+}
+
+#[pyfunction]
+fn gauss_markov_bias_decay(py: Python<'_>, dt_s: f64, tau_s: f64) -> PyResult<f64> {
+    core_gauss_markov_bias_decay(dt_s, tau_s).map_err(|error| inertial_err(py, error))
+}
+
+#[pyfunction]
+fn gauss_markov_bias_variance_increment(
+    py: Python<'_>,
+    instability: f64,
+    dt_s: f64,
+    tau_s: f64,
+) -> PyResult<f64> {
+    core_gauss_markov_bias_variance_increment(instability, dt_s, tau_s)
+        .map_err(|error| inertial_err(py, error))
+}
+
+#[pyfunction]
+fn rodrigues_delta_dcm(py: Python<'_>, delta_theta_rad: [f64; 3]) -> PyResult<[[f64; 3]; 3]> {
+    core_rodrigues_delta_dcm(delta_theta_rad).map_err(|error| inertial_err(py, error))
+}
+
+#[pyfunction]
+fn dcm_to_quaternion(
+    py: Python<'_>,
+    dcm: PyReadonlyArray2<'_, f64>,
+) -> PyResult<PyAttitudeQuaternion> {
+    let matrix = matrix3_from_array(&dcm, "dcm", FinitePolicy::RequireFinite)?;
+    core_dcm_to_quaternion(&matrix)
+        .map(|inner| PyAttitudeQuaternion { inner })
+        .map_err(|error| inertial_err(py, error))
+}
+
+#[pyfunction]
+fn quaternion_to_dcm<'py>(
+    py: Python<'py>,
+    quaternion: &PyAttitudeQuaternion,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let matrix = core_quaternion_to_dcm(quaternion.inner);
+    Ok(mat3_to_array(py, &matrix))
+}
+
+#[pyfunction]
+fn attitude_yaw_pitch_roll_rad(dcm: PyReadonlyArray2<'_, f64>) -> PyResult<(f64, f64, f64)> {
+    let matrix = matrix3_from_array(&dcm, "dcm", FinitePolicy::RequireFinite)?;
+    let [yaw, pitch, roll] = core_attitude_yaw_pitch_roll_rad(&matrix);
+    Ok((yaw, pitch, roll))
+}
+
+#[pyfunction]
+fn reorthonormalize_dcm<'py>(
+    py: Python<'py>,
+    dcm: PyReadonlyArray2<'py, f64>,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let matrix = matrix3_from_array(&dcm, "dcm", FinitePolicy::RequireFinite)?;
+    let result = core_reorthonormalize_dcm(&matrix).map_err(|error| inertial_err(py, error))?;
+    Ok(mat3_to_array(py, &result))
+}
+
+#[pyfunction]
+fn true_imu_increment_between(
+    py: Python<'_>,
+    start: &PyNavState,
+    end: &PyNavState,
+) -> PyResult<PyCorrectedImuIncrement> {
+    core_true_imu_increment_between(&start.inner(), &end.inner())
+        .map(|inner| PyCorrectedImuIncrement { inner })
+        .map_err(|error| inertial_err(py, error))
+}
+
+#[pyfunction]
+#[pyo3(signature = (increments, spec, seed=None, output=PyImuSimulationOutput::INCREMENT, options=None))]
+fn simulate_imu_samples_from_increments(
+    py: Python<'_>,
+    increments: Vec<Py<PyCorrectedImuIncrement>>,
+    spec: &PyImuSpec,
+    seed: Option<u64>,
+    output: PyImuSimulationOutput,
+    options: Option<&PyImuSimulationOptions>,
+) -> PyResult<PySimulatedImuSequence> {
+    let increments = increments
+        .iter()
+        .map(|increment| increment.borrow(py).inner())
+        .collect::<Vec<_>>();
+    let simulation_options = if let Some(options) = options {
+        if seed.is_some() || output != PyImuSimulationOutput::INCREMENT {
+            return Err(PyValueError::new_err(
+                "options cannot be combined with seed or non-default output",
+            ));
+        }
+        options.inner()
+    } else {
+        let mut defaults = ImuSimulationOptions::default();
+        defaults.seed = seed.unwrap_or(sidereon_core::inertial::DEFAULT_IMU_SIM_SEED);
+        defaults.output = output.into();
+        defaults
+    };
+    core_simulate_imu_samples_from_increments(&increments, spec.inner(), simulation_options)
+        .map(|inner| PySimulatedImuSequence { inner })
+        .map_err(|error| inertial_err(py, error))
+}
+
+#[pyfunction]
+#[pyo3(signature = (trajectory, spec, seed=None, output=PyImuSimulationOutput::INCREMENT, options=None))]
+fn simulate_imu_samples(
+    py: Python<'_>,
+    trajectory: Vec<Py<PyNavState>>,
+    spec: &PyImuSpec,
+    seed: Option<u64>,
+    output: PyImuSimulationOutput,
+    options: Option<&PyImuSimulationOptions>,
+) -> PyResult<PySimulatedImuSequence> {
+    let trajectory = trajectory
+        .iter()
+        .map(|state| state.borrow(py).inner())
+        .collect::<Vec<_>>();
+    let simulation_options = if let Some(options) = options {
+        if seed.is_some() || output != PyImuSimulationOutput::INCREMENT {
+            return Err(PyValueError::new_err(
+                "options cannot be combined with seed or non-default output",
+            ));
+        }
+        options.inner()
+    } else {
+        let mut defaults = ImuSimulationOptions::default();
+        defaults.seed = seed.unwrap_or(sidereon_core::inertial::DEFAULT_IMU_SIM_SEED);
+        defaults.output = output.into();
+        defaults
+    };
+    core_simulate_imu_samples(&trajectory, spec.inner(), simulation_options)
+        .map(|inner| PySimulatedImuSequence { inner })
+        .map_err(|error| inertial_err(py, error))
 }
 
 #[pymethods]
@@ -578,6 +1526,55 @@ impl PyImuSample {
         match self.inner.kind {
             ImuSampleKind::Rate { .. } => "rate",
             ImuSampleKind::Increment { .. } => "increment",
+        }
+    }
+
+    #[getter]
+    fn specific_force_mps2(&self) -> Option<[f64; 3]> {
+        match self.inner.kind {
+            ImuSampleKind::Rate {
+                specific_force_mps2,
+                ..
+            } => Some(specific_force_mps2),
+            ImuSampleKind::Increment { .. } => None,
+        }
+    }
+
+    #[getter]
+    fn angular_rate_rps(&self) -> Option<[f64; 3]> {
+        match self.inner.kind {
+            ImuSampleKind::Rate {
+                angular_rate_rps, ..
+            } => Some(angular_rate_rps),
+            ImuSampleKind::Increment { .. } => None,
+        }
+    }
+
+    #[getter]
+    fn delta_velocity_mps(&self) -> Option<[f64; 3]> {
+        match self.inner.kind {
+            ImuSampleKind::Increment {
+                delta_velocity_mps, ..
+            } => Some(delta_velocity_mps),
+            ImuSampleKind::Rate { .. } => None,
+        }
+    }
+
+    #[getter]
+    fn delta_theta_rad(&self) -> Option<[f64; 3]> {
+        match self.inner.kind {
+            ImuSampleKind::Increment {
+                delta_theta_rad, ..
+            } => Some(delta_theta_rad),
+            ImuSampleKind::Rate { .. } => None,
+        }
+    }
+
+    #[getter]
+    fn dt_s(&self) -> Option<f64> {
+        match self.inner.kind {
+            ImuSampleKind::Increment { dt_s, .. } => Some(dt_s),
+            ImuSampleKind::Rate { .. } => None,
         }
     }
 
@@ -2150,6 +3147,12 @@ impl From<FusionUpdate> for PyFusionUpdate {
 
 #[pymethods]
 impl PyFusionUpdate {
+    /// The UT1 departure a permissive UT1 policy accepted, `before_coverage` or `after_coverage`; `None` when every UT1 read was inside the table.
+    #[getter]
+    fn ut1_degraded(&self) -> Option<&'static str> {
+        self.inner.ut1_degraded.map(crate::degrade_reason_label)
+    }
+
     /// Whether the update modified the state.
     #[getter]
     fn applied(&self) -> bool {
@@ -2928,13 +3931,45 @@ fn velocity_match_outage(
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add(
+        "WGS84_NORMAL_GRAVITY_EQUATOR_MPS2",
+        sidereon_core::inertial::WGS84_NORMAL_GRAVITY_EQUATOR_MPS2,
+    )?;
+    m.add(
+        "WGS84_NORMAL_GRAVITY_POLE_MPS2",
+        sidereon_core::inertial::WGS84_NORMAL_GRAVITY_POLE_MPS2,
+    )?;
+    m.add(
+        "WGS84_SOMIGLIANA_K",
+        sidereon_core::inertial::WGS84_SOMIGLIANA_K,
+    )?;
+    m.add(
+        "RANDOM_WALK_BIAS_TAU_S",
+        sidereon_core::inertial::config::RANDOM_WALK_BIAS_TAU_S,
+    )?;
+    m.add(
+        "DEFAULT_IMU_SIM_SEED",
+        sidereon_core::inertial::DEFAULT_IMU_SIM_SEED,
+    )?;
     m.add_class::<PyImuGrade>()?;
+    m.add_class::<PyImuSimulationOutput>()?;
     m.add_class::<PyImuSpec>()?;
+    m.add_class::<PyConingCorrection>()?;
+    m.add_class::<PyAttitudeQuaternion>()?;
+    m.add_class::<PyImuErrorModel>()?;
     m.add_class::<PyMechanizationConfig>()?;
     m.add_class::<PyFusionFilterKind>()?;
     m.add_class::<PyErrorStateLayout>()?;
     m.add_class::<PyNavState>()?;
     m.add_class::<PyImuSample>()?;
+    m.add_class::<PyCorrectedImuIncrement>()?;
+    m.add_class::<PyImuBias>()?;
+    m.add_class::<PyImuCalibration>()?;
+    m.add_class::<PyImuRateRandomWalk>()?;
+    m.add_class::<PyImuSimulationOptions>()?;
+    m.add_class::<PyStrapdownMechanizer>()?;
+    m.add_class::<PyImuSimulator>()?;
+    m.add_class::<PySimulatedImuSequence>()?;
     m.add_class::<PyInsFilterState>()?;
     m.add_class::<PyInnovationGate>()?;
     m.add_class::<PyEkfUpdateOptions>()?;
@@ -2974,6 +4009,19 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySmoothedFusionTrajectory>()?;
     m.add_class::<PyInertialFilter>()?;
     m.add_function(wrap_pyfunction!(smooth_fusion_rts, m)?)?;
+    m.add_function(wrap_pyfunction!(mechanize_ecef, m)?)?;
+    m.add_function(wrap_pyfunction!(normal_gravity_mps2, m)?)?;
+    m.add_function(wrap_pyfunction!(gravity_ecef_mps2, m)?)?;
+    m.add_function(wrap_pyfunction!(gauss_markov_bias_decay, m)?)?;
+    m.add_function(wrap_pyfunction!(gauss_markov_bias_variance_increment, m)?)?;
+    m.add_function(wrap_pyfunction!(rodrigues_delta_dcm, m)?)?;
+    m.add_function(wrap_pyfunction!(dcm_to_quaternion, m)?)?;
+    m.add_function(wrap_pyfunction!(quaternion_to_dcm, m)?)?;
+    m.add_function(wrap_pyfunction!(attitude_yaw_pitch_roll_rad, m)?)?;
+    m.add_function(wrap_pyfunction!(reorthonormalize_dcm, m)?)?;
+    m.add_function(wrap_pyfunction!(true_imu_increment_between, m)?)?;
+    m.add_function(wrap_pyfunction!(simulate_imu_samples_from_increments, m)?)?;
+    m.add_function(wrap_pyfunction!(simulate_imu_samples, m)?)?;
     m.add_function(wrap_pyfunction!(velocity_match_outage, m)?)?;
     Ok(())
 }

@@ -14,7 +14,7 @@ use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyDict, PyModule};
 
 use sidereon::passes::UtcInstant;
 use sidereon_core::astro::frames::nutation::{
@@ -374,7 +374,7 @@ impl PyGnssWeekTow {
     fn new(system: PyTimeScale, week: u32, tow_s: f64) -> PyResult<Self> {
         Ok(Self {
             inner: GnssWeekTow::new(system.into(), week, tow_s)
-                .map_err(|err| PyValueError::new_err(err.to_string()))?,
+                .map_err(|err| crate::time_model_error::py_error(err, err.to_string()))?,
         })
     }
 
@@ -403,7 +403,7 @@ impl PyGnssWeekTow {
             inner: self
                 .inner
                 .normalized()
-                .map_err(|err| PyValueError::new_err(err.to_string()))?,
+                .map_err(|err| crate::time_model_error::py_error(err, err.to_string()))?,
         })
     }
 
@@ -411,7 +411,7 @@ impl PyGnssWeekTow {
     fn unrolled_week(&self, rollovers: u32) -> PyResult<u32> {
         self.inner
             .unrolled_week(rollovers)
-            .map_err(|err| PyValueError::new_err(err.to_string()))
+            .map_err(|err| crate::time_model_error::py_error(err, err.to_string()))
     }
 
     fn __repr__(&self) -> String {
@@ -655,10 +655,28 @@ impl PyTimeOffsetErrorCode {
 /// Map a core [`TimeOffsetError`] onto a `ValueError` that also carries the
 /// machine-readable [`PyTimeOffsetErrorCode`] as its `.code` attribute.
 fn time_offset_err(py: Python<'_>, err: TimeOffsetError) -> PyErr {
-    let exc = PyValueError::new_err(err.to_string());
+    let message = err.to_string();
+    let (kind, scale) = match err {
+        TimeOffsetError::EpochRequired(scale) => ("epoch_required", scale),
+        TimeOffsetError::Unsupported(scale) => ("unsupported", scale),
+        TimeOffsetError::NonFiniteEpoch(scale) => ("non_finite_epoch", scale),
+    };
+    let exc = PyValueError::new_err(message.clone());
     let code = PyTimeOffsetErrorCode::from(err.code());
-    let _ = exc.value(py).setattr("code", code);
-    exc
+    let detail = PyDict::new(py);
+    let result = (|| -> PyResult<()> {
+        detail.set_item("family", "TimeOffsetError")?;
+        detail.set_item("kind", kind)?;
+        detail.set_item("message", message)?;
+        detail.set_item("scale", scale)?;
+        exc.value(py).setattr("code", code)?;
+        exc.value(py).setattr("detail", detail)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => exc,
+        Err(error) => error,
+    }
 }
 
 /// Fixed inter-system time-scale offset `to - from` in seconds.

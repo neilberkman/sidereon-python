@@ -252,6 +252,8 @@ impl PyKinematicSolution {
             used_sats: Vec::new(),
             innovation_rms_m: 0.0,
             status: KinematicEpochStatus::Updated,
+            ssr_bias_exclusions: Vec::new(),
+            unplaced_observations: Vec::new(),
         }
     }
 }

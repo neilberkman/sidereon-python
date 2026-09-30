@@ -150,8 +150,42 @@ def test_below_horizon_mapping_rejects_with_core_error():
     )
     assert all(math.isfinite(v) for v in floored)
     for el in (0.0, math.radians(1.0), math.radians(-5.0)):
-        with pytest.raises(ValueError, match="below mapping validity"):
+        with pytest.raises(ValueError, match="below mapping validity") as exc:
             sidereon.tropo_mapping_factors(el, lat, height, DOY28_EPOCH_US)
+        assert exc.value.detail["family"] == "CoreError"
+        assert exc.value.detail["kind"] == "invalid_input"
+        assert exc.value.detail["message"] == str(exc.value)
+        assert (
+            exc.value.detail["input_message"] == "elevation_rad below mapping validity"
+        )
+
+
+def test_troposphere_meteorology_refusal_keeps_core_detail():
+    with pytest.raises(ValueError) as exc:
+        sidereon.tropo_zenith_delay(0.5, 100.0, -1.0, 288.15, 0.5)
+    assert exc.value.detail["family"] == "CoreError"
+    assert exc.value.detail["kind"] == "invalid_input"
+    assert exc.value.detail["message"] == str(exc.value)
+    assert exc.value.detail["input_message"] == "pressure_hpa not positive"
+
+    with pytest.raises(ValueError) as slant_exc:
+        sidereon.tropo_slant_delay(
+            math.radians(30.0), 0.5, 0.1, 100.0, -1.0, 288.15, 0.5, DOY28_EPOCH_US
+        )
+    assert slant_exc.value.detail["kind"] == "invalid_input"
+    assert slant_exc.value.detail["input_message"] == "pressure_hpa not positive"
+
+
+def test_troposphere_geodetic_refusal_keeps_frame_value_fields():
+    with pytest.raises(ValueError) as exc:
+        sidereon.tropo_zenith_delay(math.pi, 100.0, 1013.25, 288.15, 0.5)
+    assert exc.value.detail == {
+        "family": "FrameValueError",
+        "kind": "invalid_input",
+        "message": str(exc.value),
+        "field": "lat_rad",
+        "reason": "must be in [-pi/2, pi/2]",
+    }
 
 
 def test_below_horizon_slant_saturates_to_zero():

@@ -190,6 +190,8 @@ def test_rinex_obs_spp_inputs_and_solve_convenience_with_broadcast_nav():
         obs,
         signal_policy=sidereon.SignalPolicy([(sidereon.GnssSystem.GPS, ["C1C"])]),
         corrections=sidereon.SppCorrections(ionosphere=False, troposphere=True),
+        qzss_clock=sidereon.QzssClock.SEPARATE,
+        troposphere_model=sidereon.TroposphereModel.SAASTAMOINEN_NIELL,
     )
 
     inputs = sidereon.spp_inputs_from_rinex_obs(nav, obs, options)
@@ -197,6 +199,8 @@ def test_rinex_obs_spp_inputs_and_solve_convenience_with_broadcast_nav():
     assert inputs[0].epoch_index == 0
     assert inputs[0].epoch == obs.epochs[0].epoch
     assert inputs[0].observation_count >= 5
+    assert inputs[0].qzss_clock == sidereon.QzssClock.SEPARATE
+    assert inputs[0].troposphere_model == sidereon.TroposphereModel.SAASTAMOINEN_NIELL
     assert all(sat.startswith("G") for sat in inputs[0].satellites)
     assert inputs[0].observations[0].satellite_id == inputs[0].satellites[0]
 

@@ -9,15 +9,138 @@ confirm the binding marshals the new shapes through faithfully.
 """
 
 import datetime as dt
+import json
 import os
 import pathlib
+from fractions import Fraction
 
 import numpy as np
 import pytest
 import sidereon
-from _helpers import CORE_FIXTURES, hex_to_f64
+from _helpers import CORE_FIXTURES, core_goldens, hex_to_f64
 
 C_M_S = 299792458.0
+
+
+def test_exact_epoch_integer_constructor_order_hash_and_query_offsets():
+    atto = sidereon.ExactEpoch.ATTOSECONDS_PER_SECOND
+    assert atto == 1_000_000_000_000_000_000
+    assert sidereon.ExactEpoch.J2000 == sidereon.ExactEpoch.new(0, 0)
+
+    before_j2000 = sidereon.ExactEpoch.new(-1, atto - 1)
+    j2000 = sidereon.ExactEpoch.new(0, 0)
+    same_before_j2000 = sidereon.ExactEpoch.new(-1, atto - 1)
+    assert before_j2000 < j2000
+    assert before_j2000 <= same_before_j2000
+    assert before_j2000 == same_before_j2000
+    assert hash(before_j2000) == hash(same_before_j2000)
+    assert {before_j2000: "exact"}[same_before_j2000] == "exact"
+
+    query = sidereon.ExactEpochQuery.at_epoch(j2000).checked_add_binary_seconds(0.125)
+    origin = sidereon.ExactEpochQuery.at_epoch(j2000)
+    assert query.seconds_since_epoch(j2000) == 0.125
+    assert query.seconds_since_query(origin) == 0.125
+    assert sidereon.ExactEpochQuery.from_binary_j2000_seconds(0.125) == query
+    assert sidereon.ExactEpoch.from_binary_j2000_seconds(0.125) == query
+    assert query.epoch() == j2000
+
+    with pytest.raises(ValueError):
+        sidereon.ExactEpoch.new(0, atto)
+
+
+def test_sp3_raw_and_effective_accuracy_are_both_exposed():
+    sp3 = _load_sp3("IGS0OPSFIN_20261200945_02H30M_15M_ORB.SP3")
+    raw = sp3.record_accuracy_codes("G01", 0)
+    decoded = sp3.record_accuracy("G01", 0)
+
+    assert raw.p is not None
+    assert tuple(raw.p.axis_exponents) == (3, 4, 5)
+    assert raw.p.position_velocity_base == 1.25
+    assert raw.p.position_velocity_base == sp3.header.pos_vel_base
+    assert decoded.p is not None
+    for exponent, sigma in zip(raw.p.axis_exponents, decoded.p.position_sigma_m):
+        assert exponent is not None
+        assert sigma.kind == "known"
+        expected_sigma = float(Fraction(5, 4) ** exponent * Fraction.from_float(1.0e-3))
+        assert sigma.value == expected_sigma
+
+    assert sidereon.Sp3AccuracyValue.known(0.25).variance().value == 0.0625
+    assert sidereon.Sp3AccuracyValue.unknown().variance().kind == "unknown"
+
+
+def test_exact_ephemeris_source_hooks_preserve_state_and_selection_queries():
+    sp3 = _load_sp3("IGS0OPSFIN_20261200945_02H30M_15M_ORB.SP3")
+    epoch = sidereon.ExactEpochQuery.from_binary_j2000_seconds(
+        float(sp3.epochs_j2000_seconds[5])
+    )
+    selection_epoch = epoch.checked_add_binary_seconds(0.25)
+    state = sp3.selected_state_at_epoch_query("G01", epoch, selection_epoch)
+    assert state is not None
+    raw_state = sp3.position_at_epoch_query("G01", epoch)
+    assert np.array_equal(state.position_ecef_m, raw_state.position_m)
+    assert state.clock_s == raw_state.clock_s
+    assert state.group_delay_s is None
+    assert state.degraded_reason is None
+
+    placed_clock = sp3.transmit_epoch_clock_at_epoch_query(
+        "G01", epoch, selection_epoch
+    )
+    assert placed_clock is not None
+    assert placed_clock[0] == raw_state.clock_s
+    assert sp3.ephemeris_variance_at_epoch_query("G01", epoch, selection_epoch) >= 0.0
+    relativity = sp3.clock_relativity_for_state_at_epoch_query(
+        "G01", epoch, raw_state.position_m
+    )
+    assert relativity.kind in {"term", "unavailable"}
+    if relativity.kind == "term":
+        assert relativity.term_s is not None
+
+    interpolant = sidereon.PreciseEphemerisInterpolant.from_sp3(sp3)
+    assert (
+        interpolant.selected_state_at_epoch_query("G01", epoch, selection_epoch).clock_s
+        == raw_state.clock_s
+    )
+    artifact = sidereon.PreciseInterpolantArtifact.from_bytes(
+        sp3.precise_interpolant_artifact_bytes()
+    )
+    assert (
+        artifact.selected_state_at_epoch_query("G01", epoch, selection_epoch).clock_s
+        == raw_state.clock_s
+    )
+
+
+def test_precise_samples_keep_native_epoch_when_float_epochs_collapse():
+    first_epoch = sidereon.ClockInstant.from_nanos(
+        sidereon.TimeScale.GPST, 900_000_000_000_000_000
+    )
+    second_epoch = sidereon.ClockInstant.from_nanos(
+        sidereon.TimeScale.GPST, 900_000_000_000_000_001
+    )
+    assert first_epoch != second_epoch
+
+    first_sample = sidereon.PreciseEphemerisSample.from_instant(
+        "G01", first_epoch, [1.0, 2.0, 3.0]
+    )
+    second_sample = sidereon.PreciseEphemerisSample.from_instant(
+        "G01", second_epoch, [1.0, 2.0, 3.0]
+    )
+    assert first_sample.epoch == first_epoch
+    assert second_sample.epoch == second_epoch
+    assert np.isnan(first_sample.epoch_j2000_seconds)
+    assert np.isnan(second_sample.epoch_j2000_seconds)
+
+    unknown = sidereon.Sp3AccuracyValue.unknown()
+    first_accuracy = sidereon.PreciseEphemerisAccuracySample.from_instant(
+        "G01", first_epoch, [unknown, unknown, unknown], unknown
+    )
+    second_accuracy = sidereon.PreciseEphemerisAccuracySample.from_instant(
+        "G01", second_epoch, [unknown, unknown, unknown], unknown
+    )
+    assert first_accuracy.epoch == first_epoch
+    assert second_accuracy.epoch == second_epoch
+    assert first_accuracy.epoch != second_accuracy.epoch
+    assert np.isnan(first_accuracy.epoch_j2000_seconds)
+    assert np.isnan(second_accuracy.epoch_j2000_seconds)
 
 
 # --- A1: inter-system time-scale offsets -----------------------------------
@@ -493,22 +616,58 @@ def test_ssr_decode_store_and_correction_queries():
     assert orbit.solution.provider_id == ssr.provider_id
     assert clock.solution.solution_id == ssr.solution_id
 
-    from_frame = sidereon.ssr_store_from_rtcm(frame, 2425, 344970.0)
-    assert from_frame.orbit("G30") is not None
-    assert from_frame.clock("G30") is not None
+    ingest = sidereon.ssr_store_from_rtcm(frame, 2425, 344970.0)
+    assert ingest.is_complete
+    assert ingest.trailing_partial_frame_len == 0
+    assert ingest.ingest_refusals == []
+    assert ingest.diagnostics.resync_bytes == 0
+    assert ingest.store.orbit("G30") is not None
+    assert ingest.store.clock("G30") is not None
+    strict = sidereon.ssr_store_from_rtcm_strict(frame, 2425, 344970.0)
+    assert strict.orbit("G30") is not None
+    assert strict.clock("G30") is not None
+    with pytest.raises(sidereon.RtcmParseError):
+        sidereon.ssr_store_from_rtcm_strict(b"\x00" + frame, 2425, 344970.0)
+    noisy = sidereon.ssr_store_from_rtcm(b"\x00" + frame, 2425, 344970.0)
+    assert not noisy.is_complete
+    assert noisy.diagnostics.resync_bytes == 1
+    assert noisy.store.orbit("G30") is not None
 
 
 def test_solve_spp_robust_fde_returns_fde_result_and_alias_warns():
     sp3 = _load_sp3(_SP3_FILE)
-    _rx, observations, t_rx = _glonass_scenario(sp3)
+    trace_path = os.path.join(CORE_FIXTURES, "spp_trace_L0_minimal.json")
+    with open(trace_path) as handle:
+        fixture = json.load(handle)["fixture"]
+    inputs = fixture["inputs"]
+    consistent = core_goldens()["spp_consistent"]
+    observations = [
+        sidereon.SppObservation(satellite, hex_to_f64(pseudorange))
+        for satellite, pseudorange in zip(
+            consistent["satellites"], consistent["pseudoranges_m"]
+        )
+    ]
     cfg = sidereon.SppConfig(
         observations=observations,
-        t_rx_j2000_s=t_rx,
-        t_rx_second_of_day_s=0.0,
-        day_of_year=176.0,
-        initial_guess=[6378137.0, 0.0, 0.0, 0.0],
+        t_rx_j2000_s=hex_to_f64(inputs["t_rx_j2000_s"]),
+        t_rx_second_of_day_s=hex_to_f64(inputs["t_rx_sod_s"]),
+        day_of_year=hex_to_f64(inputs["doy"]),
+        initial_guess=[
+            hex_to_f64(value) for value in fixture["frozen"]["initial_guess_x0"]
+        ],
         corrections=sidereon.SppCorrections(ionosphere=False, troposphere=False),
+        klobuchar=sidereon.SppKlobucharCoeffs(
+            alpha=[hex_to_f64(value) for value in inputs["klobuchar_alpha"]],
+            beta=[hex_to_f64(value) for value in inputs["klobuchar_beta"]],
+        ),
+        met=sidereon.SppSurfaceMet(
+            pressure_hpa=hex_to_f64(inputs["met"]["pressure_hpa"]),
+            temperature_k=hex_to_f64(inputs["met"]["temperature_k"]),
+            relative_humidity=hex_to_f64(inputs["met"]["relative_humidity"]),
+        ),
         with_geodetic=True,
+        qzss_clock=sidereon.QzssClock.GPS,
+        troposphere_model=sidereon.TroposphereModel.RTKLIB,
     )
     result = sidereon.solve_spp_robust_fde(
         sp3, cfg, sidereon.SppRobustConfig(), 0.01, 2

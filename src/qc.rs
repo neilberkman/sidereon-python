@@ -3,11 +3,11 @@
 //!
 //! Thin marshaling over [`sidereon_core::quality`]: [`qc_raim`] runs the
 //! residual-based chi-square integrity test over a solution's used satellites and
-//! residuals; [`qc_fde`] delegates to the core [`fde_spp`] driver, which runs the
-//! single-point solve over the shrinking observation set and excludes the worst
-//! satellite until RAIM passes (or the exclusion budget is exhausted). No
-//! statistics, solve, or exclusion loop lives here; the numbers are exactly what
-//! `sidereon-core` produces.
+//! residuals; [`qc_fde`] delegates to the core [`fde_spp`] driver, which tests the
+//! solve against its own pseudorange variances and, on a detected fault, excludes
+//! by RTKLIB demo5 `raim_fde`'s leave-one-out rule until RAIM passes (or the
+//! exclusion budget is spent). No statistics, solve, or exclusion loop lives
+//! here; the numbers are exactly what `sidereon-core` produces.
 
 use std::collections::BTreeMap;
 
@@ -17,7 +17,7 @@ use pyo3::ffi::c_str;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyModule};
 
-use sidereon_core::positioning::ReceiverSolution;
+use sidereon_core::positioning::{residual_rms as core_residual_rms, ReceiverSolution};
 use sidereon_core::qc_obs::{
     observation_qc_with_options as core_observation_qc_with_options,
     render_html as core_observation_qc_render_html, render_text as core_observation_qc_render_text,
@@ -27,35 +27,58 @@ use sidereon_core::qc_obs::{
     SystemCycleSlipQc, SystemMultipathQc, SystemSignalQc,
 };
 use sidereon_core::quality::{
-    self, fde_spp, raim_fde_design as core_raim_fde_design,
-    residual_diagnostics as core_residual_diagnostics, FdeError, FdeOptions, FdeSppError,
-    FdeSppOptions, RaimInput, RaimOptions, RaimWeights, RangeChiSquareTest, RangeFdeOptions,
-    RangeFdeResult, RangeFdeRow, RangeMeasurementDiagnostic, SolutionValidationOptions,
+    self, fde_spp, raim_fde_design as core_raim_fde_design, FdeError, FdeOptions, FdeResult,
+    FdeSppError, FdeSppOptions, FdeUnresolved, FdeUnresolvedReason, RaimInput, RaimOptions,
+    RaimWeights, RangeChiSquareTest, RangeFdeOptions, RangeFdeResult, RangeFdeRow,
+    RangeMeasurementDiagnostic, SolutionValidationOptions, DEFAULT_FDE_MAX_EXCLUSION_RMS_M,
     DEFAULT_P_FA,
 };
 
 use crate::marshal::PyGnssSystem;
+use crate::observables::PyRaimWeights;
 use crate::rinex::{PyBroadcastEphemeris, PyObsEpochTime, PyRinexLintSeverity, PyRinexObs};
 use crate::spp::{PySppConfig, PySppRobustConfig, PySppSolution};
-use crate::{np_array, PySp3, SolveError};
+use crate::{np_array, quality_err, PySp3, SolveError};
 
-fn raim_weights(weights: Option<BTreeMap<String, f64>>) -> RaimWeights {
-    match weights {
-        None => RaimWeights::Unit,
-        Some(map) => RaimWeights::BySatellite(map),
+/// The RAIM weighting a Python `weights` argument names.
+///
+/// `None` selects the core default, `RaimWeights::Solution`: each residual is
+/// divided by the standard deviation the estimator weighted it by, as RTKLIB
+/// demo5 `valsol` forms `sum (v / sigma)^2`. A `RaimWeights` instance is used
+/// as it is; the labels `"solution"` and `"unit"` name those modes; a dict maps
+/// satellite tokens to inverse-variance weights (`RaimWeights.by_satellite`),
+/// with omitted satellites at unit weight.
+fn raim_weights(weights: Option<&Bound<'_, PyAny>>) -> PyResult<RaimWeights> {
+    let Some(weights) = weights.filter(|weights| !weights.is_none()) else {
+        return Ok(RaimWeights::default());
+    };
+    if let Ok(typed) = weights.extract::<PyRef<'_, PyRaimWeights>>() {
+        return Ok(typed.inner().clone());
     }
+    if let Ok(label) = weights.extract::<String>() {
+        return match label.as_str() {
+            "solution" => Ok(RaimWeights::Solution),
+            "unit" => Ok(RaimWeights::Unit),
+            other => Err(PyValueError::new_err(format!(
+                "unknown RAIM weighting {other:?}; expected \"solution\", \"unit\", a RaimWeights, or a dict of per-satellite inverse-variance weights"
+            ))),
+        };
+    }
+    Ok(RaimWeights::BySatellite(
+        weights.extract::<BTreeMap<String, f64>>()?,
+    ))
 }
 
 fn raim_options(
     p_fa: f64,
-    weights: Option<BTreeMap<String, f64>>,
+    weights: Option<&Bound<'_, PyAny>>,
     n_systems: Option<isize>,
-) -> RaimOptions {
+) -> PyResult<RaimOptions> {
     let mut options = RaimOptions::default();
     options.p_fa = p_fa;
-    options.weights = raim_weights(weights);
+    options.weights = raim_weights(weights)?;
     options.n_systems = n_systems;
-    options
+    Ok(options)
 }
 
 /// Typed input for standalone residual chi-square RAIM.
@@ -67,14 +90,19 @@ pub struct PyRaimInput {
 
 #[pymethods]
 impl PyRaimInput {
-    /// Create a standalone RAIM input from satellite tokens and post-fit
-    /// residuals in metres.
+    /// Create a standalone RAIM input from satellite tokens, post-fit
+    /// residuals in metres and, optionally, the variance in square metres the
+    /// estimator weighted each residual by, in residual order. The default
+    /// solution weighting reads the variances and refuses an input without
+    /// them.
     #[new]
-    fn new(used_sats: Vec<String>, residuals_m: Vec<f64>) -> Self {
+    #[pyo3(signature = (used_sats, residuals_m, variances_m2=None))]
+    fn new(used_sats: Vec<String>, residuals_m: Vec<f64>, variances_m2: Option<Vec<f64>>) -> Self {
         Self {
             inner: RaimInput {
                 used_sats,
                 residuals_m,
+                variances_m2,
             },
         }
     }
@@ -91,8 +119,18 @@ impl PyRaimInput {
         self.inner.residuals_m.clone()
     }
 
+    /// Residual variances in square metres, in residual order, or `None`.
+    #[getter]
+    fn variances_m2(&self) -> Option<Vec<f64>> {
+        self.inner.variances_m2.clone()
+    }
+
     fn __repr__(&self) -> String {
-        format!("RaimInput(used_sats={})", self.inner.used_sats.len())
+        format!(
+            "RaimInput(used_sats={}, variances={})",
+            self.inner.used_sats.len(),
+            self.inner.variances_m2.is_some()
+        )
     }
 }
 
@@ -112,7 +150,8 @@ impl PyRaimResult {
         self.inner.fault_detected
     }
 
-    /// Weighted residual sum of squares.
+    /// Weighted residual sum of squares: `sum (r / sigma)^2` under the
+    /// solution weighting, `sum w r^2` under unit or per-satellite weights.
     #[getter]
     fn test_statistic(&self) -> f64 {
         self.inner.test_statistic
@@ -136,13 +175,19 @@ impl PyRaimResult {
         self.inner.testable
     }
 
-    /// Per-satellite standardized residuals as a dict of `token -> value`.
+    /// Per-satellite weighted residuals as a dict of `token -> value`: `r /
+    /// sigma` under the solution weighting, `r sqrt(w)` otherwise. They are not
+    /// standardized by each residual's redundancy, so a satellite the geometry
+    /// leans on shows a small value here even when it carries the fault.
     #[getter]
     fn normalized_residuals(&self) -> BTreeMap<String, f64> {
         self.inner.normalized_residuals.clone()
     }
 
-    /// Satellite token with the largest absolute standardized residual.
+    /// Satellite token with the largest absolute weighted residual. This is not
+    /// a fault identification: a fault on a low-redundancy satellite spreads
+    /// onto the other residuals and can leave a healthy satellite here, which
+    /// is why FDE chooses exclusions by re-solving without each candidate.
     #[getter]
     fn worst_sat(&self) -> Option<String> {
         self.inner.worst_sat.clone()
@@ -169,62 +214,47 @@ impl PyRaimResult {
 }
 
 fn py_raim_result(input: RaimInput, options: RaimOptions) -> PyResult<PyRaimResult> {
-    let inner =
-        quality::raim(&input, &options).map_err(|e| PyValueError::new_err(e.to_string()))?;
-    py_raim_result_with_inner(input, options, inner)
+    let inner = quality::raim(&input, &options).map_err(quality_err)?;
+    Ok(py_raim_result_from(&input.residuals_m, inner))
 }
 
-fn py_raim_result_with_inner(
-    input: RaimInput,
-    options: RaimOptions,
-    inner: quality::RaimResult,
-) -> PyResult<PyRaimResult> {
-    let n_parameters = (input.used_sats.len() as isize - inner.dof).max(0) as usize;
-    let ordered_weights = match &options.weights {
-        RaimWeights::Unit => None,
-        RaimWeights::BySatellite(weights) => Some(
-            input
-                .used_sats
-                .iter()
-                .map(|satellite_id| weights.get(satellite_id).copied().unwrap_or(1.0))
-                .collect::<Vec<_>>(),
-        ),
-    };
-    let diagnostics = core_residual_diagnostics(
-        &input.residuals_m,
-        ordered_weights.as_deref(),
-        n_parameters,
-        Some(options.p_fa),
-    )
-    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(PyRaimResult {
+/// Wrap a core RAIM result with the unweighted residual RMS and the reduced
+/// chi-square `test_statistic / dof` it documents.
+fn py_raim_result_from(residuals_m: &[f64], inner: quality::RaimResult) -> PyRaimResult {
+    let reduced_chi_square = (inner.dof > 0).then(|| inner.test_statistic / inner.dof as f64);
+    PyRaimResult {
         inner,
-        rms_m: diagnostics.rms_m,
-        reduced_chi_square: diagnostics.reduced_chi_square,
-    })
+        rms_m: core_residual_rms(residuals_m),
+        reduced_chi_square,
+    }
 }
 
 /// Direct post-solve residual chi-square RAIM.
 ///
-/// `used_sats` are satellite tokens in residual order; `residuals_m` are the
-/// post-fit pseudorange residuals in metres. `weights` is an optional dict of
-/// per-satellite inverse-variance weights. Build those weights from the
-/// per-satellite residual variances; unit weights with metre-scale residuals
-/// make `fault_detected` saturate near 100%. Omitted satellite entries default
-/// to unit weight.
+/// `used_sats` are satellite tokens in residual order (or a `RaimInput`, with
+/// `residuals_m` and `variances_m2` omitted); `residuals_m` are the post-fit
+/// pseudorange residuals in metres; `variances_m2` are the variances in square
+/// metres the estimator weighted each residual by. `weights` selects the
+/// weighting: `None` (the core default) reads `variances_m2` and forms RTKLIB
+/// demo5 `valsol`'s `sum (r / sigma)^2`, refusing residuals without variances
+/// with `ValueError`; `"unit"` treats every sigma as 1 m; a dict (or
+/// `RaimWeights.by_satellite`) gives per-satellite inverse-variance weights,
+/// with omitted satellites at unit weight. `n_systems` overrides the number of
+/// receiver clock parameters, otherwise the distinct system letters.
 #[pyfunction]
-#[pyo3(signature = (used_sats, residuals_m=None, p_fa=DEFAULT_P_FA, weights=None, n_systems=None))]
+#[pyo3(signature = (used_sats, residuals_m=None, p_fa=DEFAULT_P_FA, weights=None, n_systems=None, variances_m2=None))]
 fn raim(
     used_sats: &Bound<'_, PyAny>,
     residuals_m: Option<Vec<f64>>,
     p_fa: f64,
-    weights: Option<BTreeMap<String, f64>>,
+    weights: Option<&Bound<'_, PyAny>>,
     n_systems: Option<isize>,
+    variances_m2: Option<Vec<f64>>,
 ) -> PyResult<PyRaimResult> {
     let input = if let Ok(typed) = used_sats.extract::<PyRef<'_, PyRaimInput>>() {
-        if residuals_m.is_some() {
+        if residuals_m.is_some() || variances_m2.is_some() {
             return Err(PyValueError::new_err(
-                "residuals_m must be omitted when used_sats is RaimInput",
+                "residuals_m and variances_m2 must be omitted when used_sats is RaimInput",
             ));
         }
         typed.inner.clone()
@@ -236,58 +266,58 @@ fn raim(
         RaimInput {
             used_sats,
             residuals_m,
+            variances_m2,
         }
     };
-    let options = raim_options(p_fa, weights, n_systems);
+    let options = raim_options(p_fa, weights, n_systems)?;
     py_raim_result(input, options)
 }
 
 /// Run residual chi-square RAIM over an existing SPP solution object.
+///
+/// The residuals, their variances (`SppSolution.pseudorange_variances_m2`) and
+/// the solve's clock count come from the solution; `n_systems` overrides the
+/// clock count. `weights` defaults to the solution weighting, the chi-square
+/// of the residuals over the variances the solve weighted them by.
 #[pyfunction]
 #[pyo3(signature = (solution, p_fa=DEFAULT_P_FA, weights=None, n_systems=None))]
 fn raim_for_solution(
     solution: &PySppSolution,
     p_fa: f64,
-    weights: Option<BTreeMap<String, f64>>,
+    weights: Option<&Bound<'_, PyAny>>,
     n_systems: Option<isize>,
 ) -> PyResult<PyRaimResult> {
-    let options = raim_options(p_fa, weights, n_systems);
-    let inner = quality::raim_for_solution(solution.inner(), &options)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    let input = RaimInput {
-        used_sats: solution
-            .inner()
-            .used_sats
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
-        residuals_m: solution.inner().residuals_m.clone(),
-    };
-    py_raim_result_with_inner(input, options, inner)
+    let options = raim_options(p_fa, weights, n_systems)?;
+    let inner = quality::raim_for_solution(solution.inner(), &options).map_err(quality_err)?;
+    Ok(py_raim_result_from(&solution.inner().residuals_m, inner))
 }
 
 /// Residual-based chi-square RAIM over a solution's used satellites and residuals.
 ///
 /// `used_sats` are the satellite tokens in residual order; `residuals_m` are the
 /// post-fit pseudorange residuals (metres). `p_fa` is the false-alarm
-/// probability; `weights` is an optional dict of per-satellite inverse-variance
-/// weights from per-satellite residual variances (unit weights when omitted);
-/// `n_systems` optionally overrides the number of distinct GNSS clock systems.
-/// Returns a `RaimResult`. Raises `ValueError` on malformed input.
+/// probability. `weights` and `variances_m2` are as for `raim`: the default
+/// solution weighting reads `variances_m2`, the variances (square metres) the
+/// estimator weighted each residual by, and refuses residuals without them;
+/// `"unit"` or a dict of per-satellite inverse-variance weights select the
+/// other modes. `n_systems` optionally overrides the number of receiver clock
+/// parameters. Returns a `RaimResult`. Raises `ValueError` on malformed input.
 #[pyfunction]
-#[pyo3(signature = (used_sats, residuals_m, p_fa, weights=None, n_systems=None))]
+#[pyo3(signature = (used_sats, residuals_m, p_fa=DEFAULT_P_FA, weights=None, n_systems=None, variances_m2=None))]
 fn qc_raim(
     used_sats: Vec<String>,
     residuals_m: Vec<f64>,
     p_fa: f64,
-    weights: Option<BTreeMap<String, f64>>,
+    weights: Option<&Bound<'_, PyAny>>,
     n_systems: Option<isize>,
+    variances_m2: Option<Vec<f64>>,
 ) -> PyResult<PyRaimResult> {
     let input = RaimInput {
         used_sats,
         residuals_m,
+        variances_m2,
     };
-    let options = raim_options(p_fa, weights, n_systems);
+    let options = raim_options(p_fa, weights, n_systems)?;
     py_raim_result(input, options)
 }
 
@@ -297,6 +327,18 @@ pub struct PyFdeResult {
     solution: ReceiverSolution,
     excluded: Vec<String>,
     iterations: usize,
+    raim: quality::RaimResult,
+}
+
+impl From<FdeResult<ReceiverSolution>> for PyFdeResult {
+    fn from(result: FdeResult<ReceiverSolution>) -> Self {
+        Self {
+            solution: result.solution,
+            excluded: result.excluded,
+            iterations: result.iterations,
+            raim: result.raim,
+        }
+    }
 }
 
 #[pymethods]
@@ -338,16 +380,30 @@ impl PyFdeResult {
         self.solution.residuals_m.clone()
     }
 
+    /// The accepted solution as an `SppSolution`, with every field the solve
+    /// reports.
+    #[getter]
+    fn solution(&self) -> PySppSolution {
+        PySppSolution::from_solution(self.solution.clone())
+    }
+
     /// Excluded satellite tokens, in exclusion order.
     #[getter]
     fn excluded(&self) -> Vec<String> {
         self.excluded.clone()
     }
 
-    /// Number of exclusions performed before RAIM passed.
+    /// Number of exclusions performed, `len(excluded)`.
     #[getter]
     fn iterations(&self) -> usize {
         self.iterations
+    }
+
+    /// The detection test of the accepted solution. `testable` is `False`
+    /// when the accepted set has no redundancy left to test.
+    #[getter]
+    fn raim(&self) -> PyRaimResult {
+        py_raim_result_from(&self.solution.residuals_m, self.raim.clone())
     }
 
     fn __repr__(&self) -> String {
@@ -360,152 +416,333 @@ impl PyFdeResult {
     }
 }
 
-/// Fault detection and exclusion over an SPP solve.
-///
-/// `config` is the `SppConfig` to solve; its observation set is the starting set
-/// the loop shrinks. After each solve RAIM is run (with `p_fa`, optional
-/// per-satellite `weights`, and optional `n_systems`); if a fault is detected the
-/// worst satellite is excluded and the solve re-run, up to `max_iterations`
-/// exclusions. `max_pdop` optionally caps the accepted geometry. Returns an
-/// `FdeResult`. Raises `SolveError` if a solve fails or the fault is unresolved,
-/// and `ValueError` on malformed input.
-#[pyfunction]
-#[pyo3(signature = (sp3, config, p_fa, max_iterations, weights=None, n_systems=None, max_pdop=None))]
-#[allow(clippy::too_many_arguments)]
-fn qc_fde(
-    sp3: &PySp3,
-    config: &PySppConfig,
-    p_fa: f64,
-    max_iterations: usize,
-    weights: Option<BTreeMap<String, f64>>,
-    n_systems: Option<isize>,
-    max_pdop: Option<f64>,
-) -> PyResult<PyFdeResult> {
-    let inputs = config.to_inputs();
-    let with_geodetic = config.with_geodetic_flag();
-    let mut validation = SolutionValidationOptions::default();
-    validation.max_pdop = max_pdop;
-    let raim = raim_options(p_fa, weights, n_systems);
-    let mut fde = FdeOptions::new(raim.clone(), max_iterations);
-    fde.raim = raim;
-    fde.max_iterations = max_iterations;
-    let mut options = FdeSppOptions::new(fde.clone(), validation);
-    options.fde = fde;
-    options.validation = validation;
-
-    match fde_spp(&sp3.inner, &inputs, with_geodetic, &options) {
-        Ok(result) => Ok(PyFdeResult {
-            solution: result.solution,
-            excluded: result.excluded,
-            iterations: result.iterations,
-        }),
-        Err(FdeError::Solve(FdeSppError::Spp(err))) => Err(SolveError::new_err(err.to_string())),
-        Err(FdeError::Solve(FdeSppError::Validation(err))) => {
-            Err(SolveError::new_err(err.to_string()))
-        }
-        Err(FdeError::FaultUnresolved(stat)) => Err(SolveError::new_err(format!(
-            "FDE fault unresolved: test statistic {stat} still exceeds threshold after exhausting the exclusion budget"
-        ))),
-        Err(FdeError::Raim(err)) => Err(PyValueError::new_err(err.to_string())),
+/// The label of why FDE stopped with a fault still detected:
+/// `exclusion_budget_exhausted` or `no_admissible_exclusion`.
+fn unresolved_reason_label(reason: FdeUnresolvedReason) -> String {
+    match reason {
+        FdeUnresolvedReason::ExclusionBudgetExhausted => "exclusion_budget_exhausted".to_string(),
+        FdeUnresolvedReason::NoAdmissibleExclusion => "no_admissible_exclusion".to_string(),
+        // The core enum is non-exhaustive; a variant a later core adds keeps
+        // its own name rather than collapsing into a catch-all label.
+        other => snake_case(&format!("{other:?}")),
     }
 }
 
-/// Fault detection and exclusion over an SPP solve using broadcast ephemeris.
-#[pyfunction]
-#[pyo3(signature = (broadcast, config, p_fa, max_iterations, weights=None, n_systems=None, max_pdop=None))]
-#[allow(clippy::too_many_arguments)]
-fn qc_fde_broadcast(
-    broadcast: &PyBroadcastEphemeris,
-    config: &PySppConfig,
-    p_fa: f64,
-    max_iterations: usize,
-    weights: Option<BTreeMap<String, f64>>,
-    n_systems: Option<isize>,
-    max_pdop: Option<f64>,
-) -> PyResult<PyFdeResult> {
-    let inputs = config.to_inputs();
-    let with_geodetic = config.with_geodetic_flag();
-    let mut validation = SolutionValidationOptions::default();
-    validation.max_pdop = max_pdop;
-    let raim = raim_options(p_fa, weights, n_systems);
-    let mut fde = FdeOptions::new(raim.clone(), max_iterations);
-    fde.raim = raim;
-    fde.max_iterations = max_iterations;
-    let mut options = FdeSppOptions::new(fde.clone(), validation);
-    options.fde = fde;
-    options.validation = validation;
+fn snake_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (index, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if index > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
 
-    match fde_spp(&broadcast.inner, &inputs, with_geodetic, &options) {
-        Ok(result) => Ok(PyFdeResult {
-            solution: result.solution,
-            excluded: result.excluded,
-            iterations: result.iterations,
-        }),
-        Err(FdeError::Solve(FdeSppError::Spp(err))) => Err(SolveError::new_err(err.to_string())),
+/// Map an unresolved fault into `FdeFaultUnresolvedError`, carrying the core
+/// reason, the last solution, the exclusions made and its detection test.
+fn fde_fault_unresolved_err(py: Python<'_>, unresolved: FdeUnresolved<ReceiverSolution>) -> PyErr {
+    let reason = unresolved_reason_label(unresolved.reason);
+    let threshold = unresolved
+        .raim
+        .threshold
+        .map_or_else(|| "none".to_string(), |threshold| threshold.to_string());
+    let message = format!(
+        "FDE fault unresolved ({reason}): test statistic {} exceeds threshold {threshold} after excluding {:?}",
+        unresolved.raim.test_statistic, unresolved.excluded
+    );
+    let ty = match crate::fde_fault_unresolved_error_type(py) {
+        Ok(ty) => ty,
+        Err(e) => return e,
+    };
+    let err = PyErr::from_type(ty, message);
+    let raim = py_raim_result_from(&unresolved.solution.residuals_m, unresolved.raim);
+    let solution = PySppSolution::from_solution(unresolved.solution);
+    match set_fde_unresolved_fields(py, &err, reason, solution, unresolved.excluded, raim) {
+        Ok(()) => err,
+        Err(e) => e,
+    }
+}
+
+fn set_fde_unresolved_fields(
+    py: Python<'_>,
+    err: &PyErr,
+    reason: String,
+    solution: PySppSolution,
+    excluded: Vec<String>,
+    raim: PyRaimResult,
+) -> PyResult<()> {
+    let value = err.value(py);
+    value.setattr("reason", reason)?;
+    value.setattr("solution", Py::new(py, solution)?)?;
+    value.setattr("excluded", excluded)?;
+    value.setattr("raim", Py::new(py, raim)?)?;
+    Ok(())
+}
+
+/// Map a core FDE outcome: the accepted `FdeResult`, `SelectionUnsettledError`
+/// or `SolveError` for a solve that failed on the full set and that no
+/// leave-one-out re-solve cured, `FdeFaultUnresolvedError` for a fault still
+/// detected when the loop stopped, and `ValueError` for invalid RAIM options.
+fn fde_outcome(
+    py: Python<'_>,
+    outcome: Result<FdeResult<ReceiverSolution>, FdeError<ReceiverSolution, FdeSppError>>,
+) -> PyResult<PyFdeResult> {
+    match outcome {
+        Ok(result) => Ok(result.into()),
+        Err(FdeError::Solve(FdeSppError::Spp(err))) => Err(crate::spp_solve_err(err)),
         Err(FdeError::Solve(FdeSppError::Validation(err))) => {
             Err(SolveError::new_err(err.to_string()))
         }
-        Err(FdeError::FaultUnresolved(stat)) => Err(SolveError::new_err(format!(
-            "FDE fault unresolved: test statistic {stat} still exceeds threshold after exhausting the exclusion budget"
-        ))),
-        Err(FdeError::Raim(err)) => Err(PyValueError::new_err(err.to_string())),
+        Err(FdeError::FaultUnresolved(unresolved)) => {
+            Err(fde_fault_unresolved_err(py, *unresolved))
+        }
+        Err(FdeError::Raim(err)) => Err(quality_err(err)),
     }
+}
+
+/// The exclusion budget: `max_exclusions`, or the core default, RTKLIB demo5's
+/// single exclusion, when it is not given.
+fn exclusion_budget(max_exclusions: Option<usize>) -> usize {
+    max_exclusions.unwrap_or_else(|| FdeOptions::default().max_exclusions)
+}
+
+/// The core FDE options for one binding call.
+#[allow(clippy::too_many_arguments)]
+fn fde_spp_options(
+    p_fa: f64,
+    max_exclusions: Option<usize>,
+    weights: Option<&Bound<'_, PyAny>>,
+    n_systems: Option<isize>,
+    max_pdop: Option<f64>,
+    max_exclusion_rms_m: f64,
+) -> PyResult<FdeSppOptions> {
+    let mut validation = SolutionValidationOptions::default();
+    validation.max_pdop = max_pdop;
+    let mut fde = FdeOptions::new(
+        raim_options(p_fa, weights, n_systems)?,
+        exclusion_budget(max_exclusions),
+    );
+    fde.max_exclusion_rms_m = max_exclusion_rms_m;
+    Ok(FdeSppOptions::new(fde, validation))
+}
+
+/// Fault detection and exclusion over an SPP solve.
+///
+/// `config` is the `SppConfig` to solve; its observation set is the starting
+/// set. The solve is tested with residual chi-square RAIM at `p_fa` (default
+/// `1e-3`, RTKLIB demo5's `chisqr` alpha): by default the residuals over the
+/// variances the solve weighted them by (`SppSolution.pseudorange_variances_m2`),
+/// as RTKLIB `valsol` forms `sum (v / sigma)^2`; `weights` (`"unit"`, a dict of
+/// per-satellite inverse-variance weights, or a `RaimWeights`) and `n_systems`
+/// override that. On a detected fault each satellite of the flagged solution is
+/// left out in turn and the rest re-solved, as RTKLIB demo5 `raim_fde` does, and
+/// the re-solve with the smallest unweighted residual RMS, no larger than
+/// `max_exclusion_rms_m` (default 100 m, demo5's initial `rms`) and using at
+/// least five satellites, is kept. `max_exclusions` (default 1, demo5's single
+/// exclusion) bounds the exclusions; a larger budget repeats the
+/// test and the search on the remaining set. A full-set solve that fails as
+/// RTKLIB `estpos` can fail (no settling, singular geometry, a refused
+/// geometry) with at least six observations is searched the same way.
+/// `max_pdop` optionally caps the accepted geometry.
+///
+/// Returns an `FdeResult`. Raises `FdeFaultUnresolvedError` (a `SolveError`)
+/// when a fault is still detected when the loop stops, carrying the last
+/// solution, the exclusions and its `RaimResult`; `SolveError` (or
+/// `SelectionUnsettledError`) when the solve fails and no exclusion cures it;
+/// and `ValueError` on malformed input or options.
+#[pyfunction]
+#[pyo3(signature = (
+    sp3,
+    config,
+    p_fa=DEFAULT_P_FA,
+    max_exclusions=None,
+    weights=None,
+    n_systems=None,
+    max_pdop=None,
+    *,
+    max_exclusion_rms_m=DEFAULT_FDE_MAX_EXCLUSION_RMS_M,
+))]
+#[allow(clippy::too_many_arguments)]
+fn qc_fde(
+    py: Python<'_>,
+    sp3: &PySp3,
+    config: &PySppConfig,
+    p_fa: f64,
+    max_exclusions: Option<usize>,
+    weights: Option<&Bound<'_, PyAny>>,
+    n_systems: Option<isize>,
+    max_pdop: Option<f64>,
+    max_exclusion_rms_m: f64,
+) -> PyResult<PyFdeResult> {
+    let options = fde_spp_options(
+        p_fa,
+        max_exclusions,
+        weights,
+        n_systems,
+        max_pdop,
+        max_exclusion_rms_m,
+    )?;
+    fde_outcome(
+        py,
+        fde_spp(
+            &sp3.inner,
+            &config.to_inputs(),
+            config.with_geodetic_flag(),
+            &options,
+        ),
+    )
+}
+
+/// Fault detection and exclusion over an SPP solve using broadcast ephemeris;
+/// the arguments, result and errors are those of `qc_fde`.
+#[pyfunction]
+#[pyo3(signature = (
+    broadcast,
+    config,
+    p_fa=DEFAULT_P_FA,
+    max_exclusions=None,
+    weights=None,
+    n_systems=None,
+    max_pdop=None,
+    *,
+    max_exclusion_rms_m=DEFAULT_FDE_MAX_EXCLUSION_RMS_M,
+))]
+#[allow(clippy::too_many_arguments)]
+fn qc_fde_broadcast(
+    py: Python<'_>,
+    broadcast: &PyBroadcastEphemeris,
+    config: &PySppConfig,
+    p_fa: f64,
+    max_exclusions: Option<usize>,
+    weights: Option<&Bound<'_, PyAny>>,
+    n_systems: Option<isize>,
+    max_pdop: Option<f64>,
+    max_exclusion_rms_m: f64,
+) -> PyResult<PyFdeResult> {
+    let options = fde_spp_options(
+        p_fa,
+        max_exclusions,
+        weights,
+        n_systems,
+        max_pdop,
+        max_exclusion_rms_m,
+    )?;
+    fde_outcome(
+        py,
+        fde_spp(
+            &broadcast.inner,
+            &config.to_inputs(),
+            config.with_geodetic_flag(),
+            &options,
+        ),
+    )
 }
 
 /// Alias for `qc_fde_broadcast`.
 #[pyfunction]
-#[pyo3(signature = (broadcast, config, p_fa, max_iterations, weights=None, n_systems=None, max_pdop=None))]
+#[pyo3(signature = (
+    broadcast,
+    config,
+    p_fa=DEFAULT_P_FA,
+    max_exclusions=None,
+    weights=None,
+    n_systems=None,
+    max_pdop=None,
+    *,
+    max_exclusion_rms_m=DEFAULT_FDE_MAX_EXCLUSION_RMS_M,
+))]
 #[allow(clippy::too_many_arguments)]
 fn fde_broadcast(
+    py: Python<'_>,
     broadcast: &PyBroadcastEphemeris,
     config: &PySppConfig,
     p_fa: f64,
-    max_iterations: usize,
-    weights: Option<BTreeMap<String, f64>>,
+    max_exclusions: Option<usize>,
+    weights: Option<&Bound<'_, PyAny>>,
     n_systems: Option<isize>,
     max_pdop: Option<f64>,
+    max_exclusion_rms_m: f64,
 ) -> PyResult<PyFdeResult> {
     qc_fde_broadcast(
+        py,
         broadcast,
         config,
         p_fa,
-        max_iterations,
+        max_exclusions,
         weights,
         n_systems,
         max_pdop,
+        max_exclusion_rms_m,
     )
 }
 
 #[pyfunction]
-#[pyo3(signature = (sp3, config, robust, p_fa, max_iterations, weights=None, n_systems=None, max_pdop=None))]
+#[pyo3(signature = (
+    sp3,
+    config,
+    robust,
+    p_fa=DEFAULT_P_FA,
+    max_exclusions=None,
+    weights=None,
+    n_systems=None,
+    max_pdop=None,
+    *,
+    max_exclusion_rms_m=DEFAULT_FDE_MAX_EXCLUSION_RMS_M,
+))]
 #[allow(clippy::too_many_arguments)]
 /// Run robust SPP with RAIM fault detection and exclusion.
 ///
-/// This wraps the core robust SPP FDE driver and returns the final accepted result.
+/// This wraps the core robust SPP FDE driver: every solve, the first and each
+/// leave-one-out re-solve, is the Huber-reweighted solve `robust` configures.
+/// Detection standardizes the residuals by the pseudorange variances, not by
+/// the Huber-reduced weights. The other arguments, the result and the errors
+/// are those of `qc_fde`.
 fn solve_spp_robust_fde(
+    py: Python<'_>,
     sp3: &PySp3,
     config: &PySppConfig,
     robust: &PySppRobustConfig,
     p_fa: f64,
-    max_iterations: usize,
-    weights: Option<BTreeMap<String, f64>>,
+    max_exclusions: Option<usize>,
+    weights: Option<&Bound<'_, PyAny>>,
     n_systems: Option<isize>,
     max_pdop: Option<f64>,
+    max_exclusion_rms_m: f64,
 ) -> PyResult<PyFdeResult> {
     solve_spp_robust_fde_impl(
+        py,
         sp3,
         config,
         robust,
-        p_fa,
-        max_iterations,
-        weights,
-        n_systems,
-        max_pdop,
+        fde_spp_options(
+            p_fa,
+            max_exclusions,
+            weights,
+            n_systems,
+            max_pdop,
+            max_exclusion_rms_m,
+        )?,
     )
 }
 
 #[pyfunction]
-#[pyo3(signature = (sp3, config, robust, p_fa, max_iterations, weights=None, n_systems=None, max_pdop=None))]
+#[pyo3(signature = (
+    sp3,
+    config,
+    robust,
+    p_fa=DEFAULT_P_FA,
+    max_exclusions=None,
+    weights=None,
+    n_systems=None,
+    max_pdop=None,
+    *,
+    max_exclusion_rms_m=DEFAULT_FDE_MAX_EXCLUSION_RMS_M,
+))]
 #[allow(clippy::too_many_arguments)]
 /// Deprecated alias for `solve_spp_robust_fde`.
 fn spp_robust_fde_driver(
@@ -514,10 +751,11 @@ fn spp_robust_fde_driver(
     config: &PySppConfig,
     robust: &PySppRobustConfig,
     p_fa: f64,
-    max_iterations: usize,
-    weights: Option<BTreeMap<String, f64>>,
+    max_exclusions: Option<usize>,
+    weights: Option<&Bound<'_, PyAny>>,
     n_systems: Option<isize>,
     max_pdop: Option<f64>,
+    max_exclusion_rms_m: f64,
 ) -> PyResult<PyFdeResult> {
     let warning = py.get_type::<PyDeprecationWarning>();
     PyErr::warn(
@@ -527,61 +765,38 @@ fn spp_robust_fde_driver(
         2,
     )?;
     solve_spp_robust_fde_impl(
+        py,
         sp3,
         config,
         robust,
-        p_fa,
-        max_iterations,
-        weights,
-        n_systems,
-        max_pdop,
+        fde_spp_options(
+            p_fa,
+            max_exclusions,
+            weights,
+            n_systems,
+            max_pdop,
+            max_exclusion_rms_m,
+        )?,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn solve_spp_robust_fde_impl(
+    py: Python<'_>,
     sp3: &PySp3,
     config: &PySppConfig,
     robust: &PySppRobustConfig,
-    p_fa: f64,
-    max_iterations: usize,
-    weights: Option<BTreeMap<String, f64>>,
-    n_systems: Option<isize>,
-    max_pdop: Option<f64>,
+    options: FdeSppOptions,
 ) -> PyResult<PyFdeResult> {
-    let inputs = config.to_inputs();
-    let with_geodetic = config.with_geodetic_flag();
-    let mut validation = SolutionValidationOptions::default();
-    validation.max_pdop = max_pdop;
-    let raim = raim_options(p_fa, weights, n_systems);
-    let mut fde = FdeOptions::new(raim.clone(), max_iterations);
-    fde.raim = raim;
-    fde.max_iterations = max_iterations;
-    let mut options = FdeSppOptions::new(fde.clone(), validation);
-    options.fde = fde;
-    options.validation = validation;
-
-    match quality::spp_robust_fde_driver(
-        &sp3.inner,
-        &inputs,
-        with_geodetic,
-        robust.inner(),
-        &options,
-    ) {
-        Ok(result) => Ok(PyFdeResult {
-            solution: result.solution,
-            excluded: result.excluded,
-            iterations: result.iterations,
-        }),
-        Err(FdeError::Solve(FdeSppError::Spp(err))) => Err(SolveError::new_err(err.to_string())),
-        Err(FdeError::Solve(FdeSppError::Validation(err))) => {
-            Err(SolveError::new_err(err.to_string()))
-        }
-        Err(FdeError::FaultUnresolved(stat)) => Err(SolveError::new_err(format!(
-            "FDE fault unresolved: test statistic {stat} still exceeds threshold after exhausting the exclusion budget"
-        ))),
-        Err(FdeError::Raim(err)) => Err(PyValueError::new_err(err.to_string())),
-    }
+    fde_outcome(
+        py,
+        quality::spp_robust_fde_driver(
+            &sp3.inner,
+            &config.to_inputs(),
+            config.with_geodetic_flag(),
+            robust.inner(),
+            &options,
+        ),
+    )
 }
 
 // --- generic range RAIM/FDE design over a linearized measurement set -------
@@ -795,19 +1010,29 @@ impl PyRangeFdeResult {
 /// `rows` is a list of `RangeFdeRow` linearizing a range solve about a nominal
 /// state. The protected weighted least squares `dx = (H^T W H)^-1 H^T W r` is
 /// solved, the global chi-square consistency test run, and (on a detected fault)
-/// the leave-one-out fault-detection-and-exclusion loop run. `p_fa` is the
-/// false-alarm probability; `max_exclusions` caps the number of removals (`None`
-/// for unbounded); `min_redundancy` is the redundancy floor an exclusion must
-/// leave behind. Returns a `RangeFdeResult`. Raises `ValueError` on malformed or
-/// rank-deficient input.
+/// RTKLIB demo5 `raim_fde`'s exclusion run: each active row is left out in turn,
+/// in input order, the rest re-solved, and the one whose unweighted post-fit
+/// residual RMS is smallest (and no larger than `max_exclusion_rms_m`, default
+/// 100 m) is excluded, ties to the later row. `p_fa` is the false-alarm
+/// probability; `max_exclusions` caps the number of removals (default 1,
+/// RTKLIB's single exclusion; `None` for unbounded); `min_redundancy` is the
+/// redundancy floor an exclusion must leave behind. Returns a `RangeFdeResult`.
+/// Raises `ValueError` on malformed or rank-deficient input.
 #[pyfunction]
-#[pyo3(signature = (rows, p_fa=DEFAULT_P_FA, max_exclusions=None, min_redundancy=1))]
+#[pyo3(signature = (
+    rows,
+    p_fa=DEFAULT_P_FA,
+    max_exclusions=Some(RangeFdeOptions::default().max_exclusions),
+    min_redundancy=RangeFdeOptions::default().min_redundancy,
+    max_exclusion_rms_m=DEFAULT_FDE_MAX_EXCLUSION_RMS_M,
+))]
 fn qc_raim_fde_design(
     py: Python<'_>,
     rows: Vec<Py<PyRangeFdeRow>>,
     p_fa: f64,
     max_exclusions: Option<usize>,
     min_redundancy: usize,
+    max_exclusion_rms_m: f64,
 ) -> PyResult<PyRangeFdeResult> {
     let rows: Vec<RangeFdeRow> = rows
         .iter()
@@ -817,14 +1042,14 @@ fn qc_raim_fde_design(
     options.p_fa = p_fa;
     options.max_exclusions = max_exclusions.unwrap_or(usize::MAX);
     options.min_redundancy = min_redundancy;
-    let inner =
-        core_raim_fde_design(&rows, &options).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    options.max_exclusion_rms_m = max_exclusion_rms_m;
+    let inner = core_raim_fde_design(&rows, &options).map_err(quality_err)?;
     Ok(PyRangeFdeResult { inner })
 }
 
 #[pyfunction]
 fn chi2_inv(p: f64, dof: usize) -> PyResult<f64> {
-    quality::chi2_inv(p, dof).map_err(|e| PyValueError::new_err(e.to_string()))
+    quality::chi2_inv(p, dof).map_err(quality_err)
 }
 
 /// Source of the interval used by observation QC gap detection.
@@ -1324,6 +1549,7 @@ impl PyObservationQcNote {
         match self.inner {
             ObservationQcNote::NonMonotonicEpoch { .. } => "non_monotonic_epoch",
             ObservationQcNote::IntervalUnresolved => "interval_unresolved",
+            ObservationQcNote::EventHeaderRecordsUnread => "event_header_records_unread",
         }
     }
 
@@ -1331,7 +1557,25 @@ impl PyObservationQcNote {
     fn epoch_index(&self) -> Option<usize> {
         match self.inner {
             ObservationQcNote::NonMonotonicEpoch { epoch_index } => Some(epoch_index),
-            ObservationQcNote::IntervalUnresolved => None,
+            ObservationQcNote::IntervalUnresolved | ObservationQcNote::EventHeaderRecordsUnread => {
+                None
+            }
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        match self.inner {
+            ObservationQcNote::NonMonotonicEpoch { epoch_index } => {
+                format!(
+                    "ObservationQcNote(kind=\"non_monotonic_epoch\", epoch_index={epoch_index})"
+                )
+            }
+            ObservationQcNote::IntervalUnresolved => {
+                "ObservationQcNote(kind=\"interval_unresolved\")".to_string()
+            }
+            ObservationQcNote::EventHeaderRecordsUnread => {
+                "ObservationQcNote(kind=\"event_header_records_unread\")".to_string()
+            }
         }
     }
 }

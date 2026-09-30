@@ -5,17 +5,15 @@ end-to-end differential solve synthesized from the committed multi-GNSS SP3
 product: a surveyed base and a nearby rover both observe the same satellites;
 pseudoranges are synthesized as `geometric_range - c*dt_sat` (the same synthesis
 the GLONASS SPP test uses). The base turns its pseudoranges into corrections, the
-rover applies them and solves, and the recovered rover position and base/rover
-baseline must match the known synthesis truth. The differential cancels the
-satellite-common terms, so the baseline is recovered far tighter than the
-absolute light-time-omitted single-point error.
+rover applies them and solves, and the rover solution must equal, bit for bit,
+the core's solve of the same inputs in `fixtures/core_goldens.json`.
 """
 
 import os
 
 import numpy as np
 import sidereon
-from _helpers import CORE_FIXTURES
+from _helpers import CORE_FIXTURES, core_goldens, hex_to_f64
 
 SP3_FILE = "GRG0MGXFIN_20201760000_01D_15M_ORB.SP3"
 DOY = 176.0
@@ -83,29 +81,51 @@ def _config(t_rx):
     )
 
 
-def test_dgnss_solve_recovers_rover_and_baseline():
+def _bits(values):
+    return np.asarray(values, dtype=np.float64).ravel().view(np.uint64).tolist()
+
+
+def _golden_bits(hex_values):
+    return [int(value, 16) for value in hex_values]
+
+
+def _golden_observations(rows):
+    return [(sat, hex_to_f64(bits)) for sat, bits in rows]
+
+
+def test_dgnss_solve_matches_core():
+    """`scripts/core_goldens` synthesizes this scenario the way `_synth` does and
+    solves it through the core. The binding solves the inputs it wrote, so the
+    comparison does not depend on how numpy rounds the synthesis, and must
+    return the core's solution bit for bit."""
+    golden = core_goldens()["dgnss"]
     sp3 = _sp3()
-    base = _geodetic_to_ecef(BASE_LAT_DEG, BASE_LON_DEG, BASE_HEIGHT_M)
-    rover = base + ROVER_OFFSET_M
+    t_rx = hex_to_f64(golden["t_rx_j2000_s"])
+    base = [hex_to_f64(bits) for bits in golden["base_position_m"]]
+    base_obs = _golden_observations(golden["base_observations"])
+    rover_obs = _golden_observations(golden["rover_observations"])
 
-    base_obs, t_rx = _synth(sp3, base)
-    rover_obs, _ = _synth(sp3, rover)
-    assert len(base_obs) >= 5 and len(rover_obs) >= 5
+    # The scenario is the one this module synthesizes: the same epoch and the
+    # same satellites above the mask at the base and the rover.
+    assert t_rx == float(sp3.epochs_j2000_seconds[EPOCH_INDEX])
+    python_base = _geodetic_to_ecef(BASE_LAT_DEG, BASE_LON_DEG, BASE_HEIGHT_M)
+    assert [sat for sat, _ in _synth(sp3, python_base)[0]] == [
+        sat for sat, _ in base_obs
+    ]
+    assert [sat for sat, _ in _synth(sp3, python_base + ROVER_OFFSET_M)[0]] == [
+        sat for sat, _ in rover_obs
+    ]
 
-    sol = sidereon.dgnss_solve(sp3, list(base), base_obs, rover_obs, _config(t_rx))
+    sol = sidereon.dgnss_solve(sp3, base, base_obs, rover_obs, _config(t_rx))
 
-    assert len(sol.used_sats) >= 4
-    pos_err = float(np.linalg.norm(sol.position - rover))
-    assert np.isfinite(pos_err) and pos_err < 50.0, (
-        f"rover recovered within {pos_err:.3f} m"
-    )
-
-    # The differential cancels the satellite-common (light-time-omitted) error,
-    # so the baseline is recovered to the metre.
-    true_baseline = float(np.linalg.norm(ROVER_OFFSET_M))
-    assert abs(sol.baseline_m - true_baseline) < 5.0
-    baseline_err = float(np.linalg.norm(sol.baseline_vector_m - ROVER_OFFSET_M))
-    assert baseline_err < 5.0, f"baseline vector within {baseline_err:.3f} m"
+    expected = golden["solution"]
+    assert sol.used_sats == expected["used_sats"]
+    assert sol.dropped_sats == expected["dropped_sats"]
+    assert _bits(sol.position) == _golden_bits(expected["position_m"])
+    assert _bits([sol.rx_clock_s]) == _golden_bits([expected["rx_clock_s"]])
+    assert _bits(sol.residuals_m) == _golden_bits(expected["residuals_m"])
+    assert _bits(sol.baseline_vector_m) == _golden_bits(expected["baseline_vector_m"])
+    assert _bits([sol.baseline_m]) == _golden_bits([expected["baseline_m"]])
 
 
 def test_dgnss_corrections_near_zero_for_clock_free_base():
@@ -119,6 +139,61 @@ def test_dgnss_corrections_near_zero_for_clock_free_base():
     assert len(prc) >= 5
     # The only residual is the light-time/Sagnac term the simple synthesis omits.
     assert max(abs(v) for v in prc.values()) < 200.0
+
+
+def test_dgnss_invalid_base_position_preserves_fields():
+    import pytest
+
+    sp3 = _sp3()
+    with pytest.raises(ValueError) as exc_info:
+        sidereon.dgnss_pseudorange_corrections(
+            sp3,
+            [float("nan"), 0.0, 0.0],
+            [],
+            float(sp3.epochs_j2000_seconds[EPOCH_INDEX]),
+        )
+
+    error = exc_info.value
+    assert type(error) is ValueError
+    assert str(error) == "invalid DGNSS input base_position_m[0]: not finite"
+    assert error.detail == {
+        "family": "DgnssError",
+        "kind": "invalid_input",
+        "field": "base_position_m[0]",
+        "reason": "not finite",
+        "message": "invalid DGNSS input base_position_m[0]: not finite",
+    }
+
+
+def test_dgnss_public_solve_retains_nested_spp_refusal():
+    import pytest
+
+    sp3 = _sp3()
+    t_rx = float(sp3.epochs_j2000_seconds[EPOCH_INDEX])
+    base = _geodetic_to_ecef(BASE_LAT_DEG, BASE_LON_DEG, BASE_HEIGHT_M)
+
+    base_obs, _ = _synth(sp3, base)
+    rover_obs = base_obs[:1]
+
+    with pytest.raises(sidereon.SolveError) as exc_info:
+        sidereon.dgnss_solve(sp3, base.tolist(), base_obs, rover_obs, _config(t_rx))
+
+    error = exc_info.value
+    assert str(error) == (
+        "only 1 usable satellites; need at least 4 (3 position + 1 clock per GNSS)"
+    )
+    assert error.detail == {
+        "family": "DgnssError",
+        "kind": "spp",
+        "message": str(error),
+        "cause": {
+            "family": "SppError",
+            "kind": "too_few_satellites",
+            "used": 1,
+            "required": 4,
+            "message": str(error),
+        },
+    }
 
 
 def test_dgnss_apply_corrections_round_trip_and_drop():

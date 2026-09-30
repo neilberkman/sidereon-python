@@ -9,19 +9,21 @@ use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyModule};
-
 use sidereon_core::astro::math::least_squares::Status;
 use sidereon_core::positioning::{
-    solve_static as core_solve_static, EphemerisSource, RobustConfig, StaticCovariance,
-    StaticEpoch, StaticInfluenceStatus, StaticSolution, StaticSolveOptions,
+    solve_static as core_solve_static, EphemerisSource, RejectedSat, RobustConfig,
+    StaticCovariance, StaticEpoch, StaticInfluenceStatus, StaticSolution, StaticSolveOptions,
 };
 
 use crate::events::PyWgs84Geodetic;
 use crate::geometry_quality::PyGeometryQuality;
 use crate::marshal::{mat3_to_array, PyGnssSystem};
 use crate::rinex::PyBroadcastEphemeris;
-use crate::spp::{PySppConfig, PySppRobustConfig};
-use crate::{np_array, to_solve_err, PySp3};
+use crate::spp::{
+    rejected_rows, rejected_rows_with_details, PyQzssClock, PySppConfig, PySppRobustConfig,
+    PyTroposphereModel,
+};
+use crate::{np_array, PySp3};
 
 type PyStaticEpochInfluence = (
     usize,
@@ -32,6 +34,18 @@ type PyStaticEpochInfluence = (
     Option<f64>,
     f64,
 );
+
+type PyRejectedSatelliteRow = (String, &'static str, Option<(f64, f64)>);
+type PyRejectedSatelliteRowsByEpoch = Vec<Vec<PyRejectedSatelliteRow>>;
+
+fn rejected_rows_by_epoch_with_details(
+    rejected: &[Vec<RejectedSat>],
+) -> PyRejectedSatelliteRowsByEpoch {
+    rejected
+        .iter()
+        .map(|epoch| rejected_rows_with_details(epoch.as_slice()))
+        .collect()
+}
 type PyStaticSatelliteInfluence = (
     usize,
     String,
@@ -54,12 +68,16 @@ type PyStaticSatelliteBatchInfluence = (
     f64,
 );
 
-fn status_label(status: Status) -> &'static str {
+/// The label of how a solve ended, shared by the SPP and static metadata.
+pub(crate) fn status_label(status: Status) -> &'static str {
     match status {
         Status::GradientTolerance => "gradient_tolerance",
         Status::CostTolerance => "cost_tolerance",
         Status::StepTolerance => "step_tolerance",
         Status::MaxEvaluations => "max_evaluations",
+        Status::SelectionSettled => "selection_settled",
+        Status::OuterBudgetExhausted => "outer_budget_exhausted",
+        Status::OuterOscillation => "outer_oscillation",
     }
 }
 
@@ -161,6 +179,13 @@ impl PyStaticEpoch {
         self.inner.weights.clone()
     }
 
+    /// Which pseudorange the epoch carries, from the config it was built
+    /// from; the broadcast group delay applies to single-frequency code only.
+    #[getter]
+    fn pseudorange_code(&self) -> crate::spp::PyPseudorangeCode {
+        self.inner.pseudorange_code.into()
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "StaticEpoch(measurements={}, t_rx_j2000_s={})",
@@ -191,16 +216,22 @@ impl PyStaticSolveOptions {
         initial_position_m=[0.0; 3],
         with_geodetic=false,
         robust=None,
+        qzss_clock=PyQzssClock::GPS,
+        troposphere_model=PyTroposphereModel::RTKLIB,
     ))]
     fn new(
         initial_position_m: [f64; 3],
         with_geodetic: bool,
         robust: Option<&PySppRobustConfig>,
+        qzss_clock: PyQzssClock,
+        troposphere_model: PyTroposphereModel,
     ) -> Self {
         let mut inner = StaticSolveOptions::default();
         inner.initial_position_m = initial_position_m;
         inner.with_geodetic = with_geodetic;
         inner.robust = robust.map(PySppRobustConfig::inner);
+        inner.qzss_clock = qzss_clock.into();
+        inner.troposphere_model = troposphere_model.into();
         Self { inner }
     }
 
@@ -224,10 +255,23 @@ impl PyStaticSolveOptions {
             .map(|inner: RobustConfig| PySppRobustConfig { inner })
     }
 
+    #[getter]
+    fn qzss_clock(&self) -> PyQzssClock {
+        self.inner.qzss_clock.into()
+    }
+
+    #[getter]
+    fn troposphere_model(&self) -> PyTroposphereModel {
+        self.inner.troposphere_model.into()
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "StaticSolveOptions(initial_position_m={:?}, with_geodetic={})",
-            self.inner.initial_position_m, self.inner.with_geodetic
+            "StaticSolveOptions(initial_position_m={:?}, with_geodetic={}, qzss_clock={:?}, troposphere_model={:?})",
+            self.inner.initial_position_m,
+            self.inner.with_geodetic,
+            self.inner.qzss_clock,
+            self.inner.troposphere_model
         )
     }
 }
@@ -285,6 +329,13 @@ impl From<sidereon_core::positioning::StaticSolutionMetadata> for PyStaticSoluti
 
 #[pymethods]
 impl PyStaticSolutionMetadata {
+    /// The UT1 departure a permissive UT1 policy accepted, `before_coverage`
+    /// or `after_coverage`; `None` when every UT1 read was inside the table.
+    #[getter]
+    fn ut1_degraded(&self) -> Option<&'static str> {
+        self.inner.ut1_degraded.map(crate::degrade_reason_label)
+    }
+
     /// Number of accepted trust-region iterations.
     #[getter]
     fn iterations(&self) -> usize {
@@ -437,19 +488,23 @@ impl PyStaticSolution {
             .collect()
     }
 
-    /// Rejected satellites by epoch as `(satellite, reason)` rows.
+    /// Rejected satellites by epoch as `(satellite, reason)` rows, the reason
+    /// being the core `RejectionReason` variant name. An ionosphere-corrected
+    /// epoch excludes a satellite it has no carrier frequency for with
+    /// `IonosphereCarrierUnresolved` and keeps its other satellites.
     #[getter]
-    fn rejected_sats(&self) -> Vec<Vec<(String, String)>> {
+    fn rejected_sats(&self) -> Vec<Vec<(String, &'static str)>> {
         self.inner
             .rejected_sats
             .iter()
-            .map(|epoch| {
-                epoch
-                    .iter()
-                    .map(|sat| (sat.satellite_id.to_string(), format!("{:?}", sat.reason)))
-                    .collect()
-            })
+            .map(|epoch| rejected_rows(epoch.as_slice()))
             .collect()
+    }
+
+    /// Rejected satellites by epoch with SSR orbit and clock correction sizes.
+    #[getter]
+    fn rejected_sats_with_details(&self) -> PyRejectedSatelliteRowsByEpoch {
+        rejected_rows_by_epoch_with_details(&self.inner.rejected_sats)
     }
 
     /// Leave-one-epoch diagnostics as tuple rows.
@@ -554,7 +609,7 @@ fn solve_static(
         .map(PyStaticSolveOptions::core_options)
         .unwrap_or_default();
     let inner = with_static_ephemeris_source(source, |source| {
-        core_solve_static(source, &epochs, options).map_err(to_solve_err)
+        core_solve_static(source, &epochs, options).map_err(crate::static_solve_err)
     })?;
     Ok(PyStaticSolution { inner })
 }
@@ -567,4 +622,43 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyStaticSolution>()?;
     m.add_function(wrap_pyfunction!(solve_static, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn static_rejection_rows_retain_ssr_sizes_in_each_epoch() {
+        let satellite_id = sidereon_core::GnssSatelliteId::from_str("G12").expect("satellite");
+        let ssr_rejection = RejectedSat {
+            satellite_id,
+            reason: sidereon_core::positioning::RejectionReason::SsrCorrectionExceedsLimit(
+                sidereon_core::ssr::SsrCorrectionSize {
+                    orbit_m: 15.5,
+                    clock_m: 2.25,
+                },
+            ),
+        };
+        let ordinary_rejection = RejectedSat {
+            satellite_id,
+            reason: sidereon_core::positioning::RejectionReason::LowElevation,
+        };
+
+        let rows =
+            rejected_rows_by_epoch_with_details(&[vec![ssr_rejection], vec![ordinary_rejection]]);
+
+        assert_eq!(
+            rows,
+            vec![
+                vec![(
+                    "G12".to_owned(),
+                    "SsrCorrectionExceedsLimit",
+                    Some((15.5, 2.25)),
+                )],
+                vec![("G12".to_owned(), "LowElevation", None)],
+            ]
+        );
+    }
 }

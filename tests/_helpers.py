@@ -25,6 +25,19 @@ _REPO = os.path.normpath(os.path.join(_HERE, ".."))
 FIXTURES = os.path.join(_HERE, "fixtures")
 
 
+# The labels the binding gives the core least-squares `Status` variants, keyed
+# by the variant name `scripts/core_goldens` writes.
+STATUS_LABELS = {
+    "GradientTolerance": "gradient_tolerance",
+    "CostTolerance": "cost_tolerance",
+    "StepTolerance": "step_tolerance",
+    "MaxEvaluations": "max_evaluations",
+    "SelectionSettled": "selection_settled",
+    "OuterBudgetExhausted": "outer_budget_exhausted",
+    "OuterOscillation": "outer_oscillation",
+}
+
+
 def _locked_core_rev():
     """The sidereon-core git revision this binding is locked to, or None."""
     lock = os.path.join(_REPO, "Cargo.lock")
@@ -47,7 +60,10 @@ def _cargo_checkout_fixtures():
     rev = _locked_core_rev()
     if not rev:
         return None
-    root = os.path.expanduser("~/.cargo/git/checkouts")
+    cargo_home = os.environ.get("CARGO_HOME") or os.path.join(
+        os.path.expanduser("~"), ".cargo"
+    )
+    root = os.path.join(cargo_home, "git", "checkouts")
     if not os.path.isdir(root):
         return None
     for entry in os.listdir(root):
@@ -134,6 +150,15 @@ def __getattr__(name):
     if name == "CORE_FIXTURES":
         return _resolve_core_fixtures()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def core_goldens():
+    """The core results `scripts/core_goldens` writes to
+    ``fixtures/core_goldens.json``; see ``fixtures/README.md``."""
+    import json
+
+    with open(os.path.join(FIXTURES, "core_goldens.json")) as fh:
+        return json.load(fh)
 
 
 def hex_to_f64(s):

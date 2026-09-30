@@ -3,36 +3,387 @@
 //! Bytes decode into core message structs, stores ingest those structs, and
 //! corrected ephemeris wrappers call the core corrected-source implementations.
 
+use std::collections::BTreeMap;
+
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyModule};
+use pyo3::types::{PyBytes, PyList, PyModule};
 
 use sidereon::ephemeris::EphemerisSource;
 use sidereon_core::astro::time::model::GnssWeekTow;
 use sidereon_core::frame::Wgs84Geodetic;
 use sidereon_core::rtcm::{SsrKind, SsrMessage};
 use sidereon_core::sbas::{
-    parse_ems_lines as core_parse_sbas_ems_lines,
-    parse_rtklib_lines as core_parse_sbas_rtklib_lines, sat_to_sbas_prn, sbas_prn_to_sat,
-    SbasBlock, SbasCorrectedEphemeris, SbasCorrectionStore, SbasDoNotUse, SbasFastCorrection,
+    parse_ems_lines as core_parse_sbas_ems_lines, parse_ems_log as core_parse_sbas_ems_log,
+    parse_rtklib_lines as core_parse_sbas_rtklib_lines,
+    parse_rtklib_log as core_parse_sbas_rtklib_log, sat_to_sbas_prn, sbas_prn_to_sat, SbasBlock,
+    SbasCorrectedEphemeris, SbasCorrectionStore, SbasDeparture, SbasDoNotUse, SbasFastCorrection,
     SbasFastCorrections, SbasFastDegradation, SbasGeoAlmanac, SbasGeoNav, SbasGeoState, SbasIgp,
-    SbasIgpDelay, SbasIgpMask, SbasIntegrity, SbasIonoDelays, SbasIonoGrid, SbasLogBlock,
-    SbasLongTermCorrection, SbasLongTermCorrections, SbasLongTermHalf, SbasLongTermRecord,
-    SbasMessage, SbasMixedCorrections, SbasMixedFastCorrections, SbasNetworkTime, SbasPrnMask,
-    SbasSolveMode, SbasUnsupported, SbasWireForm, SpareBits,
+    SbasIgpDelay, SbasIgpMask, SbasIgpUnavailableReason, SbasIntegrity, SbasIonoDelays,
+    SbasIonoGrid, SbasLineRefusal, SbasLog, SbasLogBlock, SbasLogOptions, SbasLongTermCorrection,
+    SbasLongTermCorrections, SbasLongTermHalf, SbasLongTermRecord, SbasMessage,
+    SbasMixedCorrections, SbasMixedFastCorrections, SbasNetworkTime, SbasPolicy, SbasPrnMask,
+    SbasSkippedLineKind, SbasSolveMode, SbasUnavailableIgp, SbasUnsupported, SbasWireForm,
+    SpareBits,
 };
 use sidereon_core::ssr::{
-    MissingCorrectionAction, OrbitReferencePoint, RegionalPolicy, SsrClockCorrection,
-    SsrCorrectedEphemeris, SsrCorrectionStore, SsrFallbackPolicy, SsrHighRateClock,
-    SsrOrbitCorrection, SsrSolution, SsrSource,
+    GnssSignal, MissingCorrectionAction, OrbitReferencePoint, RegionalPolicy, SignalCode,
+    SsrClockCorrection, SsrCorrectedEphemeris, SsrCorrectionSize, SsrCorrectionSizePolicy,
+    SsrCorrectionStore, SsrFallbackPolicy, SsrHighRateClock, SsrNavigationMessage,
+    SsrOrbitCorrection, SsrRawSignal, SsrSignalKey, SsrSolution, SsrSource,
 };
 use sidereon_core::GnssSatelliteId;
 
+use crate::exact_time::PyExactEpochQuery;
 use crate::frames::PyTimeScale;
-use crate::marshal::PyGnssSystem;
+use crate::marshal::{debug_variant_snake, PyGnssSystem};
 use crate::rinex::PyBroadcastEphemeris;
 use crate::rtcm::PyRtcmMessage;
-use crate::RtcmParseError;
+use crate::{to_rtcm_encode_err, RtcmParseError};
+
+type PyCheckedSsrState = (Option<([f64; 3], f64)>, Option<&'static str>);
+
+/// How the SBAS codec and log readers treat a departure from the format,
+/// mirroring the core `SbasPolicy`. A CRC mismatch in a framed block is
+/// refused under both.
+#[pyclass(module = "sidereon._sidereon", name = "SbasPolicy", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum PySbasPolicy {
+    /// Refuse the first departure.
+    STRICT,
+    /// Read or write the input and report each departure.
+    LENIENT,
+}
+
+impl From<PySbasPolicy> for SbasPolicy {
+    fn from(policy: PySbasPolicy) -> Self {
+        match policy {
+            PySbasPolicy::STRICT => SbasPolicy::Strict,
+            PySbasPolicy::LENIENT => SbasPolicy::Lenient,
+        }
+    }
+}
+
+/// A departure from the SBAS message or log format read or written under
+/// `SbasPolicy.LENIENT`: `unrecognized_preamble` (with `preamble`) or
+/// `declared_message_type` (with `declared` and `carried`). `line` is the log
+/// line for a departure a log reader recorded.
+#[pyclass(module = "sidereon._sidereon", name = "SbasDeparture")]
+#[derive(Clone)]
+pub struct PySbasDeparture {
+    inner: SbasDeparture,
+    line: Option<usize>,
+}
+
+#[pymethods]
+impl PySbasDeparture {
+    /// Departure kind label.
+    #[getter]
+    fn kind(&self) -> String {
+        match &self.inner {
+            SbasDeparture::UnrecognizedPreamble { .. } => "unrecognized_preamble".to_string(),
+            SbasDeparture::DeclaredMessageType { .. } => "declared_message_type".to_string(),
+            other => debug_variant_snake(other),
+        }
+    }
+
+    /// The preamble as read, for `unrecognized_preamble`.
+    #[getter]
+    fn preamble(&self) -> Option<u8> {
+        match &self.inner {
+            SbasDeparture::UnrecognizedPreamble { preamble } => Some(*preamble),
+            _ => None,
+        }
+    }
+
+    /// The message type the log record's field states, for
+    /// `declared_message_type`.
+    #[getter]
+    fn declared(&self) -> Option<u8> {
+        match &self.inner {
+            SbasDeparture::DeclaredMessageType { declared, .. } => Some(*declared),
+            _ => None,
+        }
+    }
+
+    /// The message type the record's message carries, for
+    /// `declared_message_type`.
+    #[getter]
+    fn carried(&self) -> Option<u8> {
+        match &self.inner {
+            SbasDeparture::DeclaredMessageType { carried, .. } => Some(*carried),
+            _ => None,
+        }
+    }
+
+    /// One-based log line, for a departure a log reader recorded.
+    #[getter]
+    fn line(&self) -> Option<usize> {
+        self.line
+    }
+
+    /// The departure as the core states it.
+    #[getter]
+    fn message(&self) -> String {
+        self.inner.to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SbasDeparture(kind={:?}, message={:?})",
+            self.kind(),
+            self.inner.to_string()
+        )
+    }
+}
+
+fn sbas_departures(list: Vec<SbasDeparture>) -> Vec<PySbasDeparture> {
+    list.into_iter()
+        .map(|inner| PySbasDeparture { inner, line: None })
+        .collect()
+}
+
+/// A record line an SBAS log reader left unread: `ambiguous_week` (with
+/// `week`) or `checksum_mismatch` (with `written` and `computed`).
+#[pyclass(module = "sidereon._sidereon", name = "SbasRefusedLine")]
+#[derive(Clone)]
+pub struct PySbasRefusedLine {
+    line: usize,
+    reason: SbasLineRefusal,
+}
+
+#[pymethods]
+impl PySbasRefusedLine {
+    /// One-based line number.
+    #[getter]
+    fn line(&self) -> usize {
+        self.line
+    }
+
+    /// Refusal kind label.
+    #[getter]
+    fn reason(&self) -> String {
+        match &self.reason {
+            SbasLineRefusal::AmbiguousWeek { .. } => "ambiguous_week".to_string(),
+            SbasLineRefusal::ChecksumMismatch { .. } => "checksum_mismatch".to_string(),
+            other => debug_variant_snake(other),
+        }
+    }
+
+    /// The 10-bit week as written, for `ambiguous_week`.
+    #[getter]
+    fn week(&self) -> Option<u32> {
+        match self.reason {
+            SbasLineRefusal::AmbiguousWeek { week } => Some(week),
+            _ => None,
+        }
+    }
+
+    /// The checksum as written, when it reads as one, for
+    /// `checksum_mismatch`.
+    #[getter]
+    fn written(&self) -> Option<u32> {
+        match self.reason {
+            SbasLineRefusal::ChecksumMismatch { written, .. } => written,
+            _ => None,
+        }
+    }
+
+    /// The checksum the line's text gives, for `checksum_mismatch`.
+    #[getter]
+    fn computed(&self) -> Option<u32> {
+        match self.reason {
+            SbasLineRefusal::ChecksumMismatch { computed, .. } => Some(computed),
+            _ => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SbasRefusedLine(line={}, reason={:?})",
+            self.line,
+            self.reason()
+        )
+    }
+}
+
+/// Everything an EMS or RTKLIB SBAS log reader read: the records, every line
+/// read as no record, every record line left unread, and under
+/// `SbasPolicy.LENIENT` every departure. Each input line appears exactly
+/// once.
+#[pyclass(module = "sidereon._sidereon", name = "SbasLog")]
+#[derive(Clone)]
+pub struct PySbasLog {
+    inner: SbasLog,
+}
+
+#[pymethods]
+impl PySbasLog {
+    /// Records in input order.
+    #[getter]
+    fn blocks(&self) -> Vec<PySbasLogBlock> {
+        self.inner.blocks.iter().cloned().map(Into::into).collect()
+    }
+
+    /// Lines read as no record, as `(line, kind)` with `kind` one of
+    /// `blank`, `comment` or `non_record`.
+    #[getter]
+    fn skipped_lines(&self) -> Vec<(usize, &'static str)> {
+        self.inner
+            .skipped_lines
+            .iter()
+            .map(|skipped| {
+                let kind = match skipped.kind {
+                    SbasSkippedLineKind::Blank => "blank",
+                    SbasSkippedLineKind::Comment => "comment",
+                    SbasSkippedLineKind::NonRecord => "non_record",
+                };
+                (skipped.line, kind)
+            })
+            .collect()
+    }
+
+    /// Record lines left unread, with the reason.
+    #[getter]
+    fn refused_lines(&self) -> Vec<PySbasRefusedLine> {
+        self.inner
+            .refused_lines
+            .iter()
+            .map(|refused| PySbasRefusedLine {
+                line: refused.line,
+                reason: refused.reason,
+            })
+            .collect()
+    }
+
+    /// Departures read under `SbasPolicy.LENIENT`, in input order.
+    #[getter]
+    fn departures(&self) -> Vec<PySbasDeparture> {
+        self.inner
+            .departures
+            .iter()
+            .map(|departure| PySbasDeparture {
+                inner: departure.departure.clone(),
+                line: Some(departure.line),
+            })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SbasLog(blocks={}, skipped_lines={}, refused_lines={}, departures={})",
+            self.inner.blocks.len(),
+            self.inner.skipped_lines.len(),
+            self.inner.refused_lines.len(),
+            self.inner.departures.len()
+        )
+    }
+}
+
+fn sbas_log_options(policy: PySbasPolicy, reference_week: Option<u32>) -> SbasLogOptions {
+    let options = SbasLogOptions::default().with_policy(policy.into());
+    match reference_week {
+        Some(week) => options.with_reference_week(week),
+        None => options,
+    }
+}
+
+/// A grid point whose latest delay entry makes it unusable.
+#[pyclass(module = "sidereon._sidereon", name = "SbasUnavailableIgp")]
+#[derive(Clone)]
+pub struct PySbasUnavailableIgp {
+    inner: SbasUnavailableIgp,
+}
+
+#[pymethods]
+impl PySbasUnavailableIgp {
+    /// Grid latitude in degrees.
+    #[getter]
+    fn lat_deg(&self) -> f64 {
+        self.inner.lat_deg
+    }
+
+    /// Grid longitude in degrees.
+    #[getter]
+    fn lon_deg(&self) -> f64 {
+        self.inner.lon_deg
+    }
+
+    /// The nine-bit vertical delay as broadcast.
+    #[getter]
+    fn vertical_delay(&self) -> u16 {
+        self.inner.vertical_delay
+    }
+
+    /// The four-bit GIVEI as broadcast.
+    #[getter]
+    fn givei(&self) -> u8 {
+        self.inner.givei
+    }
+
+    /// Why the point is unusable: `do_not_use` (delay 511) or
+    /// `not_monitored` (GIVEI 15).
+    #[getter]
+    fn reason(&self) -> &'static str {
+        match self.inner.reason {
+            SbasIgpUnavailableReason::DoNotUse => "do_not_use",
+            SbasIgpUnavailableReason::NotMonitored => "not_monitored",
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SbasUnavailableIgp(lat_deg={}, lon_deg={}, reason={:?})",
+            self.inner.lat_deg,
+            self.inner.lon_deg,
+            self.reason()
+        )
+    }
+}
+
+/// The SSR bias key a Python signal names: a RINEX 3 band-and-attribute
+/// string (`"1C"`, or an observation code such as `"C1C"`) names the physical
+/// signal of the satellite's system; an int is a raw signal index and needs
+/// the `source` whose table it belongs to.
+fn ssr_signal_key(
+    sat: GnssSatelliteId,
+    signal: &Bound<'_, PyAny>,
+    source: Option<PySsrSource>,
+) -> PyResult<SsrSignalKey> {
+    if let Ok(text) = signal.extract::<String>() {
+        if source.is_some() {
+            return Err(PyValueError::new_err(
+                "source applies only to a raw integer signal index",
+            ));
+        }
+        let code = SignalCode::parse(&text).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "signal {text:?} is not a RINEX 3 band and attribute or observation code"
+            ))
+        })?;
+        return Ok(GnssSignal::new(sat.system, code).into());
+    }
+    let index: u8 = signal.extract().map_err(|_| {
+        PyValueError::new_err(
+            "signal must be a RINEX 3 signal code string or a raw index in 0..=255",
+        )
+    })?;
+    let source = source.ok_or_else(|| {
+        PyValueError::new_err(
+            "a raw signal index needs source (SsrSource.RTCM_SSR or SsrSource.GALILEO_HAS)",
+        )
+    })?;
+    Ok(SsrRawSignal::new(source.into(), sat.system, index).into())
+}
+
+fn nav_message_label(message: SsrNavigationMessage) -> String {
+    match message {
+        SsrNavigationMessage::Rtcm => "rtcm".to_string(),
+        SsrNavigationMessage::Has(index) => format!("has:{index}"),
+        SsrNavigationMessage::IgsSsr => "igs_ssr".to_string(),
+    }
+}
 
 fn to_rtcm_err<E: std::fmt::Display>(err: E) -> PyErr {
     RtcmParseError::new_err(err.to_string())
@@ -58,7 +409,6 @@ fn ssr_kind_label(kind: SsrKind) -> &'static str {
         SsrKind::PhaseBias => "phase_bias",
         SsrKind::Ura => "ura",
         SsrKind::HighRateClock => "high_rate_clock",
-        SsrKind::Vtec => "vtec",
     }
 }
 
@@ -543,10 +893,13 @@ impl PySbasFastCorrections {
         self.inner.prc.to_vec()
     }
 
-    /// UDREI values for each correction slot.
+    /// UDREI values for each correction slot, as a list of ints.
+    ///
+    /// A `Vec<u8>` converts to `bytes`, so the values are built into a list
+    /// one int at a time.
     #[getter]
-    fn udrei(&self) -> Vec<u8> {
-        self.inner.udrei.to_vec()
+    fn udrei<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        PyList::new(py, self.inner.udrei.iter().copied())
     }
 
     /// Reserved spare-bit values as `(value, width)` pairs.
@@ -564,16 +917,22 @@ impl PySbasIntegrity {
         self.inner.preamble
     }
 
-    /// Issue of data for fast corrections, one per block.
+    /// Issue of data for fast corrections, one per block, as a list of ints.
+    ///
+    /// A `Vec<u8>` converts to `bytes`, so the values are built into a list
+    /// one int at a time.
     #[getter]
-    fn iodf(&self) -> Vec<u8> {
-        self.inner.iodf.to_vec()
+    fn iodf<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        PyList::new(py, self.inner.iodf.iter().copied())
     }
 
-    /// UDREI values for monitored slots.
+    /// UDREI values for monitored slots, as a list of ints.
+    ///
+    /// A `Vec<u8>` converts to `bytes`, so the values are built into a list
+    /// one int at a time.
     #[getter]
-    fn udrei(&self) -> Vec<u8> {
-        self.inner.udrei.to_vec()
+    fn udrei<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        PyList::new(py, self.inner.udrei.iter().copied())
     }
 
     /// Reserved spare-bit values as `(value, width)` pairs.
@@ -603,10 +962,13 @@ impl PySbasFastDegradation {
         self.inner.iodp
     }
 
-    /// Degradation indicators for monitored slots.
+    /// Degradation indicators for monitored slots, as a list of ints.
+    ///
+    /// A `Vec<u8>` converts to `bytes`, so the values are built into a list
+    /// one int at a time.
     #[getter]
-    fn ai(&self) -> Vec<u8> {
-        self.inner.ai.to_vec()
+    fn ai<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        PyList::new(py, self.inner.ai.iter().copied())
     }
 
     /// Reserved spare-bit values as `(value, width)` pairs.
@@ -786,10 +1148,13 @@ impl PySbasMixedFastCorrections {
         self.inner.prc.to_vec()
     }
 
-    /// UDREI values for each correction slot.
+    /// UDREI values for each correction slot, as a list of ints.
+    ///
+    /// A `Vec<u8>` converts to `bytes`, so the values are built into a list
+    /// one int at a time.
     #[getter]
-    fn udrei(&self) -> Vec<u8> {
-        self.inner.udrei.to_vec()
+    fn udrei<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        PyList::new(py, self.inner.udrei.iter().copied())
     }
 
     /// Reserved spare-bit values as `(value, width)` pairs.
@@ -1053,9 +1418,38 @@ impl PySbasBlock {
         self.inner.message.clone().into()
     }
 
-    /// Encode the block back to its original wire form.
-    fn encode<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, &self.inner.encode())
+    /// The six bits completing the last byte of either wire form, as read
+    /// and written back.
+    #[getter]
+    fn pad_bits(&self) -> u8 {
+        self.inner.pad_bits
+    }
+
+    /// Encode the block back to its wire form. A value the wire form cannot
+    /// carry as held (a field wider than its width, a reserved-segment
+    /// layout other than the message's, a raw payload that is not 212 bits)
+    /// raises `RtcmEncodeError`; under `SbasPolicy.STRICT` so does a preamble
+    /// other than 0x53, 0x9A and 0xC6.
+    #[pyo3(signature = (policy=PySbasPolicy::STRICT))]
+    fn encode<'py>(&self, py: Python<'py>, policy: PySbasPolicy) -> PyResult<Bound<'py, PyBytes>> {
+        let (bytes, _) = self
+            .inner
+            .encode_with_policy(policy.into())
+            .map_err(|err| to_rtcm_encode_err(py, err))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Encode under `policy`, returning the bytes and the departures written.
+    fn encode_with_policy<'py>(
+        &self,
+        py: Python<'py>,
+        policy: PySbasPolicy,
+    ) -> PyResult<(Bound<'py, PyBytes>, Vec<PySbasDeparture>)> {
+        let (bytes, written) = self
+            .inner
+            .encode_with_policy(policy.into())
+            .map_err(|err| to_rtcm_encode_err(py, err))?;
+        Ok((PyBytes::new(py, &bytes), sbas_departures(written)))
     }
 
     fn __repr__(&self) -> String {
@@ -1108,9 +1502,23 @@ impl PySbasLogBlock {
         PyBytes::new(py, &self.inner.bytes)
     }
 
-    fn decode(&self) -> PyResult<PySbasBlock> {
-        SbasBlock::decode(&self.inner.bytes, self.inner.form)
-            .map(PySbasBlock::from_inner)
+    /// The message type the record's own field states, `None` for an
+    /// eight-field EMS comma line, which carries none.
+    #[getter]
+    fn declared_message_type(&self) -> Option<u8> {
+        self.inner.declared_message_type
+    }
+
+    /// The six-bit message type the record's bytes carry.
+    #[getter]
+    fn message_type(&self) -> Option<u8> {
+        self.inner.message_type()
+    }
+
+    #[pyo3(signature = (policy=PySbasPolicy::STRICT))]
+    fn decode(&self, policy: PySbasPolicy) -> PyResult<PySbasBlock> {
+        SbasBlock::decode_with_policy(&self.inner.bytes, self.inner.form, policy.into())
+            .map(|(block, _)| PySbasBlock::from_inner(block))
             .map_err(to_rtcm_err)
     }
 
@@ -1294,6 +1702,18 @@ impl PySbasIonoGrid {
         self.inner.igps().iter().cloned().map(Into::into).collect()
     }
 
+    /// Grid points whose latest delay entry makes them unusable (delay 511,
+    /// "do not use", or GIVEI 15, "not monitored"), with the raw entry.
+    #[getter]
+    fn unavailable_igps(&self) -> Vec<PySbasUnavailableIgp> {
+        self.inner
+            .unavailable_igps()
+            .iter()
+            .cloned()
+            .map(|inner| PySbasUnavailableIgp { inner })
+            .collect()
+    }
+
     #[pyo3(signature = (latitude_deg, longitude_deg, height_m, elevation_rad, azimuth_rad, frequency_hz))]
     fn slant_delay_m(
         &self,
@@ -1439,6 +1859,20 @@ impl PySbasCorrectionStore {
         Ok(self.inner.fast(geo, sat).cloned().map(Into::into))
     }
 
+    /// Corrections a GEO addressed to active PRN-mask bits that name no
+    /// satellite held here - a future-GNSS or unassigned mask number - counted
+    /// per 1-based mask number. Such a bit keeps its place among the active
+    /// bits, so the corrections after it still reach their own satellites; the
+    /// ones addressed to it are applied to no satellite and counted here. None
+    /// when the GEO has no partition.
+    fn unassigned_mask_corrections(
+        &self,
+        geo_satellite_id: &str,
+    ) -> PyResult<Option<BTreeMap<u8, u64>>> {
+        let geo = parse_satellite(geo_satellite_id)?;
+        Ok(self.inner.unassigned_mask_corrections(geo).cloned())
+    }
+
     /// Return the latest long-term correction for a GEO and satellite pair.
     fn long_term(
         &self,
@@ -1466,10 +1900,10 @@ impl PySbasCorrectionStore {
 #[pyclass(module = "sidereon._sidereon", name = "SbasCorrectedEphemeris")]
 /// Broadcast ephemeris source corrected with SBAS messages.
 pub struct PySbasCorrectedEphemeris {
-    broadcast: Py<PyBroadcastEphemeris>,
-    store: Py<PySbasCorrectionStore>,
-    geo: GnssSatelliteId,
-    mode: SbasSolveMode,
+    pub(crate) broadcast: Py<PyBroadcastEphemeris>,
+    pub(crate) store: Py<PySbasCorrectionStore>,
+    pub(crate) geo: GnssSatelliteId,
+    pub(crate) mode: SbasSolveMode,
 }
 
 #[pymethods]
@@ -1506,6 +1940,77 @@ impl PySbasCorrectedEphemeris {
         Ok(source.position_clock_at_j2000_s(sat, t_j2000_s))
     }
 
+    fn selected_state_at_epoch_query(
+        &self,
+        py: Python<'_>,
+        satellite_id: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<Option<crate::ephemeris::PyEphemerisQueryState>> {
+        let broadcast = self.broadcast.borrow(py);
+        let store = self.store.borrow(py);
+        let source = SbasCorrectedEphemeris::new(&broadcast.inner, &store.inner, self.geo)
+            .with_mode(self.mode);
+        crate::ephemeris::source_state_at_epoch_query(&source, satellite_id, epoch, selection_epoch)
+    }
+
+    fn transmit_epoch_clock_at_epoch_query(
+        &self,
+        py: Python<'_>,
+        satellite_id: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<Option<(f64, Option<&'static str>)>> {
+        let broadcast = self.broadcast.borrow(py);
+        let store = self.store.borrow(py);
+        let source = SbasCorrectedEphemeris::new(&broadcast.inner, &store.inner, self.geo)
+            .with_mode(self.mode);
+        crate::ephemeris::source_transmit_clock_at_epoch_query(
+            &source,
+            satellite_id,
+            epoch,
+            selection_epoch,
+        )
+    }
+
+    fn ephemeris_variance_at_epoch_query(
+        &self,
+        py: Python<'_>,
+        satellite_id: &str,
+        state_epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<f64> {
+        let broadcast = self.broadcast.borrow(py);
+        let store = self.store.borrow(py);
+        let source = SbasCorrectedEphemeris::new(&broadcast.inner, &store.inner, self.geo)
+            .with_mode(self.mode);
+        crate::ephemeris::source_variance_at_epoch_query(
+            &source,
+            satellite_id,
+            state_epoch,
+            selection_epoch,
+        )
+    }
+
+    fn clock_relativity_for_state_at_epoch_query(
+        &self,
+        py: Python<'_>,
+        satellite_id: &str,
+        epoch: &PyExactEpochQuery,
+        position_ecef_m: [f64; 3],
+    ) -> PyResult<crate::ephemeris::PyClockRelativity> {
+        let broadcast = self.broadcast.borrow(py);
+        let store = self.store.borrow(py);
+        let source = SbasCorrectedEphemeris::new(&broadcast.inner, &store.inner, self.geo)
+            .with_mode(self.mode);
+        crate::ephemeris::source_clock_relativity_at_epoch_query(
+            &source,
+            satellite_id,
+            epoch,
+            position_ecef_m,
+        )
+    }
+
     /// Return the active ionospheric grid for the selected GEO.
     fn iono_grid(&self, py: Python<'_>) -> Option<PySbasIonoGrid> {
         let broadcast = self.broadcast.borrow(py);
@@ -1528,7 +2033,6 @@ pub enum PySsrKind {
     PHASE_BIAS,
     URA,
     HIGH_RATE_CLOCK,
-    VTEC,
 }
 
 impl From<SsrKind> for PySsrKind {
@@ -1541,7 +2045,6 @@ impl From<SsrKind> for PySsrKind {
             SsrKind::PhaseBias => Self::PHASE_BIAS,
             SsrKind::Ura => Self::URA,
             SsrKind::HighRateClock => Self::HIGH_RATE_CLOCK,
-            SsrKind::Vtec => Self::VTEC,
         }
     }
 }
@@ -1558,7 +2061,6 @@ impl PySsrKind {
             Self::PHASE_BIAS => "phase_bias",
             Self::URA => "ura",
             Self::HIGH_RATE_CLOCK => "high_rate_clock",
-            Self::VTEC => "vtec",
         }
     }
 
@@ -1571,7 +2073,6 @@ impl PySsrKind {
             Self::PHASE_BIAS => "SsrKind.PHASE_BIAS",
             Self::URA => "SsrKind.URA",
             Self::HIGH_RATE_CLOCK => "SsrKind.HIGH_RATE_CLOCK",
-            Self::VTEC => "SsrKind.VTEC",
         }
     }
 }
@@ -1583,6 +2084,17 @@ impl PySsrKind {
 pub enum PySsrSource {
     RTCM_SSR,
     GALILEO_HAS,
+    IGS_SSR,
+}
+
+impl From<PySsrSource> for SsrSource {
+    fn from(source: PySsrSource) -> Self {
+        match source {
+            PySsrSource::RTCM_SSR => SsrSource::RtcmSsr,
+            PySsrSource::GALILEO_HAS => SsrSource::GalileoHas,
+            PySsrSource::IGS_SSR => SsrSource::IgsSsr,
+        }
+    }
 }
 
 impl From<SsrSource> for PySsrSource {
@@ -1590,6 +2102,7 @@ impl From<SsrSource> for PySsrSource {
         match source {
             SsrSource::RtcmSsr => Self::RTCM_SSR,
             SsrSource::GalileoHas => Self::GALILEO_HAS,
+            SsrSource::IgsSsr => Self::IGS_SSR,
         }
     }
 }
@@ -1601,6 +2114,7 @@ impl PySsrSource {
         match self {
             Self::RTCM_SSR => "rtcm_ssr",
             Self::GALILEO_HAS => "galileo_has",
+            Self::IGS_SSR => "igs_ssr",
         }
     }
 
@@ -1608,6 +2122,7 @@ impl PySsrSource {
         match self {
             Self::RTCM_SSR => "SsrSource.RTCM_SSR",
             Self::GALILEO_HAS => "SsrSource.GALILEO_HAS",
+            Self::IGS_SSR => "SsrSource.IGS_SSR",
         }
     }
 }
@@ -1842,6 +2357,22 @@ impl PySsrOrbitCorrection {
         self.inner.update_interval_s
     }
 
+    /// The epoch the correction was transmitted for, seconds past J2000; for
+    /// Galileo HAS the TOH epoch. RTCM SSR orbit and clock corrections are
+    /// gated by age from it.
+    #[getter]
+    fn transmitted_epoch_j2000_s(&self) -> f64 {
+        self.inner.transmitted_epoch_j2000_s
+    }
+
+    /// The navigation message the correction refers to: `rtcm`, or `has:N`
+    /// with the Galileo HAS index as transmitted. A reserved HAS index is
+    /// stored and not applied.
+    #[getter]
+    fn nav_message(&self) -> String {
+        nav_message_label(self.inner.nav_message)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "SsrOrbitCorrection(iode={}, iod_ssr={}, radial_m={:.6}, along_m={:.6}, cross_m={:.6})",
@@ -1887,6 +2418,18 @@ impl PySsrHighRateClock {
     #[getter]
     fn update_interval_s(&self) -> f64 {
         self.inner.update_interval_s
+    }
+
+    /// The epoch the correction was transmitted for, seconds past J2000.
+    #[getter]
+    fn transmitted_epoch_j2000_s(&self) -> f64 {
+        self.inner.transmitted_epoch_j2000_s
+    }
+
+    /// IOD SSR of the high-rate clock.
+    #[getter]
+    fn iod_ssr(&self) -> u8 {
+        self.inner.iod_ssr
     }
 
     fn __repr__(&self) -> String {
@@ -1950,6 +2493,18 @@ impl PySsrClockCorrection {
     #[getter]
     fn high_rate(&self) -> Option<PySsrHighRateClock> {
         self.inner.high_rate.map(Into::into)
+    }
+
+    /// The epoch the correction was transmitted for, seconds past J2000.
+    #[getter]
+    fn transmitted_epoch_j2000_s(&self) -> f64 {
+        self.inner.transmitted_epoch_j2000_s
+    }
+
+    /// The navigation message the correction refers to: `rtcm`, or `has:N`.
+    #[getter]
+    fn nav_message(&self) -> String {
+        nav_message_label(self.inner.nav_message)
     }
 
     fn __repr__(&self) -> String {
@@ -2050,8 +2605,30 @@ impl PySsrMessage {
         self.inner.ura.len()
     }
 
-    fn encode<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, &self.inner.encode())
+    /// Encode this message back into an RTCM SSR body.
+    ///
+    /// A satellite field wider than the message's - five bits for GLONASS,
+    /// four for the native QZSS messages 1246..1251 and 1268, six otherwise -
+    /// raises `RtcmEncodeError` with the core's reason.
+    #[pyo3(signature = (policy=crate::rtcm::PyRtcmPolicy::STRICT))]
+    fn encode<'py>(
+        &self,
+        py: Python<'py>,
+        policy: crate::rtcm::PyRtcmPolicy,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let (body, _) = self
+            .inner
+            .encode_with_policy(policy.into())
+            .map_err(|err| to_rtcm_encode_err(py, err))?;
+        Ok(PyBytes::new(py, &body))
+    }
+
+    /// Bits after the last record, kept as read: the fewer than eight zero
+    /// bits that align the body, or under `RtcmPolicy.LENIENT` any other
+    /// trailing bits and the bits of a record the body cuts short.
+    #[getter]
+    fn padding_bits(&self) -> Vec<bool> {
+        self.inner.padding_bits.clone()
     }
 
     fn __repr__(&self) -> String {
@@ -2134,38 +2711,130 @@ impl PySsrCorrectionStore {
         Ok(self.inner.ura_index(sat))
     }
 
-    /// Return the latest SSR code bias for a satellite signal.
-    fn code_bias(&self, satellite_id: &str, signal: u8) -> PyResult<Option<f64>> {
+    /// Return the latest SSR code bias for a satellite signal, metres,
+    /// ignoring lifetime, staleness and HAS exclusion.
+    ///
+    /// Biases are keyed by physical signal. `signal` is a RINEX 3 band and
+    /// attribute (`"1C"`, or an observation code such as `"C1C"`) of the
+    /// satellite's system, or a raw signal index with the `source` whose
+    /// table it belongs to; a raw index the table assigns a physical signal is
+    /// looked up as that signal.
+    #[pyo3(signature = (satellite_id, signal, source=None))]
+    fn code_bias(
+        &self,
+        satellite_id: &str,
+        signal: &Bound<'_, PyAny>,
+        source: Option<PySsrSource>,
+    ) -> PyResult<Option<f64>> {
         let sat = parse_satellite(satellite_id)?;
-        Ok(self.inner.code_bias(sat, signal))
+        Ok(self
+            .inner
+            .code_bias(sat, ssr_signal_key(sat, signal, source)?))
     }
 
-    /// Return the latest SSR phase bias for a satellite signal.
-    fn phase_bias(&self, satellite_id: &str, signal: u8) -> PyResult<Option<f64>> {
+    /// Return the latest SSR phase bias for a satellite signal, metres,
+    /// ignoring lifetime, staleness, HAS exclusion and phase continuity.
+    /// `signal` and `source` are read as `code_bias` reads them.
+    #[pyo3(signature = (satellite_id, signal, source=None))]
+    fn phase_bias(
+        &self,
+        satellite_id: &str,
+        signal: &Bound<'_, PyAny>,
+        source: Option<PySsrSource>,
+    ) -> PyResult<Option<f64>> {
         let sat = parse_satellite(satellite_id)?;
-        Ok(self.inner.phase_bias(sat, signal))
+        Ok(self
+            .inner
+            .phase_bias(sat, ssr_signal_key(sat, signal, source)?))
     }
 }
 
 #[pyclass(module = "sidereon._sidereon", name = "SsrCorrectedEphemeris")]
 /// Broadcast ephemeris source corrected with RTCM SSR messages.
 pub struct PySsrCorrectedEphemeris {
-    broadcast: Py<PyBroadcastEphemeris>,
-    store: Py<PySsrCorrectionStore>,
+    pub(crate) broadcast: Py<PyBroadcastEphemeris>,
+    pub(crate) store: Py<PySsrCorrectionStore>,
     fallback: SsrFallbackPolicy,
     max_staleness_s: Option<f64>,
+    ut1_validity: crate::PyValidityMode,
+    correction_size_policy: PySsrCorrectionSizePolicy,
+}
+
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "SsrCorrectionSizePolicy",
+    eq,
+    eq_int
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PySsrCorrectionSizePolicy {
+    STRICT,
+    LENIENT,
+}
+
+impl From<PySsrCorrectionSizePolicy> for SsrCorrectionSizePolicy {
+    fn from(value: PySsrCorrectionSizePolicy) -> Self {
+        match value {
+            PySsrCorrectionSizePolicy::STRICT => Self::Strict,
+            PySsrCorrectionSizePolicy::LENIENT => Self::Lenient,
+        }
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "SsrCorrectionSize")]
+#[derive(Clone, Copy)]
+pub struct PySsrCorrectionSize {
+    inner: SsrCorrectionSize,
+}
+
+impl From<SsrCorrectionSize> for PySsrCorrectionSize {
+    fn from(inner: SsrCorrectionSize) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySsrCorrectionSize {
+    #[getter]
+    fn orbit_m(&self) -> f64 {
+        self.inner.orbit_m
+    }
+    #[getter]
+    fn clock_m(&self) -> f64 {
+        self.inner.clock_m
+    }
+    #[getter]
+    fn orbit_exceeds_limit(&self) -> bool {
+        self.inner.orbit_exceeds_limit()
+    }
+    #[getter]
+    fn clock_exceeds_limit(&self) -> bool {
+        self.inner.clock_exceeds_limit()
+    }
+    #[getter]
+    fn exceeds_limit(&self) -> bool {
+        self.inner.exceeds_limit()
+    }
 }
 
 #[pymethods]
 impl PySsrCorrectedEphemeris {
     /// Build an SSR-corrected ephemeris source.
     #[new]
-    #[pyo3(signature = (broadcast, store, fallback=None, max_staleness_s=None))]
+    ///
+    /// `ut1_validity` is the UT1 policy of a centre-of-mass orbit's
+    /// antenna-offset conversion: `ValidityMode.STRICT` refuses an instant
+    /// outside the UT1 table, which `corrected_state_checked` raises as
+    /// `Ut1OutsideCoverageError`; `PERMISSIVE` uses the long-term UT1 and
+    /// reports the departure.
+    #[pyo3(signature = (broadcast, store, fallback=None, max_staleness_s=None, ut1_validity=crate::PyValidityMode::STRICT, correction_size_policy=PySsrCorrectionSizePolicy::STRICT))]
     fn new(
         broadcast: Py<PyBroadcastEphemeris>,
         store: Py<PySsrCorrectionStore>,
         fallback: Option<&PySsrFallbackPolicy>,
         max_staleness_s: Option<f64>,
+        ut1_validity: crate::PyValidityMode,
+        correction_size_policy: PySsrCorrectionSizePolicy,
     ) -> PyResult<Self> {
         if let Some(max_staleness_s) = max_staleness_s {
             if !max_staleness_s.is_finite() || max_staleness_s < 0.0 {
@@ -2181,10 +2850,14 @@ impl PySsrCorrectedEphemeris {
                 .map(|fallback| fallback.inner.clone())
                 .unwrap_or_default(),
             max_staleness_s,
+            ut1_validity,
+            correction_size_policy,
         })
     }
 
-    /// Return corrected ECEF position in metres and clock offset in seconds.
+    /// Return corrected ECEF position in metres and clock offset in seconds,
+    /// or `None` when the source declines the satellite, a UT1 refusal
+    /// included.
     fn position_clock_at_j2000_s(
         &self,
         py: Python<'_>,
@@ -2194,29 +2867,233 @@ impl PySsrCorrectedEphemeris {
         let sat = parse_satellite(satellite_id)?;
         let broadcast = self.broadcast.borrow(py);
         let store = self.store.borrow(py);
+        let source = self.source(&broadcast, &store);
+        Ok(source.position_clock_at_j2000_s(sat, t_j2000_s))
+    }
+
+    /// The corrected state with the UT1 policy's outcome, as
+    /// `(state, ut1_degraded)`: `state` is `(position_m, clock_s)` or `None`
+    /// when the source declines the satellite, and `ut1_degraded` the
+    /// departure a permissive policy accepted. A strict refusal raises
+    /// `Ut1OutsideCoverageError` instead of declining the satellite.
+    #[allow(clippy::type_complexity)]
+    fn corrected_state_checked(
+        &self,
+        py: Python<'_>,
+        satellite_id: &str,
+        t_j2000_s: f64,
+    ) -> PyResult<PyCheckedSsrState> {
+        let sat = parse_satellite(satellite_id)?;
+        let broadcast = self.broadcast.borrow(py);
+        let store = self.store.borrow(py);
+        let source = self.source(&broadcast, &store);
+        match source.corrected_state_checked(sat, t_j2000_s) {
+            Ok(checked) => Ok((
+                checked.value,
+                checked.degraded.map(crate::degrade_reason_label),
+            )),
+            Err(sidereon_core::Error::Ut1OutsideCoverage(reason)) => Err(
+                crate::ut1_outside_coverage_err("SSR antenna-offset conversion", reason),
+            ),
+            Err(other) => Err(to_rtcm_err(other)),
+        }
+    }
+
+    fn corrected_state_at_epoch_query(
+        &self,
+        py: Python<'_>,
+        satellite_id: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<PyCheckedSsrState> {
+        let sat = parse_satellite(satellite_id)?;
+        let broadcast = self.broadcast.borrow(py);
+        let store = self.store.borrow(py);
+        let source = self.source(&broadcast, &store);
+        match source.corrected_state_with_group_delay_checked_selected_query(
+            sat,
+            &epoch.inner,
+            &selection_epoch.inner,
+        ) {
+            Ok(checked) => Ok((
+                checked.value.map(|(position, clock, _)| (position, clock)),
+                checked.degraded.map(crate::degrade_reason_label),
+            )),
+            Err(sidereon_core::Error::Ut1OutsideCoverage(reason)) => Err(
+                crate::ut1_outside_coverage_err("SSR antenna-offset conversion", reason),
+            ),
+            Err(other) => Err(to_rtcm_err(other)),
+        }
+    }
+
+    fn correction_size_refusal_at_epoch_query(
+        &self,
+        py: Python<'_>,
+        satellite_id: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<Option<PySsrCorrectionSize>> {
+        let sat = parse_satellite(satellite_id)?;
+        let broadcast = self.broadcast.borrow(py);
+        let store = self.store.borrow(py);
+        let source = self.source(&broadcast, &store);
+        Ok(source
+            .correction_size_refusal_at_epoch_query(sat, &epoch.inner, &selection_epoch.inner)
+            .map(Into::into))
+    }
+
+    fn selected_state_at_epoch_query(
+        &self,
+        py: Python<'_>,
+        satellite_id: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<Option<crate::ephemeris::PyEphemerisQueryState>> {
+        let broadcast = self.broadcast.borrow(py);
+        let store = self.store.borrow(py);
+        let source = self.source(&broadcast, &store);
+        crate::ephemeris::source_state_at_epoch_query(&source, satellite_id, epoch, selection_epoch)
+    }
+
+    fn transmit_epoch_clock_at_epoch_query(
+        &self,
+        py: Python<'_>,
+        satellite_id: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<Option<(f64, Option<&'static str>)>> {
+        let broadcast = self.broadcast.borrow(py);
+        let store = self.store.borrow(py);
+        let source = self.source(&broadcast, &store);
+        crate::ephemeris::source_transmit_clock_at_epoch_query(
+            &source,
+            satellite_id,
+            epoch,
+            selection_epoch,
+        )
+    }
+
+    fn ephemeris_variance_at_epoch_query(
+        &self,
+        py: Python<'_>,
+        satellite_id: &str,
+        state_epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<f64> {
+        let broadcast = self.broadcast.borrow(py);
+        let store = self.store.borrow(py);
+        let source = self.source(&broadcast, &store);
+        crate::ephemeris::source_variance_at_epoch_query(
+            &source,
+            satellite_id,
+            state_epoch,
+            selection_epoch,
+        )
+    }
+
+    fn clock_relativity_for_state_at_epoch_query(
+        &self,
+        py: Python<'_>,
+        satellite_id: &str,
+        epoch: &PyExactEpochQuery,
+        position_ecef_m: [f64; 3],
+    ) -> PyResult<crate::ephemeris::PyClockRelativity> {
+        let broadcast = self.broadcast.borrow(py);
+        let store = self.store.borrow(py);
+        let source = self.source(&broadcast, &store);
+        crate::ephemeris::source_clock_relativity_at_epoch_query(
+            &source,
+            satellite_id,
+            epoch,
+            position_ecef_m,
+        )
+    }
+}
+
+impl PySsrCorrectedEphemeris {
+    pub(crate) fn source<'a>(
+        &self,
+        broadcast: &'a PyBroadcastEphemeris,
+        store: &'a PySsrCorrectionStore,
+    ) -> SsrCorrectedEphemeris<'a> {
         let mut source = SsrCorrectedEphemeris::new(&broadcast.inner, &store.inner)
-            .with_fallback(self.fallback.clone());
+            .with_fallback(self.fallback.clone())
+            .with_validity(self.ut1_validity.into())
+            .with_correction_size_policy(self.correction_size_policy.into());
         if let Some(max_staleness_s) = self.max_staleness_s {
             source = source.with_staleness(sidereon_core::staleness::StalenessPolicy::seconds(
                 max_staleness_s,
             ));
         }
-        Ok(source.position_clock_at_j2000_s(sat, t_j2000_s))
+        source
     }
 }
 
 #[pyfunction]
-/// Decode raw SBAS message bytes in the selected wire form.
-fn decode_sbas_block(bytes: &[u8], form: PySbasWireForm) -> PyResult<PySbasBlock> {
-    SbasBlock::decode(bytes, form.into())
-        .map(PySbasBlock::from_inner)
+#[pyo3(signature = (bytes, form, policy=PySbasPolicy::STRICT))]
+/// Decode raw SBAS message bytes in the selected wire form. Under
+/// `SbasPolicy.LENIENT` a preamble other than 0x53, 0x9A and 0xC6 is read and
+/// kept; a CRC mismatch is refused under both.
+fn decode_sbas_block(
+    bytes: &[u8],
+    form: PySbasWireForm,
+    policy: PySbasPolicy,
+) -> PyResult<PySbasBlock> {
+    SbasBlock::decode_with_policy(bytes, form.into(), policy.into())
+        .map(|(block, _)| PySbasBlock::from_inner(block))
         .map_err(to_rtcm_err)
 }
 
 #[pyfunction]
+/// Decode raw SBAS message bytes under `policy`, returning the block and the
+/// departures read.
+fn decode_sbas_block_with_policy(
+    bytes: &[u8],
+    form: PySbasWireForm,
+    policy: PySbasPolicy,
+) -> PyResult<(PySbasBlock, Vec<PySbasDeparture>)> {
+    let (block, read) =
+        SbasBlock::decode_with_policy(bytes, form.into(), policy.into()).map_err(to_rtcm_err)?;
+    Ok((PySbasBlock::from_inner(block), sbas_departures(read)))
+}
+
+#[pyfunction]
+#[pyo3(signature = (bytes, form, policy=PySbasPolicy::STRICT))]
 /// Decode raw SBAS message bytes in the selected wire form.
-fn decode_sbas_message(bytes: &[u8], form: PySbasWireForm) -> PyResult<PySbasBlock> {
-    decode_sbas_block(bytes, form)
+fn decode_sbas_message(
+    bytes: &[u8],
+    form: PySbasWireForm,
+    policy: PySbasPolicy,
+) -> PyResult<PySbasBlock> {
+    decode_sbas_block(bytes, form, policy)
+}
+
+#[pyfunction]
+#[pyo3(signature = (text, *, policy=PySbasPolicy::STRICT, reference_week=None))]
+/// Read an EMS SBAS log: every record, every line read as no record, every
+/// record line left unread with its reason, and under `SbasPolicy.LENIENT`
+/// every departure. `reference_week` resolves a NovAtel OEM3 10-bit week.
+fn parse_sbas_ems_log(
+    text: &str,
+    policy: PySbasPolicy,
+    reference_week: Option<u32>,
+) -> PyResult<PySbasLog> {
+    core_parse_sbas_ems_log(text, sbas_log_options(policy, reference_week))
+        .map(|inner| PySbasLog { inner })
+        .map_err(to_rtcm_err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (text, *, policy=PySbasPolicy::STRICT, reference_week=None))]
+/// Read an RTKLIB SBAS log as `parse_sbas_ems_log` reads an EMS log.
+fn parse_sbas_rtklib_log(
+    text: &str,
+    policy: PySbasPolicy,
+    reference_week: Option<u32>,
+) -> PyResult<PySbasLog> {
+    core_parse_sbas_rtklib_log(text, sbas_log_options(policy, reference_week))
+        .map(|inner| PySbasLog { inner })
+        .map_err(to_rtcm_err)
 }
 
 #[pyfunction]
@@ -2249,30 +3126,163 @@ fn satellite_id_to_sbas_prn(satellite_id: &str) -> PyResult<Option<u16>> {
 }
 
 #[pyfunction]
-/// Decode a raw RTCM SSR message body.
-fn decode_ssr_message(body: &[u8]) -> PyResult<PySsrMessage> {
-    SsrMessage::decode(body)
-        .map(PySsrMessage::from_inner)
+#[pyo3(signature = (body, policy=crate::rtcm::PyRtcmPolicy::STRICT))]
+/// Decode a raw RTCM SSR message body. Under `RtcmPolicy.LENIENT` a body that
+/// ends before the records its header counts is read up to its last complete
+/// record.
+fn decode_ssr_message(body: &[u8], policy: crate::rtcm::PyRtcmPolicy) -> PyResult<PySsrMessage> {
+    SsrMessage::decode_with_policy(body, policy.into())
+        .map(|(inner, _)| PySsrMessage::from_inner(inner))
         .map_err(to_rtcm_err)
 }
 
 #[pyfunction]
+#[pyo3(signature = (body, policy=crate::rtcm::PyRtcmPolicy::STRICT))]
 /// Decode a raw RTCM SSR message body.
-fn decode_ssr(body: &[u8]) -> PyResult<PySsrMessage> {
-    decode_ssr_message(body)
+fn decode_ssr(body: &[u8], policy: crate::rtcm::PyRtcmPolicy) -> PyResult<PySsrMessage> {
+    decode_ssr_message(body, policy)
+}
+
+/// A decoded RTCM message the SSR store refused to ingest.
+#[pyclass(module = "sidereon._sidereon", name = "SsrIngestRefusal")]
+#[derive(Clone)]
+pub struct PySsrIngestRefusal {
+    message_number: u16,
+    error: String,
+}
+
+#[pymethods]
+impl PySsrIngestRefusal {
+    /// The RTCM message number.
+    #[getter]
+    fn message_number(&self) -> u16 {
+        self.message_number
+    }
+
+    /// Why the store refused it, as the core states it.
+    #[getter]
+    fn error(&self) -> String {
+        self.error.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SsrIngestRefusal(message_number={}, error={:?})",
+            self.message_number, self.error
+        )
+    }
+}
+
+/// An SSR correction store built from every readable frame of an RTCM byte
+/// stream, with an account of everything that was not read or not applied.
+#[pyclass(module = "sidereon._sidereon", name = "SsrRtcmIngest")]
+pub struct PySsrRtcmIngest {
+    store: Py<PySsrCorrectionStore>,
+    diagnostics: sidereon_core::rtcm::StreamDiagnostics,
+    trailing_partial_frame_len: usize,
+    ingest_refusals: Vec<PySsrIngestRefusal>,
+}
+
+#[pymethods]
+impl PySsrRtcmIngest {
+    /// The store holding every correction that was read and applied.
+    #[getter]
+    fn store(&self, py: Python<'_>) -> Py<PySsrCorrectionStore> {
+        self.store.clone_ref(py)
+    }
+
+    /// Bytes passed over while resynchronizing, CRC-24Q failures, frames
+    /// whose body did not decode, and departures read under the lenient
+    /// policy.
+    #[getter]
+    fn diagnostics(&self) -> crate::rtcm::PyRtcmStreamDiagnostics {
+        crate::rtcm::PyRtcmStreamDiagnostics::from_inner(self.diagnostics.clone())
+    }
+
+    /// Bytes from the last preamble whose declared frame ran past the end of
+    /// the input.
+    #[getter]
+    fn trailing_partial_frame_len(&self) -> usize {
+        self.trailing_partial_frame_len
+    }
+
+    /// Messages that decoded but that the store refused to ingest.
+    #[getter]
+    fn ingest_refusals(&self) -> Vec<PySsrIngestRefusal> {
+        self.ingest_refusals.clone()
+    }
+
+    /// True when every byte was read into a message that was applied, with
+    /// no departure from the format.
+    #[getter]
+    fn is_complete(&self) -> bool {
+        self.diagnostics.is_clean()
+            && self.trailing_partial_frame_len == 0
+            && self.ingest_refusals.is_empty()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SsrRtcmIngest(resync_bytes={}, skipped_frames={}, ingest_refusals={}, trailing_partial_frame_len={})",
+            self.diagnostics.resync_bytes,
+            self.diagnostics.skipped_frames.len(),
+            self.ingest_refusals.len(),
+            self.trailing_partial_frame_len
+        )
+    }
 }
 
 #[pyfunction]
 #[pyo3(signature = (bytes, week, tow_s, time_scale=PyTimeScale::GPST))]
-/// Build an SSR correction store from framed RTCM bytes.
+/// Build an SSR correction store from every readable frame of framed RTCM
+/// bytes, read under `RtcmPolicy.LENIENT`, reporting in the returned
+/// `SsrRtcmIngest` the bytes outside frames, CRC-24Q failures, frames that
+/// did not decode, a trailing partial frame and the messages the store
+/// refused. `ssr_store_from_rtcm_strict` refuses all of them instead.
 fn ssr_store_from_rtcm(
+    py: Python<'_>,
+    bytes: &[u8],
+    week: u32,
+    tow_s: f64,
+    time_scale: PyTimeScale,
+) -> PyResult<PySsrRtcmIngest> {
+    let epoch = gnss_week_tow(time_scale, week, tow_s)?;
+    let ingest = sidereon::ssr_store_from_rtcm(bytes, epoch);
+    Ok(PySsrRtcmIngest {
+        store: Py::new(
+            py,
+            PySsrCorrectionStore {
+                inner: ingest.store,
+            },
+        )?,
+        diagnostics: ingest.diagnostics,
+        trailing_partial_frame_len: ingest.trailing_partial_frame_len,
+        ingest_refusals: ingest
+            .ingest_refusals
+            .into_iter()
+            .map(|refusal| PySsrIngestRefusal {
+                message_number: refusal.message_number,
+                error: refusal.error.to_string(),
+            })
+            .collect(),
+    })
+}
+
+#[pyfunction]
+#[pyo3(signature = (bytes, week, tow_s, time_scale=PyTimeScale::GPST))]
+/// Build an SSR correction store from framed RTCM bytes, refusing with
+/// `RtcmParseError` anything it cannot read under `RtcmPolicy.STRICT` and
+/// apply in full: bytes outside a CRC-valid frame, a CRC-24Q failure, a
+/// trailing partial frame, a frame that does not decode and a message the
+/// store refuses.
+fn ssr_store_from_rtcm_strict(
     bytes: &[u8],
     week: u32,
     tow_s: f64,
     time_scale: PyTimeScale,
 ) -> PyResult<PySsrCorrectionStore> {
     let epoch = gnss_week_tow(time_scale, week, tow_s)?;
-    sidereon::ssr_store_from_rtcm(bytes, epoch)
+    sidereon::ssr_store_from_rtcm_strict(bytes, epoch)
         .map(|inner| PySsrCorrectionStore { inner })
         .map_err(to_rtcm_err)
 }
@@ -2314,6 +3324,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOrbitReferencePoint>()?;
     m.add_class::<PyMissingCorrectionAction>()?;
     m.add_class::<PySsrFallbackPolicy>()?;
+    m.add_class::<PySsrCorrectionSizePolicy>()?;
+    m.add_class::<PySsrCorrectionSize>()?;
     m.add_class::<PySsrOrbitCorrection>()?;
     m.add_class::<PySsrHighRateClock>()?;
     m.add_class::<PySsrClockCorrection>()?;
@@ -2329,5 +3341,16 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(decode_ssr_message, m)?)?;
     m.add_function(wrap_pyfunction!(decode_ssr, m)?)?;
     m.add_function(wrap_pyfunction!(ssr_store_from_rtcm, m)?)?;
+    m.add_function(wrap_pyfunction!(ssr_store_from_rtcm_strict, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_sbas_block_with_policy, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_sbas_ems_log, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_sbas_rtklib_log, m)?)?;
+    m.add_class::<PySbasPolicy>()?;
+    m.add_class::<PySbasDeparture>()?;
+    m.add_class::<PySbasRefusedLine>()?;
+    m.add_class::<PySbasLog>()?;
+    m.add_class::<PySbasUnavailableIgp>()?;
+    m.add_class::<PySsrIngestRefusal>()?;
+    m.add_class::<PySsrRtcmIngest>()?;
     Ok(())
 }

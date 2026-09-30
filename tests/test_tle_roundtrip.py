@@ -66,19 +66,27 @@ def test_clean_tle_has_no_checksum_warnings():
 def test_checksum_warnings_match_reference():
     fx = _load_fixture()
     case = fx["checksum_case"]
-    tle = sidereon.Tle(case["line1"], case["line2"])
+    # A checksum digit that disagrees is refused by default and read, with
+    # the finding reported, under the lenient policy.
+    with pytest.raises(sidereon.TleParseError):
+        sidereon.Tle(case["line1"], case["line2"])
+    tle = sidereon.Tle(case["line1"], case["line2"], policy=sidereon.TlePolicy.LENIENT)
 
     warnings = tle.checksum_warnings
     assert len(warnings) == len(case["warnings"])
     for got, want in zip(warnings, case["warnings"]):
         assert got.line_label == want["line_label"]
+        assert got.kind == "mismatch"
         assert got.expected == want["expected"]
+        assert got.found is None
         assert got.computed == want["computed"]
         assert "ChecksumWarning(" in repr(got)
 
     # Value-like equality on ChecksumWarning.
     first = warnings[0]
-    twin = sidereon.Tle(case["line1"], case["line2"]).checksum_warnings[0]
+    twin = sidereon.Tle(
+        case["line1"], case["line2"], policy=sidereon.TlePolicy.LENIENT
+    ).checksum_warnings[0]
     assert first == twin
 
 

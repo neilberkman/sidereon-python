@@ -245,6 +245,16 @@ def test_015_reliability_baarda_wtest_constants_are_pinned():
     assert constants.lambda0 == constants.delta0 * constants.delta0
 
 
+def test_015_reliability_quality_refusals_keep_their_core_kind():
+    with pytest.raises(sidereon.QualityError) as invalid_parameter:
+        sidereon.wtest_noncentrality(0.001, beta=1.0)
+    assert invalid_parameter.value.kind == "invalid_reliability_parameter"
+
+    with pytest.raises(sidereon.QualityError) as invalid_design:
+        sidereon.reliability_design([])
+    assert invalid_design.value.kind == "invalid_design"
+
+
 def test_015_reliability_design_redundancy_sum_and_uncheckable_none():
     rows = [
         sidereon.RangeReliabilityRow("x-only", [1.0, 0.0], 1.0),
@@ -301,3 +311,21 @@ def test_015_sbas_protection_levels_match_rust_reference_geometry():
     assert pl.d_major_m == pytest.approx(1.510748501734169, rel=1.0e-12)
     assert pl.hpl_m == pytest.approx(9.064491010405014, rel=1.0e-12)
     assert pl.vpl_m == pytest.approx(13.664070819648263, rel=1.0e-12)
+
+
+def test_015_sbas_empty_geometry_preserves_typed_error_detail():
+    geometry = sidereon.ProtectionGeometry(
+        [], sidereon.Wgs84Geodetic(0.0, 0.0, 0.0), [sidereon.GnssSystem.GPS]
+    )
+    model = sidereon.SbasErrorModel([])
+
+    with pytest.raises(ValueError) as exc_info:
+        sidereon.sbas_protection_levels(geometry, model)
+
+    error = exc_info.value
+    assert type(error) is ValueError
+    assert error.detail == {
+        "family": "SbasPlError",
+        "kind": "insufficient_geometry",
+        "message": "insufficient SBAS protection-level geometry",
+    }
