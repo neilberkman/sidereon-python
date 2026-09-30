@@ -14,6 +14,7 @@ STUB = ROOT / "python" / "sidereon" / "__init__.pyi"
 INSTANCE_ONLY_STUB_ATTRIBUTES = {
     "BiasError": {"kind", "details"},
     "ExactSp3ValidationError": {"kind", "detail"},
+    "ScenarioError": {"detail"},
 }
 
 
@@ -121,6 +122,7 @@ def test_instance_only_stub_attribute_allowlist_is_exact():
     assert INSTANCE_ONLY_STUB_ATTRIBUTES == {
         "BiasError": {"kind", "details"},
         "ExactSp3ValidationError": {"kind", "detail"},
+        "ScenarioError": {"detail"},
     }
     _functions, classes, _variables = _stub_defs()
     assert INSTANCE_ONLY_STUB_ATTRIBUTES["BiasError"] <= classes["BiasError"]
@@ -128,6 +130,7 @@ def test_instance_only_stub_attribute_allowlist_is_exact():
         INSTANCE_ONLY_STUB_ATTRIBUTES["ExactSp3ValidationError"]
         <= classes["ExactSp3ValidationError"]
     )
+    assert INSTANCE_ONLY_STUB_ATTRIBUTES["ScenarioError"] <= classes["ScenarioError"]
 
 
 def test_bias_error_instance_fields_match_stub():

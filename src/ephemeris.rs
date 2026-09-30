@@ -2835,7 +2835,7 @@ impl PyPreciseEphemerisSamples {
 #[pyclass(module = "sidereon._sidereon", name = "PreciseEphemerisInterpolant")]
 #[derive(Clone)]
 pub struct PyPreciseEphemerisInterpolant {
-    inner: PreciseEphemerisInterpolant,
+    pub(crate) inner: PreciseEphemerisInterpolant,
 }
 
 #[pymethods]

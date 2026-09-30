@@ -1900,10 +1900,10 @@ impl PySbasCorrectionStore {
 #[pyclass(module = "sidereon._sidereon", name = "SbasCorrectedEphemeris")]
 /// Broadcast ephemeris source corrected with SBAS messages.
 pub struct PySbasCorrectedEphemeris {
-    broadcast: Py<PyBroadcastEphemeris>,
-    store: Py<PySbasCorrectionStore>,
-    geo: GnssSatelliteId,
-    mode: SbasSolveMode,
+    pub(crate) broadcast: Py<PyBroadcastEphemeris>,
+    pub(crate) store: Py<PySbasCorrectionStore>,
+    pub(crate) geo: GnssSatelliteId,
+    pub(crate) mode: SbasSolveMode,
 }
 
 #[pymethods]
@@ -2752,8 +2752,8 @@ impl PySsrCorrectionStore {
 #[pyclass(module = "sidereon._sidereon", name = "SsrCorrectedEphemeris")]
 /// Broadcast ephemeris source corrected with RTCM SSR messages.
 pub struct PySsrCorrectedEphemeris {
-    broadcast: Py<PyBroadcastEphemeris>,
-    store: Py<PySsrCorrectionStore>,
+    pub(crate) broadcast: Py<PyBroadcastEphemeris>,
+    pub(crate) store: Py<PySsrCorrectionStore>,
     fallback: SsrFallbackPolicy,
     max_staleness_s: Option<f64>,
     ut1_validity: crate::PyValidityMode,
@@ -3011,7 +3011,7 @@ impl PySsrCorrectedEphemeris {
 }
 
 impl PySsrCorrectedEphemeris {
-    fn source<'a>(
+    pub(crate) fn source<'a>(
         &self,
         broadcast: &'a PyBroadcastEphemeris,
         store: &'a PySsrCorrectionStore,

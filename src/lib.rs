@@ -130,6 +130,13 @@ create_exception!(
 
 create_exception!(
     _sidereon,
+    ScenarioError,
+    PyValueError,
+    "Raised when core scenario validation, source identity, media, or simulation fails. `detail` retains the exact core error variant and payload."
+);
+
+create_exception!(
+    _sidereon,
     ParseError,
     SidereonError,
     "Base class for input-format parse failures (SP3, TLE, ...)."
@@ -946,6 +953,7 @@ pub(crate) fn to_solve_err<E: std::fmt::Display>(err: E) -> PyErr {
 #[pymodule]
 fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SidereonError", py.get_type::<SidereonError>())?;
+    m.add("ScenarioError", py.get_type::<ScenarioError>())?;
     m.add("ParseError", py.get_type::<ParseError>())?;
     m.add("Sp3ParseError", py.get_type::<Sp3ParseError>())?;
     m.add("Sp3WriteError", sp3_write_error_type(py)?)?;

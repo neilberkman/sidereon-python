@@ -21648,10 +21648,129 @@ def scenario_to_json(scenario: str | bytes | bytearray | Mapping[str, Any]) -> s
     """Validate and canonicalize a scenario mapping or JSON document."""
     ...
 
+class ScenarioErrorDetail:
+    """Exact core error variant and the payload relevant to that variant."""
+    @property
+    def kind(
+        self,
+    ) -> Literal[
+        "invalid_input",
+        "external_source_required",
+        "external_source_mismatch",
+        "external_ionosphere_required",
+        "ionosphere",
+        "no_ephemeris",
+        "ut1_outside_coverage",
+        "observable",
+        "frame",
+    ]: ...
+    @property
+    def field(self) -> str | None: ...
+    @property
+    def reason(self) -> str | None: ...
+    @property
+    def expected(self) -> str | None: ...
+    @property
+    def actual(self) -> str | None: ...
+    @property
+    def satellite(self) -> str | None: ...
+    @property
+    def ut1_reason(self) -> Literal["before_coverage", "after_coverage"] | None: ...
+    @property
+    def nested_kind(
+        self,
+    ) -> Literal["invalid_input", "no_ephemeris", "ephemeris", "media"] | None: ...
+    @property
+    def nested_field(self) -> str | None: ...
+    @property
+    def nested_reason(self) -> str | None: ...
+    @property
+    def nested_observable_error(self) -> dict[str, Any] | None: ...
+    @property
+    def nested_detail(self) -> str | None: ...
+
+class ScenarioError(ValueError):
+    """Core scenario failure; ``detail`` retains its exact variant payload."""
+
+    detail: ScenarioErrorDetail
+
+class ScenarioExternalProduct:
+    """Caller-declared identity for an external scenario product."""
+    def __init__(
+        self,
+        kind: Literal["sp3", "broadcast", "tle", "ionex"],
+        product_id: str,
+        content_digest: str,
+    ) -> None: ...
+    @property
+    def kind(self) -> Literal["sp3", "broadcast", "tle", "ionex"]: ...
+    @property
+    def product_id(self) -> str: ...
+    @property
+    def content_digest(self) -> str: ...
+
 def simulate_scenario(
     scenario: str | bytes | bytearray | Mapping[str, Any],
 ) -> SyntheticObservationSet:
     """Simulate a deterministic synthetic-Keplerian scenario."""
+    ...
+
+def simulate_scenario_with_media(
+    scenario: str | bytes | bytearray | Mapping[str, Any],
+    ionex: Ionex | None = None,
+    ionex_identity: ScenarioExternalProduct | None = None,
+) -> SyntheticObservationSet:
+    """Simulate a synthetic scenario with its declared IONEX media product."""
+    ...
+
+def scenario_source_transcript_fingerprint(
+    scenario: str | bytes | bytearray | Mapping[str, Any],
+    source: (
+        Sp3
+        | BroadcastEphemeris
+        | PreciseEphemerisInterpolant
+        | SsrCorrectedEphemeris
+        | SbasCorrectedEphemeris
+    ),
+    source_identity: ScenarioExternalProduct,
+    ionex: Ionex | None = None,
+    ionex_identity: ScenarioExternalProduct | None = None,
+) -> str:
+    """Compute the core-verified source transcript fingerprint."""
+    ...
+
+def simulate_scenario_with_source_and_media(
+    scenario: str | bytes | bytearray | Mapping[str, Any],
+    source: (
+        Sp3
+        | BroadcastEphemeris
+        | PreciseEphemerisInterpolant
+        | SsrCorrectedEphemeris
+        | SbasCorrectedEphemeris
+    ),
+    source_identity: ScenarioExternalProduct,
+    ionex: Ionex | None = None,
+    ionex_identity: ScenarioExternalProduct | None = None,
+) -> SyntheticObservationSet:
+    """Simulate an external-product scenario with declared source and media."""
+    ...
+
+def simulate_scenario_with_source(
+    scenario: str | bytes | bytearray | Mapping[str, Any],
+    source: (
+        Sp3
+        | BroadcastEphemeris
+        | PreciseEphemerisInterpolant
+        | SsrCorrectedEphemeris
+        | SbasCorrectedEphemeris
+    ),
+    source_identity: ScenarioExternalProduct,
+) -> SyntheticObservationSet:
+    """Simulate an external-product scenario without external media."""
+    ...
+
+def ionex_content_fingerprint(ionex: Ionex) -> str:
+    """Return the core fingerprint of serialized IONEX content."""
     ...
 
 def simulate_scenario_bytes(
