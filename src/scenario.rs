@@ -35,7 +35,7 @@ fn scenario_core_err(py: Python<'_>, err: sidereon_core::scenario::ScenarioError
     let detail = (PyScenarioErrorDetail { inner: err }).into_pyobject(py);
     let detail = match detail {
         Ok(detail) => detail,
-        Err(error) => return error.into(),
+        Err(error) => return error,
     };
     if let Err(error) = py_err.value(py).setattr("detail", detail) {
         return error;
@@ -293,7 +293,7 @@ enum ExternalScenarioOperation {
 
 enum ExternalScenarioResult {
     Fingerprint(String),
-    Simulation(PySyntheticObservationSet),
+    Simulation(Box<PySyntheticObservationSet>),
 }
 
 fn run_with_external_source<E>(
@@ -317,12 +317,14 @@ where
         ExternalScenarioOperation::Simulate => {
             sidereon_core::scenario::simulate_scenario_with_source(scenario, &declared)
                 .map(PySyntheticObservationSet::from)
+                .map(Box::new)
                 .map(ExternalScenarioResult::Simulation)
                 .map_err(|err| scenario_core_err(py, err))
         }
         ExternalScenarioOperation::SimulateWithMedia => {
             core_simulate_scenario_with_source_and_media(scenario, &declared, media)
                 .map(PySyntheticObservationSet::from)
+                .map(Box::new)
                 .map(ExternalScenarioResult::Simulation)
                 .map_err(|err| scenario_core_err(py, err))
         }
@@ -895,7 +897,7 @@ fn simulate_scenario_with_source_and_media(
         &media,
         ExternalScenarioOperation::SimulateWithMedia,
     )? {
-        ExternalScenarioResult::Simulation(value) => Ok(value),
+        ExternalScenarioResult::Simulation(value) => Ok(*value),
         ExternalScenarioResult::Fingerprint(_) => unreachable!("simulation operation result"),
     }
 }
@@ -917,7 +919,7 @@ fn simulate_scenario_with_source(
         &media,
         ExternalScenarioOperation::Simulate,
     )? {
-        ExternalScenarioResult::Simulation(value) => Ok(value),
+        ExternalScenarioResult::Simulation(value) => Ok(*value),
         ExternalScenarioResult::Fingerprint(_) => unreachable!("simulation operation result"),
     }
 }
