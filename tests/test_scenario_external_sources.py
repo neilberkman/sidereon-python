@@ -227,7 +227,113 @@ def test_ionex_fingerprint_is_available_for_declared_media_identity():
     assert sidereon.ionex_content_fingerprint(ionex) == fingerprint
     identity = sidereon.ScenarioExternalProduct("ionex", "fixture/ionex", fingerprint)
     assert identity.kind == "ionex"
+    assert identity.product_id == "fixture/ionex"
     assert identity.content_digest == fingerprint
+
+
+def test_external_product_constructor_variants_and_invalid_kind():
+    for kind in ("sp3", "broadcast", "tle", "ionex"):
+        identity = sidereon.ScenarioExternalProduct(kind, "fixture/product", "digest")
+        assert identity.kind == kind
+        assert identity.product_id == "fixture/product"
+        assert identity.content_digest == "digest"
+
+    with pytest.raises(ValueError, match="unknown external product kind"):
+        sidereon.ScenarioExternalProduct("clock", "fixture/product", "digest")
+
+
+def test_simulate_scenario_with_media_uses_declared_ionex_product():
+    scenario_path = pathlib.Path(__file__).parent / "fixtures" / "scenario_base.json"
+    scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
+    ionex_path = CORE_FIXTURE_ROOT / "ionex" / "synthetic_2map_7x7.20i"
+    original_ionex = sidereon.load_ionex(ionex_path)
+    epoch = float(scenario["epochs"]["start_j2000_s"])
+    samples = sidereon.TecGridSamples(
+        map_epochs_j2000_s=np.array(
+            [int(round(epoch)) - 3600, int(round(epoch)) + 3600], dtype=np.int64
+        ),
+        lat_nodes_deg=original_ionex.lat_nodes_deg,
+        lon_nodes_deg=original_ionex.lon_nodes_deg,
+        dlat_deg=original_ionex.dlat_deg,
+        dlon_deg=original_ionex.dlon_deg,
+        shell_height_km=original_ionex.shell_height_km,
+        base_radius_km=original_ionex.base_radius_km,
+        exponent=original_ionex.exponent,
+        tec_maps=original_ionex.tec_maps,
+        rms_maps=original_ionex.rms_maps,
+        height_maps=original_ionex.height_maps,
+        tec_mask=original_ionex.tec_mask,
+        rms_mask=original_ionex.rms_mask,
+        height_mask=original_ionex.height_mask,
+        header=original_ionex.header,
+    )
+    ionex = sidereon.Ionex.from_samples(samples)
+    fingerprint = sidereon.ionex_content_fingerprint(ionex)
+    identity = sidereon.ScenarioExternalProduct(
+        "ionex", "fixture/synthetic-ionex", fingerprint
+    )
+    scenario["error_budget"]["ionosphere"] = {
+        "kind": "supplied_ionex",
+        "source": {
+            "kind": identity.kind,
+            "product_id": identity.product_id,
+            "content_digest": identity.content_digest,
+        },
+    }
+
+    with pytest.raises(sidereon.ScenarioError) as caught:
+        sidereon.simulate_scenario_with_media(scenario)
+    assert caught.value.detail.kind == "external_ionosphere_required"
+
+    result = sidereon.simulate_scenario_with_media(scenario, ionex, identity)
+    assert np.any(result.truth_terms.ionosphere_m > 0.0)
+
+
+def test_scenario_error_detail_exposes_invalid_product_identity_fields():
+    path = CORE_FIXTURE_ROOT / "sp3" / "IGS0OPSFIN_20261200945_02H30M_15M_ORB.SP3"
+    source = sidereon.load_sp3(path)
+    identity = sidereon.ScenarioExternalProduct("sp3", "", "digest")
+    scenario = _external_fixture_scenario(source, identity)
+
+    with pytest.raises(sidereon.ScenarioError) as caught:
+        sidereon.simulate_scenario_with_source(scenario, source, identity)
+
+    detail = caught.value.detail
+    assert detail.kind == "invalid_input"
+    assert detail.field == "constellation.source"
+    assert detail.reason == "product_id must not be empty"
+    assert detail.expected is None
+    assert detail.actual is None
+    assert detail.satellite is None
+    assert detail.ut1_reason is None
+    assert detail.nested_kind is None
+    assert detail.nested_field is None
+    assert detail.nested_reason is None
+    assert detail.nested_observable_error is None
+    assert detail.nested_detail is None
+
+
+def test_scenario_error_detail_exposes_missing_satellite_identity():
+    path = CORE_FIXTURE_ROOT / "sp3" / "IGS0OPSFIN_20261200945_02H30M_15M_ORB.SP3"
+    source = sidereon.load_sp3(path)
+    identity = sidereon.ScenarioExternalProduct("sp3", "fixture/sp3", "digest")
+    scenario = _external_fixture_scenario(source, identity)
+    fingerprint = sidereon.scenario_source_transcript_fingerprint(
+        scenario, source, identity
+    )
+    identity = sidereon.ScenarioExternalProduct("sp3", "fixture/sp3", fingerprint)
+    scenario["constellation"]["source"]["content_digest"] = fingerprint
+    scenario["constellation"]["satellites"] = [{"system": "Gps", "prn": 99}]
+
+    with pytest.raises(sidereon.ScenarioError) as caught:
+        sidereon.simulate_scenario_with_source(scenario, source, identity)
+
+    detail = caught.value.detail
+    assert detail.kind == "no_ephemeris"
+    assert detail.satellite == "G99"
+    assert detail.field is None
+    assert detail.reason is None
+    assert detail.ut1_reason is None
 
 
 def test_external_sp3_scenario_accepts_declared_ionex_and_checks_its_digest():
