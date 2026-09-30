@@ -56,6 +56,26 @@ print(look.azimuth_deg, look.elevation_deg, look.range_km)
 pattern: a typed config in, a result object with numpy positions and scalar
 attributes out.
 
+For a CCSDS OMM, parse the message and initialize the SGP4/SDP4 satellite
+directly. Its propagation results use the same TEME arrays as `Tle.propagate()`;
+incompatible theories or missing `MEAN_MOTION` / `BSTAR` raise
+`OmmParseError` with a structured `detail` field.
+Use `sidereon.parse_omm_epoch(text)` when you need the `EPOCH` field alone; it
+preserves the full 15-digit fractional-second value and UTC-like leap seconds,
+accepts a trailing `Z`, and raises `OmmParseError` with typed detail for invalid
+input.
+
+```python
+import numpy as np
+import sidereon
+
+omm = sidereon.parse_omm_json(open("orbit.json").read())
+satellite = omm.to_satellite()
+epochs_us = np.asarray([1_750_000_000_000_000], dtype=np.int64)
+states = satellite.propagate(epochs_us)
+print(states.position_km, states.velocity_km_s)
+```
+
 ```python
 import sidereon
 

@@ -9,13 +9,14 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
 
+use sidereon::sgp4::Satellite;
 use sidereon_core::astro::ndm::TextIssue;
 use sidereon_core::astro::omm::{
     encode_csv, encode_csv_discarding_comments, encode_json, encode_json_array,
     encode_json_array_discarding_comments, encode_json_discarding_comments, encode_kvn, encode_xml,
-    parse_csv, parse_csv_array, parse_json, parse_json_array, parse_kvn, parse_xml, parse_xml_all,
-    Omm, OmmArray, OmmComments, OmmCovariance, OmmEpoch, OmmError, OmmInputErrorKind,
-    OmmSpacecraft, OmmUserDefined,
+    parse_csv, parse_csv_array, parse_epoch as parse_core_epoch, parse_json, parse_json_array,
+    parse_kvn, parse_xml, parse_xml_all, Omm, OmmArray, OmmComments, OmmCovariance, OmmEpoch,
+    OmmError, OmmInputErrorKind, OmmSpacecraft, OmmUserDefined,
 };
 
 use crate::OmmParseError;
@@ -187,7 +188,7 @@ impl PyOmmEpoch {
     }
 
     fn iso8601_string(&self) -> String {
-        format!(
+        let base = format!(
             "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}",
             self.inner.year,
             self.inner.month,
@@ -196,7 +197,12 @@ impl PyOmmEpoch {
             self.inner.minute,
             self.inner.second,
             self.inner.microsecond
-        )
+        );
+        if self.inner.femtosecond == 0 {
+            base
+        } else {
+            format!("{base}{:09}", self.inner.femtosecond)
+        }
     }
 }
 
@@ -301,7 +307,8 @@ impl PyOmmEpoch {
         self.inner.femtosecond
     }
 
-    /// ISO-8601 epoch text with microsecond precision.
+    /// ISO-8601 epoch text with six fractional digits, extended to 15 when a
+    /// sub-microsecond femtosecond remainder is present.
     #[getter]
     fn iso8601(&self) -> String {
         self.iso8601_string()
@@ -913,6 +920,24 @@ impl PyOmm {
         encode_json_discarding_comments(&self.inner).map_err(|err| to_omm_err(py, err))
     }
 
+    /// Initialize an SGP4/SDP4 satellite from this OMM using the core
+    /// `Omm::to_element_set` and `Satellite::from_omm` routes. Raises
+    /// `OmmParseError` with structured details for incompatible metadata or
+    /// missing required fields; SGP4 initialization failures raise
+    /// `TleParseError`. The returned `OmmSatellite` propagates UTC unix-
+    /// microsecond epochs to TEME states through `OmmSatellite.propagate`.
+    fn to_satellite(&self, py: Python<'_>) -> PyResult<crate::propagation::PyOmmSatellite> {
+        // Keep the OMM bridge's typed field diagnostics, then initialize via
+        // the engine's canonical Satellite::from_omm route.
+        self.inner
+            .to_element_set()
+            .map_err(|err| to_omm_err(py, err))?;
+        let satellite = Satellite::from_omm(&self.inner).map_err(crate::to_tle_err)?;
+        Ok(crate::propagation::PyOmmSatellite::from_satellite(
+            satellite,
+        ))
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Omm(norad_cat_id={:?}, object_name={:?}, epoch={:?})",
@@ -1032,6 +1057,16 @@ fn parse_omm_kvn(py: Python<'_>, text: &str) -> PyResult<PyOmm> {
         .map_err(|err| to_omm_err(py, err))
 }
 
+/// Parse a CCSDS OMM `EPOCH` value to its calendar components, retaining up to
+/// 15 fractional-second digits and UTC-like leap seconds. A trailing `Z` is
+/// accepted. Invalid text raises `OmmParseError` with the core error detail.
+#[pyfunction]
+fn parse_omm_epoch(py: Python<'_>, text: &str) -> PyResult<PyOmmEpoch> {
+    parse_core_epoch(text)
+        .map(PyOmmEpoch::from_inner)
+        .map_err(|err| to_omm_err(py, err))
+}
+
 /// Parse CCSDS OMM XML text holding one OMM. A document holding several
 /// raises `OmmParseError`; `parse_omm_xml_all` reads them all.
 #[pyfunction]
@@ -1127,6 +1162,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOmmSkippedRecord>()?;
     m.add_class::<PyOmmArray>()?;
     m.add_function(wrap_pyfunction!(parse_omm_kvn, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_omm_epoch, m)?)?;
     m.add_function(wrap_pyfunction!(parse_omm_xml, m)?)?;
     m.add_function(wrap_pyfunction!(parse_omm_xml_all, m)?)?;
     m.add_function(wrap_pyfunction!(parse_omm_json, m)?)?;

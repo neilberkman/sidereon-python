@@ -141,6 +141,39 @@ fn extract_opsmode(obj: &Bound<'_, PyAny>) -> PyResult<PyOpsMode> {
     PyOpsMode::from_label(&obj.extract::<String>()?)
 }
 
+/// Propagation-ready satellite initialized from a CCSDS OMM.
+#[pyclass(module = "sidereon._sidereon", name = "OmmSatellite")]
+pub(crate) struct PyOmmSatellite {
+    satellite: Satellite,
+}
+
+impl PyOmmSatellite {
+    pub(crate) fn from_satellite(satellite: Satellite) -> Self {
+        Self { satellite }
+    }
+}
+
+#[pymethods]
+impl PyOmmSatellite {
+    /// Propagate a one-dimensional `int64` numpy array of UTC unix-microsecond
+    /// epochs with the core `passes::propagate_teme_arc` path used by
+    /// `Tle.propagate`. Returns `TlePropagation` with float64 TEME position and
+    /// velocity arrays in km and km/s, in input order. Empty input returns
+    /// empty `(0, 3)` arrays. Propagation refusals raise `SolveError`.
+    fn propagate(&self, epochs_unix_us: PyReadonlyArray1<'_, i64>) -> PyResult<PyTlePropagation> {
+        let instants = instants_from_unix_micros(&epochs_unix_us, EmptyPolicy::Allow)?;
+        let predictions = propagate_teme_arc(&self.satellite, &instants).map_err(to_solve_err)?;
+        Ok(PyTlePropagation {
+            positions_km: predictions.iter().map(|p| p.position).collect(),
+            velocities_km_s: predictions.iter().map(|p| p.velocity).collect(),
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        "OmmSatellite()".to_string()
+    }
+}
+
 /// Numerical propagation force model.
 #[pyclass(module = "sidereon._sidereon", name = "ForceModel", eq, eq_int)]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3453,6 +3486,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFitStatistics>()?;
     m.add_class::<PyTleFit>()?;
     m.add_class::<PyDecayLatch>()?;
+    m.add_class::<PyOmmSatellite>()?;
     m.add_class::<PyTle>()?;
     m.add_class::<PyNamedTle>()?;
     m.add_class::<PyRejectedTleRecord>()?;

@@ -255,6 +255,20 @@ for h, idxs in HELPERS.items():
         for sym in symbols.get(("fcall", h), set()):
             add(idx, sym=sym)
 
+# The core's generic OMM parser dispatches among KVN, XML, JSON, and CSV.
+# Python intentionally exposes those as four format-specific parsers instead
+# of one auto-detecting callable, so account for that route set explicitly.
+for idx, it in enumerate(API):
+    if "sidereon::omm::parse" in it["paths"]:
+        add(idx, f="omm.rs")
+        for sym in (
+            "parse_omm_kvn",
+            "parse_omm_xml",
+            "parse_omm_json",
+            "parse_omm_csv",
+        ):
+            add(idx, sym=sym)
+
 out = []
 for idx, it in enumerate(API):
     rec = dict(it)
