@@ -4696,3 +4696,171 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_crinex, m)?)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod rinex_error_projection_tests {
+    use super::*;
+
+    macro_rules! assert_error {
+        ($inner:expr, $kind:literal, $message:literal, $epoch:expr, $system:expr, $satellite:expr, $version:expr, $code:expr, $time:expr, {$($key:literal => $value:expr),* $(,)?}) => {{
+            let d = PyRinexObsWriteErrorDetail { inner: $inner };
+            assert_eq!(d.kind(), $kind);
+            assert_eq!(d.message(), $message);
+            assert_eq!(d.inner, d.inner.clone());
+            assert_eq!(d.epoch_index(), $epoch);
+            assert_eq!(d.system(), $system);
+            assert_eq!(d.satellite(), $satellite);
+            assert_eq!(d.version(), $version);
+            assert_eq!(d.code(), $code);
+            assert_eq!(d.time_system(), $time);
+            Python::with_gil(|py| {
+                let actual = d.details(py).unwrap();
+                let expected = PyDict::new(py);
+                $(expected.set_item($key, $value).unwrap();)*
+                assert!(actual.eq(&expected).unwrap(), "{}: {:?}", $kind, actual);
+            });
+        }};
+    }
+
+    macro_rules! assert_change {
+        ($inner:expr, $kind:literal, $epoch:expr, $system:expr, {$($key:literal => $value:expr),* $(,)?}) => {{
+            let d = PyObsDowngradeChange { inner: $inner };
+            assert_eq!(d.kind(), $kind);
+            assert_eq!(d.inner, d.inner.clone());
+            assert_eq!(d.epoch_index(), $epoch);
+            assert_eq!(d.system(), $system);
+            Python::with_gil(|py| {
+                let actual = d.details(py).unwrap();
+                let expected = PyDict::new(py);
+                $(expected.set_item($key, $value).unwrap();)*
+                assert!(actual.eq(&expected).unwrap(), "{}: {:?}", $kind, actual);
+            });
+        }};
+    }
+
+    fn sat() -> GnssSatelliteId {
+        GnssSatelliteId::new(GnssSystem::Gps, 1).unwrap()
+    }
+
+    #[test]
+    fn all_write_error_variants_project_literal_messages_fields_and_getters() {
+        let s = sat();
+        assert_error!(CoreRinexObsWriteError::CodeListsNotVersionTwo { system: GnssSystem::Galileo, position: 2, code: Some("C1X".into()) }, "CodeListsNotVersionTwo", "RINEX OBS version 2 has no observation type that every constellation reads back as its own code at position 2, where Galileo holds \"C1X\"", None, Some(PyGnssSystem::GALILEO), None, None, Some("C1X".into()), None, {"system" => PyGnssSystem::GALILEO, "position" => 2usize, "code" => Some("C1X".to_owned())});
+        assert_error!(CoreRinexObsWriteError::CodeListsNotVersionTwo { system: GnssSystem::Gps, position: 2, code: None }, "CodeListsNotVersionTwo", "RINEX OBS version 2 names one list of codes for every constellation, and GPS holds 2 codes where another constellation holds a different number", None, Some(PyGnssSystem::GPS), None, None, None, None, {"system" => PyGnssSystem::GPS, "position" => 2usize, "code" => None::<String>});
+        assert_error!(CoreRinexObsWriteError::NotVersionTwo { version: 3.05 }, "NotVersionTwo", "RINEX OBS version 3.05 is not a version 2", None, None, None, Some(3.05), None, None, {"version" => 3.05});
+        assert_error!(CoreRinexObsWriteError::ScaleFactorsInVersionTwo { count: 2 }, "ScaleFactorsInVersionTwo", "RINEX OBS version 2 would carry 2 SYS / SCALE FACTOR records, which version 2 readers that do not apply them read as physical values; downgrade_to_rinex2 removes them", None, None, None, None, None, None, {"count" => 2usize});
+        assert_error!(CoreRinexObsWriteError::ValuesWithoutCodes { epoch_index: 4, satellite: s, codes: 2, values: 3 }, "ValuesWithoutCodes", "RINEX OBS epoch 4 satellite G01 holds 3 values for 2 observation codes", Some(4), None, Some("G01".into()), None, None, None, {"epoch_index" => 4usize, "satellite" => "G01", "codes" => 2usize, "values" => 3usize});
+        assert_error!(CoreRinexObsWriteError::CountsWithoutCodes { satellite: s, codes: 2, counts: 3 }, "CountsWithoutCodes", "RINEX OBS PRN / # OF OBS for G01 holds 3 counts for 2 observation codes", None, None, Some("G01".into()), None, None, None, {"satellite" => "G01", "codes" => 2usize, "counts" => 3usize});
+        assert_error!(CoreRinexObsWriteError::CodeListNotStated { system: GnssSystem::BeiDou }, "CodeListNotStated", "RINEX OBS version 2 would not state BeiDou's code list: no observation or PRN / # OF OBS count names BeiDou, so a reader builds no list for it, and the type names do not read as it; downgrade_to_rinex2 removes the list", None, Some(PyGnssSystem::BEIDOU), None, None, None, None, {"system" => PyGnssSystem::BEIDOU});
+        assert_error!(CoreRinexObsWriteError::EpochFlagTooWide { epoch_index: 4, flag: 10 }, "EpochFlagTooWide", "RINEX OBS epoch 4 flag 10 does not fit the one-digit flag field", Some(4), None, None, None, None, None, {"epoch_index" => 4usize, "flag" => 10u8});
+        assert_error!(CoreRinexObsWriteError::EpochTimeMissing { epoch_index: 4, flag: 0 }, "EpochTimeMissing", "RINEX OBS epoch 4 with flag 0 has no epoch time, which only an event may leave blank", Some(4), None, None, None, None, None, {"epoch_index" => 4usize, "flag" => 0u8});
+        assert_error!(CoreRinexObsWriteError::EpochPicosecondsNotInVersion { epoch_index: 4, version: 3.05 }, "EpochPicosecondsNotInVersion", "RINEX OBS epoch 4 carries picoseconds, which a version 3.05 epoch record has no field for", Some(4), None, None, Some(3.05), None, None, {"epoch_index" => 4usize, "version" => 3.05});
+        assert_error!(CoreRinexObsWriteError::TooManyObservationTypes { count: 1000 }, "TooManyObservationTypes", "RINEX OBS version 2 would need at least 1000 observation types, more than the 999 its count field declares", None, None, None, None, None, None, {"count" => 1000usize});
+        assert_error!(CoreRinexObsWriteError::CodeListsNotUnion { system: GnssSystem::Glonass }, "CodeListsNotUnion", "RINEX OBS GLONASS code list is not the union of the lists the header and its events declare", None, Some(PyGnssSystem::GLONASS), None, None, None, None, {"system" => PyGnssSystem::GLONASS});
+        assert_error!(CoreRinexObsWriteError::ValueOutsideDeclaredList { epoch_index: 4, satellite: s, code: Some("L1C".into()) }, "ValueOutsideDeclaredList", "RINEX OBS epoch 4 satellite G01 holds a value under \"L1C\", which the list in effect at that epoch does not declare", Some(4), None, Some("G01".into()), None, Some("L1C".into()), None, {"epoch_index" => 4usize, "satellite" => "G01", "code" => Some("L1C".to_owned())});
+        assert_error!(CoreRinexObsWriteError::ValueOutsideDeclaredList { epoch_index: 4, satellite: s, code: None }, "ValueOutsideDeclaredList", "RINEX OBS epoch 4 satellite G01 is of a constellation with no code list in effect at that epoch", Some(4), None, Some("G01".into()), None, None, None, {"epoch_index" => 4usize, "satellite" => "G01", "code" => None::<String>});
+        assert_error!(CoreRinexObsWriteError::DeclaredListNotStated { system: GnssSystem::Qzss }, "DeclaredListNotStated", "RINEX OBS QZSS declared code list is not what the version 2 type names state for it", None, Some(PyGnssSystem::QZSS), None, None, None, None, {"system" => PyGnssSystem::QZSS});
+        assert_error!(CoreRinexObsWriteError::EventRecordsUnreadable { message: "bad record".into() }, "EventRecordsUnreadable", "RINEX OBS event header records do not read: bad record", None, None, None, None, None, None, {"message" => "bad record"});
+        assert_error!(CoreRinexObsWriteError::ObservableNotRepresentable { system: GnssSystem::BeiDou, code: "C1X".into(), version: 2.11 }, "ObservableNotRepresentable", "RINEX OBS BeiDou code C1X is on a carrier that version 2.11 cannot represent", None, Some(PyGnssSystem::BEIDOU), None, Some(2.11), Some("C1X".into()), None, {"system" => PyGnssSystem::BEIDOU, "code" => "C1X", "version" => 2.11});
+        assert_error!(CoreRinexObsWriteError::LeapSecondsTimeSystemNotInVersion { time_system: "BDT".into(), version: 2.11 }, "LeapSecondsTimeSystemNotInVersion", "RINEX OBS LEAP SECONDS time system BDT is not supported in version 2.11", None, None, None, Some(2.11), None, Some("BDT"), {"time_system" => "BDT", "version" => 2.11});
+        assert_error!(CoreRinexObsWriteError::InvalidLeapSecondsTimeSystem { time_system: "XYZ".into() }, "InvalidLeapSecondsTimeSystem", "RINEX OBS LEAP SECONDS invalid time system identifier: \"XYZ\"", None, None, None, None, None, Some("XYZ"), {"time_system" => "XYZ"});
+        assert_error!(CoreRinexObsWriteError::ReadBackMismatch { what: "header.version".into() }, "ReadBackMismatch", "RINEX OBS text would not read back as the product: header.version", None, None, None, None, None, None, {"what" => "header.version"});
+    }
+
+    #[test]
+    fn all_downgrade_change_variants_project_every_field_and_nested_change() {
+        let s = sat();
+        let gps = Some(PyGnssSystem::GPS);
+        let no_system = None;
+        assert_change!(CoreObsDowngradeChange::CodeRenamed { system: GnssSystem::BeiDou, from: "C1I".into(), to: "C2I".into() }, "CodeRenamed", None, Some(PyGnssSystem::BEIDOU), {"system" => PyGnssSystem::BEIDOU, "from_code" => "C1I", "to_code" => "C2I"});
+        assert_change!(CoreObsDowngradeChange::CodeMoved { system: GnssSystem::Gps, code: "L1C".into(), from: 1, to: 0 }, "CodeMoved", None, gps, {"system" => PyGnssSystem::GPS, "code" => "L1C", "from_position" => 1usize, "to_position" => 0usize});
+        assert_change!(CoreObsDowngradeChange::CodeAdded { system: GnssSystem::Galileo, code: "C1C".into() }, "CodeAdded", None, Some(PyGnssSystem::GALILEO), {"system" => PyGnssSystem::GALILEO, "code" => "C1C"});
+        assert_change!(CoreObsDowngradeChange::CodeListRemoved { system: GnssSystem::Glonass, codes: vec!["C1C".into(), "L1C".into()] }, "CodeListRemoved", None, Some(PyGnssSystem::GLONASS), {"system" => PyGnssSystem::GLONASS, "codes" => vec!["C1C", "L1C"]});
+        assert_change!(CoreObsDowngradeChange::ValueRounded { epoch_index: 3, satellite: s, code: "L1C".into(), from: 100.000125, to: 100.0 }, "ValueRounded", Some(3), no_system, {"epoch_index" => 3usize, "satellite" => "G01", "code" => "L1C", "from_value" => 100.000125, "to_value" => 100.0});
+        assert_change!(CoreObsDowngradeChange::CycleSlipRounded { epoch_index: 3, satellite: s, code: "L1C".into(), from: 0.125125, to: 0.125 }, "CycleSlipRounded", Some(3), no_system, {"epoch_index" => 3usize, "satellite" => "G01", "code" => "L1C", "from_value" => 0.125125, "to_value" => 0.125});
+        assert_change!(CoreObsDowngradeChange::ScaleFactorsRemoved { count: 2 }, "ScaleFactorsRemoved", None, no_system, {"count" => 2usize});
+        assert_change!(CoreObsDowngradeChange::EpochPicosecondsRemoved { epoch_index: 3, picoseconds: 123456 }, "EpochPicosecondsRemoved", Some(3), no_system, {"epoch_index" => 3usize, "picoseconds" => 123456u32});
+        assert_change!(CoreObsDowngradeChange::ClockOffsetRounded { epoch_index: 3, from: 1.123456789123, to: 1.123456789 }, "ClockOffsetRounded", Some(3), no_system, {"epoch_index" => 3usize, "from_offset_s" => 1.123456789123, "to_offset_s" => 1.123456789});
+
+        let nested = PyObsDowngradeChange {
+            inner: CoreObsDowngradeChange::InEventLists {
+                epoch_index: 7,
+                change: Box::new(CoreObsDowngradeChange::CodeMoved {
+                    system: GnssSystem::Gps,
+                    code: "L1C".into(),
+                    from: 1,
+                    to: 0,
+                }),
+            },
+        };
+        assert_eq!(nested.kind(), "InEventLists");
+        assert_eq!(nested.epoch_index(), Some(7));
+        assert_eq!(nested.system(), None);
+        assert_eq!(nested.inner, nested.inner.clone());
+        Python::with_gil(|py| {
+            let d = nested.details(py).unwrap();
+            assert_eq!(
+                d.get_item("epoch_index")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                7
+            );
+            let inner = d
+                .get_item("change")
+                .unwrap()
+                .unwrap()
+                .extract::<PyRef<'_, PyObsDowngradeChange>>()
+                .unwrap();
+            assert_eq!(inner.kind(), "CodeMoved");
+            assert_eq!(
+                inner
+                    .details(py)
+                    .unwrap()
+                    .get_item("system")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<PyGnssSystem>()
+                    .unwrap(),
+                PyGnssSystem::GPS
+            );
+            assert_eq!(
+                inner
+                    .details(py)
+                    .unwrap()
+                    .get_item("code")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "L1C"
+            );
+            assert_eq!(
+                inner
+                    .details(py)
+                    .unwrap()
+                    .get_item("from_position")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                inner
+                    .details(py)
+                    .unwrap()
+                    .get_item("to_position")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                0
+            );
+        });
+
+        assert_change!(CoreObsDowngradeChange::DeprecatedRecordsRemoved { label: "SYS / PHASE SHIFT".into(), epoch_index: None, records: vec!["G L1C  0.25000".into()] }, "DeprecatedRecordsRemoved", None, no_system, {"label" => "SYS / PHASE SHIFT", "epoch_index" => None::<usize>, "records" => vec!["G L1C  0.25000"]});
+        assert_change!(CoreObsDowngradeChange::EventRecordsRewritten { epoch_index: 7, from: vec!["G    1 L1C".into()], to: vec!["     1    C1".into()] }, "EventRecordsRewritten", Some(7), no_system, {"epoch_index" => 7usize, "from_records" => vec!["G    1 L1C"], "to_records" => vec!["     1    C1"]});
+    }
+}

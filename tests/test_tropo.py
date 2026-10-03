@@ -166,7 +166,12 @@ def test_troposphere_meteorology_refusal_keeps_core_detail():
     assert exc.value.detail["family"] == "CoreError"
     assert exc.value.detail["kind"] == "invalid_input"
     assert exc.value.detail["message"] == str(exc.value)
-    assert exc.value.detail["input_message"] == "pressure_hpa not positive"
+    assert exc.value.detail == {
+        "family": "CoreError",
+        "kind": "invalid_input",
+        "message": str(exc.value),
+        "input_message": "pressure_hpa not positive",
+    }
 
     with pytest.raises(ValueError) as slant_exc:
         sidereon.tropo_slant_delay(

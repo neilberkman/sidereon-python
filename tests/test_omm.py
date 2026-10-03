@@ -218,6 +218,31 @@ def test_constructed_omm_value_matches_parsed_kvn():
     assert omm.to_kvn_string() == FX["fixtures"][0]["encoded_kvn"]
 
 
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [
+        ("exact_sgp4_epoch", (2_460_000.0, 0.25)),
+        ("quantize_tle_derived_fields", False),
+    ],
+)
+def test_omm_non_wire_sgp4_side_channels_remain_internal(attribute, value):
+    omm = sidereon.parse_omm_json(_load(_path("25544.json")))
+
+    assert not hasattr(omm, attribute)
+    with pytest.raises(TypeError):
+        sidereon.Omm(
+            omm.epoch,
+            omm.mean_motion,
+            omm.eccentricity,
+            omm.inclination_deg,
+            omm.ra_of_asc_node_deg,
+            omm.arg_of_pericenter_deg,
+            omm.mean_anomaly_deg,
+            omm.norad_cat_id,
+            **{attribute: value},
+        )
+
+
 def test_omm_satellite_propagation_matches_improved_tle():
     omm = sidereon.parse_omm_json(_load(_path("25544.json")))
     line1, line2 = _load(_path("25544.tle")).splitlines()[-2:]

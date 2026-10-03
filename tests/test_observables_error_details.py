@@ -175,9 +175,12 @@ def test_sp3_query_errors_keep_legacy_classes_messages_and_core_fields():
         ValueError, match="satellite G99 is not in the product"
     ) as interpolation:
         sp3.interpolate("G99", np.asarray([epoch_seconds], dtype=np.float64))
-    assert interpolation.value.detail["family"] == "CoreError"
-    assert interpolation.value.detail["kind"] == "unknown_satellite"
-    assert interpolation.value.detail["satellite_id"] == "G99"
+    assert interpolation.value.detail == {
+        "family": "CoreError",
+        "kind": "unknown_satellite",
+        "message": "unknown satellite: G99",
+        "satellite_id": "G99",
+    }
 
     valid = sp3.position_at_epoch_query("G01", epoch)
     assert valid.position_m.shape == (3,)
@@ -197,8 +200,12 @@ def test_sp3_query_errors_keep_legacy_classes_messages_and_core_fields():
             sidereon.SolveError, match="unknown satellite: G99"
         ) as query_refused:
             query()
-        assert query_refused.value.detail["kind"] == "unknown_satellite"
-        assert query_refused.value.detail["satellite_id"] == "G99"
+        assert query_refused.value.detail == {
+            "family": "CoreError",
+            "kind": "unknown_satellite",
+            "message": str(query_refused.value),
+            "satellite_id": "G99",
+        }
 
     with pytest.raises(sidereon.SolveError, match="unknown satellite: G99") as query:
         sp3.position_at_epoch_query("G99", epoch)

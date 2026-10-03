@@ -467,6 +467,20 @@ def test_exact_start_mismatch_retains_ticks_when_j2000_seconds_collapse():
     json.dumps(detail, allow_nan=False)
 
 
+def test_exact_span_mismatch_retains_all_counts():
+    request = sidereon.ExactSp3Request(SP3_DATE, "01D", "05M")
+    with pytest.raises(sidereon.ExactSp3ValidationError) as caught:
+        sidereon.parse_exact_sp3(_with_epoch_count(_base_sp3(), 287), request)
+
+    assert caught.value.kind == "span_mismatch"
+    assert caught.value.detail == {
+        "kind": "span_mismatch",
+        "parsed": "287",
+        "half_open": "288",
+        "inclusive": "289",
+    }
+
+
 @pytest.mark.parametrize(
     "content, message",
     [

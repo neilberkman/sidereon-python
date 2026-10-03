@@ -3363,34 +3363,241 @@ fn exact_sp3_error(error: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(error.to_string())
 }
 
+fn set_exact_float(detail: &Bound<'_, PyDict>, key: &str, value: f64) {
+    if value.is_finite() {
+        let _ = detail.set_item(key, value);
+    } else {
+        let _ = detail.set_item(key, format!("{value:?}"));
+    }
+}
+
+fn exact_validation_detail<'py>(
+    py: Python<'py>,
+    error: &ExactSp3ValidationError,
+) -> (&'static str, Bound<'py, PyDict>) {
+    use ExactSp3ValidationError as E;
+
+    let detail = PyDict::new(py);
+    macro_rules! put {
+        ($key:literal, $value:expr) => {
+            let _ = detail.set_item($key, $value);
+        };
+    }
+    let kind = match error {
+        E::Parse(value) => {
+            put!("error", value.to_string());
+            put!("debug", format!("{value:?}"));
+            "parse"
+        }
+        E::Catalog(value) => {
+            put!("error", value.to_string());
+            put!("debug", format!("{value:?}"));
+            "catalog"
+        }
+        E::WrongProductFamily { actual } => {
+            put!("actual", actual.code());
+            "wrong_product_family"
+        }
+        E::InvalidIssue { issue } => {
+            put!("issue", issue);
+            "invalid_issue"
+        }
+        E::UnsupportedSpanToken { token } => {
+            put!("token", token);
+            "unsupported_span_token"
+        }
+        E::UnsupportedSampleToken { token } => {
+            put!("token", token);
+            "unsupported_sample_token"
+        }
+        E::NonCanonicalSpanToken { token, canonical } => {
+            put!("token", token);
+            put!("canonical", canonical);
+            "non_canonical_span_token"
+        }
+        E::NonCanonicalSampleToken { token, canonical } => {
+            put!("token", token);
+            put!("canonical", canonical);
+            "non_canonical_sample_token"
+        }
+        E::InvalidExpectedAgency { agency } => {
+            put!("agency", agency);
+            "invalid_expected_agency"
+        }
+        E::AgencyMismatch { expected, actual } => {
+            put!("expected", expected);
+            put!("actual", actual);
+            "agency_mismatch"
+        }
+        E::MissingEof => "missing_eof",
+        E::MalformedEofRecord {
+            line_number,
+            record_length,
+        } => {
+            put!("line_number", line_number.to_string());
+            put!("record_length", record_length.to_string());
+            "malformed_eof_record"
+        }
+        E::TrailingContentAfterEof => "trailing_content_after_eof",
+        E::MandatoryHeaderRecordCount {
+            record,
+            expected,
+            actual,
+        } => {
+            put!("record", record);
+            put!("expected", expected.to_string());
+            put!("actual", actual.to_string());
+            "mandatory_header_record_count"
+        }
+        E::MissingDeclaredSatelliteCount => "missing_declared_satellite_count",
+        E::DeclaredSatelliteCountMismatch { declared, tokens } => {
+            put!("declared", declared.to_string());
+            put!("tokens", tokens.to_string());
+            "declared_satellite_count_mismatch"
+        }
+        E::DuplicateDeclaredSatellite {
+            token,
+            first_index,
+            duplicate_index,
+        } => {
+            put!("token", token);
+            put!("first_index", first_index.to_string());
+            put!("duplicate_index", duplicate_index.to_string());
+            "duplicate_declared_satellite"
+        }
+        E::NoDeclaredSatellites => "no_declared_satellites",
+        E::SatelliteRecordSequenceMismatch {
+            record,
+            epoch_index,
+            expected,
+            actual,
+        } => {
+            put!("record", record);
+            put!("epoch_index", epoch_index.to_string());
+            put!("expected", expected);
+            put!("actual", actual);
+            "satellite_record_sequence_mismatch"
+        }
+        E::BodyRecordInterleavingMismatch {
+            epoch_index,
+            expected,
+            actual,
+        } => {
+            put!("epoch_index", epoch_index.to_string());
+            put!("expected", expected);
+            put!("actual", actual);
+            "body_record_interleaving_mismatch"
+        }
+        E::NonFiniteHeaderCadence => "non_finite_header_cadence",
+        E::NonPositiveHeaderCadence { actual_s } => {
+            put!("actual_s", actual_s.to_string());
+            "non_positive_header_cadence"
+        }
+        E::UnsupportedHeaderCadence { actual_s } => {
+            put!("actual_s", actual_s.to_string());
+            "unsupported_header_cadence"
+        }
+        E::CadenceMismatch {
+            requested_s,
+            header_s,
+        } => {
+            put!("requested_s", requested_s.to_string());
+            put!("header_s", header_s.to_string());
+            "cadence_mismatch"
+        }
+        E::DeclaredEpochCountMismatch { declared, parsed } => {
+            put!("declared", declared.to_string());
+            put!("parsed", parsed.to_string());
+            "declared_epoch_count_mismatch"
+        }
+        E::MissingDeclaredStart => "missing_declared_start",
+        E::DeclaredStartMismatch {
+            requested_j2000_s,
+            declared_j2000_s,
+            requested_tick,
+            declared_tick,
+        } => {
+            set_exact_float(&detail, "requested_j2000_s", *requested_j2000_s);
+            set_exact_float(&detail, "declared_j2000_s", *declared_j2000_s);
+            put!("requested_tick", requested_tick.to_string());
+            put!("declared_tick", declared_tick.map(|tick| tick.to_string()));
+            "declared_start_mismatch"
+        }
+        E::RequestBeforeGpsEpoch => "request_before_gps_epoch",
+        E::NonFiniteHeaderStartMetadata { field } => {
+            put!("field", field);
+            "non_finite_header_start_metadata"
+        }
+        E::InvalidHeaderStartMetadata { field, actual } => {
+            put!("field", field);
+            put!("actual", actual.to_string());
+            "invalid_header_start_metadata"
+        }
+        E::HeaderStartMetadataMismatch {
+            field,
+            requested,
+            actual,
+        } => {
+            put!("field", field);
+            put!("requested", requested.to_string());
+            put!("actual", actual.to_string());
+            "header_start_metadata_mismatch"
+        }
+        E::EmptyEpochGrid => "empty_epoch_grid",
+        E::FirstEpochMismatch {
+            requested_j2000_s,
+            actual_j2000_s,
+        } => {
+            put!("requested_j2000_s", requested_j2000_s.to_string());
+            put!("actual_j2000_s", actual_j2000_s.to_string());
+            "first_epoch_mismatch"
+        }
+        E::IrregularEpochGrid {
+            epoch_index,
+            requested_s,
+            actual_s,
+        } => {
+            put!("epoch_index", epoch_index.to_string());
+            put!("requested_s", requested_s.to_string());
+            put!("actual_s", actual_s.to_string());
+            "irregular_epoch_grid"
+        }
+        E::SpanNotMultipleOfCadence { span_s, cadence_s } => {
+            put!("span_s", span_s.to_string());
+            put!("cadence_s", cadence_s.to_string());
+            "span_not_multiple_of_cadence"
+        }
+        E::SpanMismatch {
+            parsed,
+            half_open,
+            inclusive,
+        } => {
+            put!("parsed", parsed.to_string());
+            put!("half_open", half_open.to_string());
+            put!("inclusive", inclusive.to_string());
+            "span_mismatch"
+        }
+        E::FormatVersionMismatch { requested, actual } => {
+            put!("requested", requested);
+            put!("actual", actual);
+            "format_version_mismatch"
+        }
+        other => {
+            put!("error", other.to_string());
+            put!("debug", format!("{other:?}"));
+            "unknown"
+        }
+    };
+    put!("kind", kind);
+    (kind, detail)
+}
+
 fn exact_validation_error(py: Python<'_>, error: ExactSp3ValidationError) -> PyErr {
     let python_error = PyValueError::new_err(error.to_string());
     let object = python_error.value(py);
-    let _ = object.setattr("kind", "exact_sp3_validation");
-    if let ExactSp3ValidationError::DeclaredStartMismatch {
-        requested_j2000_s,
-        declared_j2000_s,
-        requested_tick,
-        declared_tick,
-    } = error
-    {
-        let detail = PyDict::new(py);
-        let _ = detail.set_item("kind", "declared_start_mismatch");
-        if requested_j2000_s.is_finite() {
-            let _ = detail.set_item("requested_j2000_s", requested_j2000_s);
-        } else {
-            let _ = detail.set_item("requested_j2000_s", format!("{requested_j2000_s:?}"));
-        }
-        if declared_j2000_s.is_finite() {
-            let _ = detail.set_item("declared_j2000_s", declared_j2000_s);
-        } else {
-            let _ = detail.set_item("declared_j2000_s", format!("{declared_j2000_s:?}"));
-        }
-        let _ = detail.set_item("requested_tick", requested_tick.to_string());
-        let _ = detail.set_item("declared_tick", declared_tick.map(|tick| tick.to_string()));
-        let _ = object.setattr("detail", detail);
-        let _ = object.setattr("kind", "declared_start_mismatch");
-    }
+    let (kind, detail) = exact_validation_detail(py, &error);
+    let _ = object.setattr("detail", detail);
+    let _ = object.setattr("kind", kind);
     python_error
 }
 
@@ -3775,6 +3982,771 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sp3_clock_reference_offset, m)?)?;
     m.add_function(wrap_pyfunction!(align_sp3_clock_reference, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod exact_sp3_validation_error_mapping_tests {
+    use super::*;
+    use serde_json::json;
+    use sidereon_core::data::{DataCatalogError, ProductType};
+
+    #[test]
+    fn every_current_exact_sp3_refusal_keeps_its_complete_public_payload() {
+        use ExactSp3ValidationError as E;
+
+        let cases = vec![
+            (
+                E::Parse(CoreError::Parse("bad product".to_string())),
+                json!({"kind":"parse","error":"parse error: bad product","debug":"Parse(\"bad product\")"}),
+            ),
+            (
+                E::Catalog(DataCatalogError::UnknownCenter("bad".to_string())),
+                json!({"kind":"catalog","error":"unknown analysis center \"bad\"","debug":"UnknownCenter(\"bad\")"}),
+            ),
+            (
+                E::WrongProductFamily {
+                    actual: ProductType::Clk,
+                },
+                json!({"kind":"wrong_product_family","actual":"clk"}),
+            ),
+            (
+                E::InvalidIssue {
+                    issue: "2460".to_string(),
+                },
+                json!({"kind":"invalid_issue","issue":"2460"}),
+            ),
+            (
+                E::UnsupportedSpanToken {
+                    token: "02Q".to_string(),
+                },
+                json!({"kind":"unsupported_span_token","token":"02Q"}),
+            ),
+            (
+                E::UnsupportedSampleToken {
+                    token: "00S".to_string(),
+                },
+                json!({"kind":"unsupported_sample_token","token":"00S"}),
+            ),
+            (
+                E::NonCanonicalSpanToken {
+                    token: "24H".to_string(),
+                    canonical: "01D".to_string(),
+                },
+                json!({"kind":"non_canonical_span_token","token":"24H","canonical":"01D"}),
+            ),
+            (
+                E::NonCanonicalSampleToken {
+                    token: "300S".to_string(),
+                    canonical: "05M".to_string(),
+                },
+                json!({"kind":"non_canonical_sample_token","token":"300S","canonical":"05M"}),
+            ),
+            (
+                E::InvalidExpectedAgency {
+                    agency: "ABCDE".to_string(),
+                },
+                json!({"kind":"invalid_expected_agency","agency":"ABCDE"}),
+            ),
+            (
+                E::AgencyMismatch {
+                    expected: "IGS0".to_string(),
+                    actual: "COD0".to_string(),
+                },
+                json!({"kind":"agency_mismatch","expected":"IGS0","actual":"COD0"}),
+            ),
+            (E::MissingEof, json!({"kind":"missing_eof"})),
+            (
+                E::MalformedEofRecord {
+                    line_number: 42,
+                    record_length: 79,
+                },
+                json!({"kind":"malformed_eof_record","line_number":"42","record_length":"79"}),
+            ),
+            (
+                E::TrailingContentAfterEof,
+                json!({"kind":"trailing_content_after_eof"}),
+            ),
+            (
+                E::MandatoryHeaderRecordCount {
+                    record: "++",
+                    expected: 5,
+                    actual: 4,
+                },
+                json!({"kind":"mandatory_header_record_count","record":"++","expected":"5","actual":"4"}),
+            ),
+            (
+                E::MissingDeclaredSatelliteCount,
+                json!({"kind":"missing_declared_satellite_count"}),
+            ),
+            (
+                E::DeclaredSatelliteCountMismatch {
+                    declared: 3,
+                    tokens: 2,
+                },
+                json!({"kind":"declared_satellite_count_mismatch","declared":"3","tokens":"2"}),
+            ),
+            (
+                E::DuplicateDeclaredSatellite {
+                    token: "G01".to_string(),
+                    first_index: 1,
+                    duplicate_index: 4,
+                },
+                json!({"kind":"duplicate_declared_satellite","token":"G01","first_index":"1","duplicate_index":"4"}),
+            ),
+            (
+                E::NoDeclaredSatellites,
+                json!({"kind":"no_declared_satellites"}),
+            ),
+            (
+                E::SatelliteRecordSequenceMismatch {
+                    record: "P",
+                    epoch_index: 7,
+                    expected: vec!["G01".to_string(), "G02".to_string()],
+                    actual: vec!["G02".to_string()],
+                },
+                json!({"kind":"satellite_record_sequence_mismatch","record":"P","epoch_index":"7","expected":["G01","G02"],"actual":["G02"]}),
+            ),
+            (
+                E::BodyRecordInterleavingMismatch {
+                    epoch_index: 8,
+                    expected: vec!["PG01".to_string(), "VG01".to_string()],
+                    actual: vec!["VG01".to_string(), "PG01".to_string()],
+                },
+                json!({"kind":"body_record_interleaving_mismatch","epoch_index":"8","expected":["PG01","VG01"],"actual":["VG01","PG01"]}),
+            ),
+            (
+                E::NonFiniteHeaderCadence,
+                json!({"kind":"non_finite_header_cadence"}),
+            ),
+            (
+                E::NonPositiveHeaderCadence { actual_s: -1.5 },
+                json!({"kind":"non_positive_header_cadence","actual_s":"-1.5"}),
+            ),
+            (
+                E::UnsupportedHeaderCadence { actual_s: 99_999.5 },
+                json!({"kind":"unsupported_header_cadence","actual_s":"99999.5"}),
+            ),
+            (
+                E::CadenceMismatch {
+                    requested_s: 300.0,
+                    header_s: 900.0,
+                },
+                json!({"kind":"cadence_mismatch","requested_s":"300","header_s":"900"}),
+            ),
+            (
+                E::DeclaredEpochCountMismatch {
+                    declared: u64::MAX,
+                    parsed: 288,
+                },
+                json!({"kind":"declared_epoch_count_mismatch","declared":u64::MAX.to_string(),"parsed":"288"}),
+            ),
+            (
+                E::MissingDeclaredStart,
+                json!({"kind":"missing_declared_start"}),
+            ),
+            (
+                E::DeclaredStartMismatch {
+                    requested_j2000_s: 1.25,
+                    declared_j2000_s: f64::NAN,
+                    requested_tick: i128::MAX,
+                    declared_tick: None,
+                },
+                json!({
+                    "kind":"declared_start_mismatch",
+                    "requested_j2000_s":1.25,
+                    "declared_j2000_s":"NaN",
+                    "requested_tick":i128::MAX.to_string(),
+                    "declared_tick":null
+                }),
+            ),
+            (
+                E::RequestBeforeGpsEpoch,
+                json!({"kind":"request_before_gps_epoch"}),
+            ),
+            (
+                E::NonFiniteHeaderStartMetadata { field: "mjd" },
+                json!({"kind":"non_finite_header_start_metadata","field":"mjd"}),
+            ),
+            (
+                E::InvalidHeaderStartMetadata {
+                    field: "seconds_of_week",
+                    actual: -1.5,
+                },
+                json!({"kind":"invalid_header_start_metadata","field":"seconds_of_week","actual":"-1.5"}),
+            ),
+            (
+                E::HeaderStartMetadataMismatch {
+                    field: "gps_week",
+                    requested: 2200.0,
+                    actual: 2201.0,
+                },
+                json!({"kind":"header_start_metadata_mismatch","field":"gps_week","requested":"2200","actual":"2201"}),
+            ),
+            (E::EmptyEpochGrid, json!({"kind":"empty_epoch_grid"})),
+            (
+                E::FirstEpochMismatch {
+                    requested_j2000_s: 1.25,
+                    actual_j2000_s: 2.5,
+                },
+                json!({"kind":"first_epoch_mismatch","requested_j2000_s":"1.25","actual_j2000_s":"2.5"}),
+            ),
+            (
+                E::IrregularEpochGrid {
+                    epoch_index: 100,
+                    requested_s: 300.0,
+                    actual_s: 301.0,
+                },
+                json!({"kind":"irregular_epoch_grid","epoch_index":"100","requested_s":"300","actual_s":"301"}),
+            ),
+            (
+                E::SpanNotMultipleOfCadence {
+                    span_s: 86_401,
+                    cadence_s: 300,
+                },
+                json!({"kind":"span_not_multiple_of_cadence","span_s":"86401","cadence_s":"300"}),
+            ),
+            (
+                E::SpanMismatch {
+                    parsed: 287,
+                    half_open: 288,
+                    inclusive: 289,
+                },
+                json!({"kind":"span_mismatch","parsed":"287","half_open":"288","inclusive":"289"}),
+            ),
+            (
+                E::FormatVersionMismatch {
+                    requested: "d".to_string(),
+                    actual: "c".to_string(),
+                },
+                json!({"kind":"format_version_mismatch","requested":"d","actual":"c"}),
+            ),
+        ];
+
+        assert_eq!(cases.len(), 37);
+        Python::with_gil(|py| {
+            for (error, expected) in cases {
+                let (kind, detail) = exact_validation_detail(py, &error);
+                let actual: serde_json::Value =
+                    pythonize::depythonize(&detail).expect("detail is JSON-compatible");
+                assert_eq!(actual, expected, "{kind}: {error:?}");
+                assert_eq!(actual["kind"], kind);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod sp3_write_error_detail_tests {
+    use super::*;
+
+    enum ExpectedValue {
+        Text(&'static str),
+        Usize(usize),
+        U64(u64),
+        I64(i64),
+        F64(f64),
+        OptionalF64(Option<f64>),
+        OptionalI16(Option<i16>),
+        TimeScale(PyTimeScale),
+        GnssSystem(PyGnssSystem),
+    }
+
+    struct Case {
+        error: Sp3WriteError,
+        kind: &'static str,
+        fields: Vec<(&'static str, ExpectedValue)>,
+    }
+
+    fn expected_text(fields: &[(&str, ExpectedValue)], key: &str) -> Option<&'static str> {
+        fields
+            .iter()
+            .find_map(|(name, value)| match (name == &key, value) {
+                (true, ExpectedValue::Text(value)) => Some(*value),
+                _ => None,
+            })
+    }
+
+    fn expected_usize(fields: &[(&str, ExpectedValue)], key: &str) -> Option<usize> {
+        fields
+            .iter()
+            .find_map(|(name, value)| match (name == &key, value) {
+                (true, ExpectedValue::Usize(value)) => Some(*value),
+                _ => None,
+            })
+    }
+
+    fn assert_case(case: Case) {
+        let detail = PySp3WriteErrorDetail::from(case.error.clone());
+        assert_eq!(detail.kind(), case.kind);
+        assert_eq!(detail.message(), case.error.to_string());
+        assert_eq!(detail.field(), expected_text(&case.fields, "field"));
+        assert_eq!(
+            detail.epoch_index(),
+            expected_usize(&case.fields, "epoch_index")
+        );
+        assert_eq!(
+            detail.satellite().as_deref(),
+            expected_text(&case.fields, "satellite")
+        );
+        assert_eq!(detail.columns(), expected_usize(&case.fields, "columns"));
+        assert_eq!(detail.decimals(), expected_usize(&case.fields, "decimals"));
+        assert!(detail.__repr__().contains(case.kind));
+
+        Python::with_gil(|py| {
+            let actual = detail.details(py).expect("detail dictionary");
+            assert_eq!(actual.len(), case.fields.len());
+            for (key, expected) in case.fields {
+                let value = actual
+                    .get_item(key)
+                    .expect("dictionary lookup")
+                    .unwrap_or_else(|| panic!("missing {key} for {}", case.kind));
+                match expected {
+                    ExpectedValue::Text(expected) => {
+                        assert_eq!(value.extract::<String>().unwrap(), expected)
+                    }
+                    ExpectedValue::Usize(expected) => {
+                        assert_eq!(value.extract::<usize>().unwrap(), expected)
+                    }
+                    ExpectedValue::U64(expected) => {
+                        assert_eq!(value.extract::<u64>().unwrap(), expected)
+                    }
+                    ExpectedValue::I64(expected) => {
+                        assert_eq!(value.extract::<i64>().unwrap(), expected)
+                    }
+                    ExpectedValue::F64(expected) => assert_eq!(
+                        value.extract::<f64>().unwrap().to_bits(),
+                        expected.to_bits()
+                    ),
+                    ExpectedValue::OptionalF64(expected) => match expected {
+                        Some(expected) => assert_eq!(
+                            value.extract::<f64>().unwrap().to_bits(),
+                            expected.to_bits()
+                        ),
+                        None => assert!(value.is_none()),
+                    },
+                    ExpectedValue::OptionalI16(expected) => match expected {
+                        Some(expected) => assert_eq!(value.extract::<i16>().unwrap(), expected),
+                        None => assert!(value.is_none()),
+                    },
+                    ExpectedValue::TimeScale(expected) => {
+                        let actual = value.extract::<PyRef<'_, PyTimeScale>>().unwrap();
+                        assert!(*actual == expected);
+                    }
+                    ExpectedValue::GnssSystem(expected) => {
+                        let actual = value.extract::<PyRef<'_, PyGnssSystem>>().unwrap();
+                        assert_eq!(*actual, expected);
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn every_sp3_write_refusal_keeps_its_complete_public_payload() {
+        use sidereon_core::astro::time::TimeScale;
+        use sidereon_core::ephemeris::Sp3TimeSystem;
+
+        let satellite = "G07".parse::<GnssSatelliteId>().unwrap();
+        let unrepresentable = GnssSatelliteId {
+            system: sidereon_core::GnssSystem::Gps,
+            prn: 100,
+        };
+        let cases = vec![
+            Case {
+                error: Sp3WriteError::TextNotColumnSafe {
+                    field: "agency",
+                    value: "A\nB".into(),
+                },
+                kind: "TextNotColumnSafe",
+                fields: vec![
+                    ("field", ExpectedValue::Text("agency")),
+                    ("value", ExpectedValue::Text("A\nB")),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::TextNotColumnStable {
+                    field: "orbit type",
+                    value: " FIT ".into(),
+                },
+                kind: "TextNotColumnStable",
+                fields: vec![
+                    ("field", ExpectedValue::Text("orbit type")),
+                    ("value", ExpectedValue::Text(" FIT ")),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::BlankDescriptor {
+                    field: "data used",
+                    value: "".into(),
+                },
+                kind: "BlankDescriptor",
+                fields: vec![
+                    ("field", ExpectedValue::Text("data used")),
+                    ("value", ExpectedValue::Text("")),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::EmptyComment {
+                    index: 3,
+                    value: "".into(),
+                },
+                kind: "EmptyComment",
+                fields: vec![
+                    ("index", ExpectedValue::Usize(3)),
+                    ("value", ExpectedValue::Text("")),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::TextTooWide {
+                    field: "agency",
+                    columns: 4,
+                    value: "ABCDE".into(),
+                },
+                kind: "TextTooWide",
+                fields: vec![
+                    ("field", ExpectedValue::Text("agency")),
+                    ("columns", ExpectedValue::Usize(4)),
+                    ("value", ExpectedValue::Text("ABCDE")),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::IntegerTooWide {
+                    field: "epoch count",
+                    columns: 7,
+                    value: 9_007_199_254_740_993,
+                },
+                kind: "IntegerTooWide",
+                fields: vec![
+                    ("field", ExpectedValue::Text("epoch count")),
+                    ("columns", ExpectedValue::Usize(7)),
+                    ("value", ExpectedValue::U64(9_007_199_254_740_993)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::NonFinite { field: "interval" },
+                kind: "NonFinite",
+                fields: vec![("field", ExpectedValue::Text("interval"))],
+            },
+            Case {
+                error: Sp3WriteError::NumberTooWide {
+                    field: "clock base",
+                    columns: 10,
+                    decimals: 7,
+                    value: 12_345.25,
+                },
+                kind: "NumberTooWide",
+                fields: vec![
+                    ("field", ExpectedValue::Text("clock base")),
+                    ("columns", ExpectedValue::Usize(10)),
+                    ("decimals", ExpectedValue::Usize(7)),
+                    ("value", ExpectedValue::F64(12_345.25)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::PrecisionNotRepresentable {
+                    field: "position base",
+                    columns: 10,
+                    decimals: 7,
+                    value: 1.25000001,
+                },
+                kind: "PrecisionNotRepresentable",
+                fields: vec![
+                    ("field", ExpectedValue::Text("position base")),
+                    ("columns", ExpectedValue::Usize(10)),
+                    ("decimals", ExpectedValue::Usize(7)),
+                    ("value", ExpectedValue::F64(1.25000001)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::AccuracyNotRepresentable {
+                    sat: satellite,
+                    epoch_index: 5,
+                    component: "position",
+                    exponent: Some(-12),
+                },
+                kind: "AccuracyNotRepresentable",
+                fields: vec![
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(5)),
+                    ("component", ExpectedValue::Text("position")),
+                    ("exponent", ExpectedValue::OptionalI16(Some(-12))),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::AccuracyRecordMismatch {
+                    sat: satellite,
+                    epoch_index: 6,
+                },
+                kind: "AccuracyRecordMismatch",
+                fields: vec![
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(6)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::AccuracyBasisMissing {
+                    sat: satellite,
+                    epoch_index: 8,
+                },
+                kind: "AccuracyBasisMissing",
+                fields: vec![
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(8)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::YearNotRepresentable {
+                    epoch_index: 9,
+                    year: -12_345,
+                },
+                kind: "YearNotRepresentable",
+                fields: vec![
+                    ("epoch_index", ExpectedValue::Usize(9)),
+                    ("year", ExpectedValue::I64(-12_345)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::EpochNotRestatable {
+                    epoch_index: 10,
+                    field_seconds: 59.125,
+                    residual_s: 0.000_000_01,
+                },
+                kind: "EpochNotRestatable",
+                fields: vec![
+                    ("epoch_index", ExpectedValue::Usize(10)),
+                    ("field_seconds", ExpectedValue::F64(59.125)),
+                    ("residual_s", ExpectedValue::OptionalF64(Some(0.000_000_01))),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::EpochTimeScaleMismatch {
+                    epoch_index: 11,
+                    epoch_scale: TimeScale::Gpst,
+                    header_scale: TimeScale::Utc,
+                },
+                kind: "EpochTimeScaleMismatch",
+                fields: vec![
+                    ("epoch_index", ExpectedValue::Usize(11)),
+                    ("epoch_scale", ExpectedValue::TimeScale(PyTimeScale::GPST)),
+                    ("header_scale", ExpectedValue::TimeScale(PyTimeScale::UTC)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::HeaderTimeScaleMismatch {
+                    time_system: Sp3TimeSystem::Galileo,
+                    time_scale: TimeScale::Gpst,
+                },
+                kind: "HeaderTimeScaleMismatch",
+                fields: vec![
+                    ("time_system", ExpectedValue::Text("GAL")),
+                    ("time_scale", ExpectedValue::TimeScale(PyTimeScale::GPST)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::EpochCountMismatch {
+                    declared: 9_007_199_254_740_993,
+                    epochs: 12,
+                },
+                kind: "EpochCountMismatch",
+                fields: vec![
+                    ("declared", ExpectedValue::U64(9_007_199_254_740_993)),
+                    ("epochs", ExpectedValue::Usize(12)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::AccuracyCodeCountMismatch {
+                    satellites: 13,
+                    codes: 12,
+                },
+                kind: "AccuracyCodeCountMismatch",
+                fields: vec![
+                    ("satellites", ExpectedValue::Usize(13)),
+                    ("codes", ExpectedValue::Usize(12)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::DuplicateSatellite { sat: satellite },
+                kind: "DuplicateSatellite",
+                fields: vec![("satellite", ExpectedValue::Text("G07"))],
+            },
+            Case {
+                error: Sp3WriteError::SatelliteNotRepresentable {
+                    sat: unrepresentable,
+                },
+                kind: "SatelliteNotRepresentable",
+                fields: vec![
+                    ("satellite", ExpectedValue::Text("G100")),
+                    ("system", ExpectedValue::GnssSystem(PyGnssSystem::GPS)),
+                    ("prn", ExpectedValue::Usize(100)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::EpochArrayLengthMismatch {
+                    field: "clocks",
+                    epochs: 14,
+                    entries: 13,
+                },
+                kind: "EpochArrayLengthMismatch",
+                fields: vec![
+                    ("field", ExpectedValue::Text("clocks")),
+                    ("epochs", ExpectedValue::Usize(14)),
+                    ("entries", ExpectedValue::Usize(13)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::UndeclaredSatelliteRecord {
+                    sat: satellite,
+                    epoch_index: 15,
+                },
+                kind: "UndeclaredSatelliteRecord",
+                fields: vec![
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(15)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::ConflictingRecords {
+                    sat: satellite,
+                    epoch_index: 16,
+                },
+                kind: "ConflictingRecords",
+                fields: vec![
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(16)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::VelocityStateInPositionProduct {
+                    field: "velocity x",
+                    sat: satellite,
+                    epoch_index: 17,
+                },
+                kind: "VelocityStateInPositionProduct",
+                fields: vec![
+                    ("field", ExpectedValue::Text("velocity x")),
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(17)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::RecordValueNonFinite {
+                    field: "clock",
+                    sat: satellite,
+                    epoch_index: 18,
+                },
+                kind: "RecordValueNonFinite",
+                fields: vec![
+                    ("field", ExpectedValue::Text("clock")),
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(18)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::RecordValueTooWide {
+                    field: "position x",
+                    sat: satellite,
+                    epoch_index: 19,
+                    columns: 14,
+                    decimals: 6,
+                    column_value: 123_456_789.25,
+                },
+                kind: "RecordValueTooWide",
+                fields: vec![
+                    ("field", ExpectedValue::Text("position x")),
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(19)),
+                    ("columns", ExpectedValue::Usize(14)),
+                    ("decimals", ExpectedValue::Usize(6)),
+                    ("column_value", ExpectedValue::F64(123_456_789.25)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::RecordValueNotRepresentable {
+                    field: "clock",
+                    sat: satellite,
+                    epoch_index: 20,
+                    columns: 14,
+                    decimals: 6,
+                    stored: 0.000_001_25,
+                    column_value: 1.250_000_01,
+                },
+                kind: "RecordValueNotRepresentable",
+                fields: vec![
+                    ("field", ExpectedValue::Text("clock")),
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(20)),
+                    ("columns", ExpectedValue::Usize(14)),
+                    ("decimals", ExpectedValue::Usize(6)),
+                    ("stored", ExpectedValue::F64(0.000_001_25)),
+                    ("column_value", ExpectedValue::F64(1.250_000_01)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::RecordReadsAsAbsent {
+                    field: "clock",
+                    sat: satellite,
+                    epoch_index: 21,
+                    column_value: 999_999.999_999,
+                },
+                kind: "RecordReadsAsAbsent",
+                fields: vec![
+                    ("field", ExpectedValue::Text("clock")),
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(21)),
+                    ("column_value", ExpectedValue::F64(999_999.999_999)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::RecordFieldsDisagree {
+                    field: "velocity y",
+                    sat: satellite,
+                    epoch_index: 22,
+                    stored: Some(-0.0),
+                    native: None,
+                },
+                kind: "RecordFieldsDisagree",
+                fields: vec![
+                    ("field", ExpectedValue::Text("velocity y")),
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(22)),
+                    ("stored", ExpectedValue::OptionalF64(Some(-0.0))),
+                    ("native", ExpectedValue::OptionalF64(None)),
+                ],
+            },
+        ];
+        assert_eq!(cases.len(), 29);
+        for case in cases {
+            assert_case(case);
+        }
+        assert_case(Case {
+            error: Sp3WriteError::AccuracyNotRepresentable {
+                sat: satellite,
+                epoch_index: 23,
+                component: "clock",
+                exponent: None,
+            },
+            kind: "AccuracyNotRepresentable",
+            fields: vec![
+                ("satellite", ExpectedValue::Text("G07")),
+                ("epoch_index", ExpectedValue::Usize(23)),
+                ("component", ExpectedValue::Text("clock")),
+                ("exponent", ExpectedValue::OptionalI16(None)),
+            ],
+        });
+        assert_case(Case {
+            error: Sp3WriteError::EpochNotRestatable {
+                epoch_index: 24,
+                field_seconds: 0.0,
+                residual_s: f64::NAN,
+            },
+            kind: "EpochNotRestatable",
+            fields: vec![
+                ("epoch_index", ExpectedValue::Usize(24)),
+                ("field_seconds", ExpectedValue::F64(0.0)),
+                ("residual_s", ExpectedValue::OptionalF64(None)),
+            ],
+        });
+    }
 }
 
 #[cfg(test)]

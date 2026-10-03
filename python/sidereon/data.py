@@ -329,6 +329,8 @@ _DISTRIBUTION_EXPORTS = frozenset(__all__[__all__.index("DistributionSource") :]
 class DataError(Exception):
     """Base class for every fetch/cache failure in :mod:`sidereon.data`."""
 
+    detail: Optional[dict[str, object]] = None
+
 
 class UnknownCenter(DataError):
     """The analysis-center code is not in the catalog."""
@@ -494,22 +496,32 @@ def allowed_hosts() -> list[str]:
     return sorted(_ALLOWED_HOSTS)
 
 
-def _catalog_error(exc: ValueError) -> DataError:
+def _catalog_error(exc: Exception) -> DataError:
     message = str(exc)
     if message.startswith("unknown analysis center"):
-        return UnknownCenter(message)
-    return UnsupportedProduct(message)
+        error: DataError = UnknownCenter(message)
+    else:
+        error = UnsupportedProduct(message)
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, dict):
+        error.detail = detail
+    return error
 
 
 def _terrain_catalog_error(exc: ValueError) -> DataError:
     message = str(exc)
     if message.startswith("invalid terrain coordinate"):
-        return InvalidCoordinate(message)
-    if message.startswith("invalid terrain tile index"):
-        return InvalidTileIndex(message)
-    if message.startswith("invalid skadi tile id"):
-        return InvalidTileId(message)
-    return UnsupportedProduct(message)
+        error: DataError = InvalidCoordinate(message)
+    elif message.startswith("invalid terrain tile index"):
+        error = InvalidTileIndex(message)
+    elif message.startswith("invalid skadi tile id"):
+        error = InvalidTileId(message)
+    else:
+        error = UnsupportedProduct(message)
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, dict):
+        error.detail = detail
+    return error
 
 
 def _hgt_conversion_error(exc: ValueError) -> DataError:
@@ -724,7 +736,7 @@ def default_sample_for_date(center: str, content: str, date: _dt.date) -> str:
             center, content, date.year, date.month, date.day
         )
     except (AttributeError, ValueError) as exc:
-        raise _catalog_error(ValueError(str(exc))) from None
+        raise _catalog_error(exc) from None
 
 
 def supported_samples(
@@ -747,7 +759,7 @@ def supported_samples(
             )
         )
     except (AttributeError, ValueError) as exc:
-        raise _catalog_error(ValueError(str(exc))) from None
+        raise _catalog_error(exc) from None
 
 
 def product_solution_class(center: str, content: str) -> str:
@@ -789,7 +801,7 @@ def sp3_content_start_convention(
             center, date.year, date.month, date.day, issue
         )
     except (AttributeError, ValueError) as exc:
-        raise _catalog_error(ValueError(str(exc))) from None
+        raise _catalog_error(exc) from None
 
     try:
         convention = Sp3ContentStartConvention(code)

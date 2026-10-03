@@ -88,3 +88,23 @@ def test_skipped_distinguishes_empty_from_corrupt():
     corrupt = sidereon.parse_tle_file("\n".join([BAD_L1, BAD_L2]))
     assert len(corrupt) == 0
     assert corrupt.skipped == 1
+
+
+def test_parse_tle_file_explicit_improved_matches_direct_tle():
+    line1 = "1 23599U 95029B   06171.76535463  .00085586  12891-6  12956-2 0  2905"
+    line2 = "2 23599   6.9327   0.2849 5782022 274.4436  25.2425  4.47796565123555"
+    text = "\n".join(["OPS MODE PROBE", line1, line2])
+
+    parsed = sidereon.parse_tle_file(text, opsmode=sidereon.OpsMode.IMPROVED)
+    assert len(parsed) == 1
+    assert parsed.satellites[0].name == "OPS MODE PROBE"
+
+    from_file = parsed.satellites[0].tle
+    direct = sidereon.Tle(line1, line2, opsmode=sidereon.OpsMode.IMPROVED)
+    epochs = np.asarray([1_150_870_926_640_032], dtype=np.int64)
+    file_state = from_file.propagate(epochs)
+    direct_state = direct.propagate(epochs)
+
+    assert from_file.to_lines() == direct.to_lines()
+    assert np.array_equal(file_state.position_km, direct_state.position_km)
+    assert np.array_equal(file_state.velocity_km_s, direct_state.velocity_km_s)

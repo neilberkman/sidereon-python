@@ -1455,3 +1455,211 @@ def test_tdm_input_error_kind_unknown_variant_contract():
     assert unknown.kind == "unknown"
     assert getattr(unknown, "name", "UNKNOWN") == "UNKNOWN"
     assert repr(unknown) == "TdmInputErrorKind.UNKNOWN"
+
+
+def test_tdm_error_detail_values_are_preserved_on_public_exceptions():
+    header = _valid_header_lines()
+    metadata = "META_START\nTIME_SYSTEM = UTC\nPARTICIPANT_1 = DSS-25\nMETA_STOP\n"
+    record = "RANGE = 2026-160T20:15:00 1000.0\n"
+    valid = header + metadata + "DATA_START\n" + record + "DATA_STOP\n"
+    strict = sidereon.TdmPolicy.strict()
+    cases = [
+        (
+            "no_segments",
+            header,
+            {"kind": "no_segments", "message": "missing TDM segment"},
+        ),
+        (
+            "malformed_epoch",
+            header + metadata + "DATA_START\nRANGE = bad-epoch 1000.0\nDATA_STOP\n",
+            {
+                "kind": "malformed_epoch",
+                "line": 9,
+                "keyword": "RANGE",
+                "text": "bad-epoch",
+                "message": (
+                    "TDM record RANGE at line 9 has the timetag bad-epoch, "
+                    "which is not a form 4.3.9 defines"
+                ),
+            },
+        ),
+        (
+            "duplicate_record",
+            header + metadata + "DATA_START\n" + record + record + "DATA_STOP\n",
+            {
+                "kind": "duplicate_record",
+                "keyword": "RANGE",
+                "segment": 1,
+                "epoch": "2026-160T20:15:00",
+                "message": "TDM segment 1 repeats RANGE at 2026-160T20:15:00",
+            },
+        ),
+        (
+            "unterminated_final_line",
+            valid.rstrip("\n"),
+            {
+                "kind": "unterminated_final_line",
+                "line": 10,
+                "message": "TDM line 10 carries no terminator",
+            },
+        ),
+        (
+            "conflicting_keyword",
+            header
+            + (
+                "META_START\nTIME_SYSTEM = UTC\nPARTICIPANT_1 = DSS-25\n"
+                "MODE = A\nMODE = B\nMETA_STOP\nDATA_START\n"
+            )
+            + record
+            + "DATA_STOP\n",
+            {
+                "kind": "conflicting_keyword",
+                "line": 8,
+                "keyword": "MODE",
+                "section": "metadata",
+                "first": "A",
+                "second": "B",
+                "message": (
+                    'TDM metadata keyword MODE at line 8 repeats with "B" after "A"'
+                ),
+            },
+        ),
+        (
+            "undefined_keyword",
+            header + "FOO = BAR\n" + metadata + "DATA_START\n" + record + "DATA_STOP\n",
+            {
+                "kind": "undefined_keyword",
+                "line": 4,
+                "keyword": "FOO",
+                "section": "header",
+                "message": (
+                    "TDM header keyword FOO at line 4 is not one the standard defines"
+                ),
+            },
+        ),
+        (
+            "empty_data_section",
+            header + metadata + "DATA_START\nDATA_STOP\n",
+            {
+                "kind": "empty_data_section",
+                "segment": 1,
+                "message": "TDM segment 1 holds no tracking data record",
+            },
+        ),
+        (
+            "empty_value",
+            header.replace("ORIGINATOR = NASA", "ORIGINATOR =")
+            + metadata
+            + "DATA_START\n"
+            + record
+            + "DATA_STOP\n",
+            {
+                "kind": "empty_value",
+                "line": 3,
+                "keyword": "ORIGINATOR",
+                "message": "TDM keyword ORIGINATOR has no value at line 3",
+            },
+        ),
+        (
+            "undefined_keyword_in_metadata",
+            header
+            + (
+                "META_START\nTIME_SYSTEM = UTC\nPARTICIPANT_1 = DSS-25\n"
+                "RANGE = 2026-160T20:15:00 1000.0\nMETA_STOP\nDATA_START\n"
+            )
+            + record
+            + "DATA_STOP\n",
+            {
+                "kind": "undefined_keyword",
+                "line": 7,
+                "keyword": "RANGE",
+                "section": "metadata",
+                "message": (
+                    "TDM metadata keyword RANGE at line 7 is not one the "
+                    "standard defines"
+                ),
+            },
+        ),
+        (
+            "malformed_record",
+            header + metadata + "DATA_START\nRANGE = 2026-160T20:15:00\nDATA_STOP\n",
+            {
+                "kind": "malformed_record",
+                "line": 9,
+                "keyword": "RANGE",
+                "message": "malformed TDM data record RANGE at line 9",
+            },
+        ),
+    ]
+    attributes = (
+        "kind",
+        "line",
+        "keyword",
+        "column",
+        "character",
+        "length",
+        "text",
+        "detail",
+        "reason",
+        "section",
+        "segment",
+        "epoch",
+        "index",
+        "first",
+        "second",
+        "value",
+        "input_error_kind_name",
+        "message",
+    )
+
+    for name, raw, expected in cases:
+        try:
+            sidereon.parse_tdm_kvn_with_policy(raw, strict)
+        except sidereon.TdmParseError as error:
+            detail = error.detail
+            try:
+                sidereon.parse_tdm_kvn_with_policy(raw, strict)
+            except sidereon.TdmParseError as repeated_error:
+                equal_detail = repeated_error.detail
+            else:
+                pytest.fail(f"{name} did not reproduce its error")
+        else:
+            pytest.fail(f"{name} did not raise TdmParseError")
+        assert isinstance(detail, sidereon.TdmErrorDetail), name
+        for attribute in attributes:
+            assert getattr(detail, attribute) == expected.get(attribute), (
+                name,
+                attribute,
+            )
+        assert str(detail) == expected["message"]
+        assert repr(detail).startswith("TdmErrorDetail")
+        assert detail == equal_detail
+
+    repeated = (
+        header
+        + "META_START\nTIME_SYSTEM = UTC\nPARTICIPANT_1 = DSS-25\n"
+        + "MODE = A\nMODE = A\nMETA_STOP\nDATA_START\n"
+        + record
+        + "DATA_STOP\n"
+    )
+    tdm = sidereon.parse_tdm_kvn_with_policy(repeated, strict).message
+    with pytest.raises(sidereon.TdmWriteError) as write_error:
+        tdm.to_kvn_string()
+    detail = write_error.value.detail
+    assert isinstance(detail, sidereon.TdmErrorDetail)
+    assert detail.kind == "repeated_keyword"
+    assert detail.line is None
+    assert detail.keyword == "MODE"
+    assert detail.section == "metadata"
+    assert detail.message == "TDM metadata writes MODE twice with the same value"
+    assert str(write_error.value) == detail.message
+
+    unassignable = sidereon.parse_tdm_kvn(valid)
+    unassignable.header_fields = [sidereon.TdmField("COMMENT", "")]
+    with pytest.raises(sidereon.TdmWriteError) as unassignable_error:
+        unassignable.to_kvn_string()
+    detail = unassignable_error.value.detail
+    assert detail.kind == "keyword_not_assignable"
+    assert detail.keyword == "COMMENT"
+    assert detail.message == "TDM keyword COMMENT cannot be given a value"
+    assert str(unassignable_error.value) == detail.message

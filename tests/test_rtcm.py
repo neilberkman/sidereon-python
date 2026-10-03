@@ -397,7 +397,7 @@ def test_construct_gps_ephemeris_1019_round_trips():
     assert out.l2_p_data_flag is False
 
 
-def _zero_glonass_ephemeris():
+def _zero_glonass_ephemeris(negative_zero=0):
     return sidereon.RtcmGlonassEphemeris(
         satellite_id=7,
         frequency_channel=0,
@@ -435,6 +435,7 @@ def _zero_glonass_ephemeris():
         m_tau_gps=0,
         m_l_n_fifth=False,
         reserved=0,
+        negative_zero=negative_zero,
     )
 
 
@@ -445,6 +446,37 @@ def test_construct_glonass_ephemeris_1020_round_trips():
     out = decoded.glonass_ephemeris
     assert out.satellite_id == 7
     assert out.frequency_channel == 0
+
+
+def test_glonass_negative_zero_constants_and_lenient_policy():
+    names = (
+        "XN_DOT",
+        "XN",
+        "XN_DOT_DOT",
+        "YN_DOT",
+        "YN",
+        "YN_DOT_DOT",
+        "ZN_DOT",
+        "ZN",
+        "ZN_DOT_DOT",
+        "GAMMA_N",
+        "TAU_N",
+        "DELTA_TAU_N",
+        "TAU_C",
+        "M_TAU_GPS",
+    )
+    masks = [getattr(sidereon, f"RTCM_GLONASS_NEGATIVE_ZERO_{name}") for name in names]
+    assert masks == [1 << bit for bit in range(14)]
+
+    all_negative_zero = sum(masks)
+    message = sidereon.RtcmMessage.from_glonass_ephemeris(
+        _zero_glonass_ephemeris(negative_zero=all_negative_zero)
+    )
+    body, departures = message.encode_with_policy(sidereon.RtcmPolicy.LENIENT)
+    assert departures == []
+    decoded = sidereon.decode_rtcm_message(body)
+    assert decoded.glonass_ephemeris.negative_zero == all_negative_zero
+    assert decoded.encode() == body
 
 
 def _galileo_fnav_ephemeris():

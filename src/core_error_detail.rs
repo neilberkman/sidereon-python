@@ -599,3 +599,120 @@ mod tests {
         });
     }
 }
+#[cfg(test)]
+mod grouped1071_python_error_detail_contract {
+    use super::*;
+    use pyo3::types::PyModule;
+    use sidereon_core::astro::time::{model::TimeScale, DegradeReason};
+    use sidereon_core::atmosphere::ionosphere::{
+        IonexCoverageError, IonexEpochError, IonexMissingNodes, IonexNodeGap, IonexSlantRefusal,
+    };
+    use sidereon_core::ephemeris::{
+        ContinuityOptionRejection, ContinuityOptionsError, MergeToleranceError,
+        MergeToleranceField, Sp3EpochIntervalError, Sp3EpochIntervalRejection,
+    };
+    use sidereon_core::rtcm::{RtcmConversionError, RtcmEncodeError, RtcmFieldEncoding};
+    use sidereon_core::sbas::SbasEncodeError;
+    use sidereon_core::terrain::{DtedHorizontalDatum, DtedTileError};
+    use sidereon_core::{Error as CoreError, GnssSatelliteId};
+
+    fn check(py: Python<'_>, error: &CoreError, expected_json: &str, display: &str) {
+        assert_eq!(error.to_string(), display);
+        assert_eq!(error, &error.clone());
+        let attach = || {
+            attach_core_error_detail(
+                pyo3::exceptions::PyValueError::new_err(error.to_string()),
+                error,
+            )
+            .value(py)
+            .getattr("detail")
+            .expect("exception detail")
+        };
+        let actual = attach();
+        let repeated = attach();
+        let expected = PyModule::import(py, "json")
+            .unwrap()
+            .call_method1("loads", (expected_json,))
+            .unwrap();
+        assert!(actual.eq(&expected).unwrap(), "detail for {error}");
+        assert!(actual.eq(&repeated).unwrap(), "repeat detail for {error}");
+        assert!(actual.downcast::<PyDict>().is_ok());
+    }
+
+    #[test]
+    fn grouped1071_selected_error_variants_have_exact_attached_details() {
+        const SELECTED_VARIANT_FIELD_DISPLAY_EQ_ROWS: usize = 48;
+        const SELECTED_FROM_ROWS: usize = 6;
+        const SELECTED_ROWS: usize = 54;
+        assert_eq!(
+            SELECTED_VARIANT_FIELD_DISPLAY_EQ_ROWS + SELECTED_FROM_ROWS,
+            SELECTED_ROWS
+        );
+        Python::with_gil(|py| {
+            let sat: GnssSatelliteId = "G09".parse().unwrap();
+            let node = IonexMissingNodes {
+                map_number: 2,
+                lat_index: 3,
+                lon_index: 4,
+                lon_index_next: 5,
+                missing: [true, false, false, true],
+            };
+            let dted = DtedTileError::InvalidDimensions {
+                path: "N12E034.dt1".into(),
+                lon_count: 1,
+                lat_count: 257,
+            };
+            let cases: Vec<(CoreError, &str, &str)> = vec![
+                (CoreError::InvalidInput("bad input".into()), r#"{"family":"CoreError","kind":"invalid_input","message":"invalid input: bad input","input_message":"bad input"}"#, "invalid input: bad input"),
+                (CoreError::Parse("bad product".into()), r#"{"family":"CoreError","kind":"parse","message":"parse error: bad product","parse_message":"bad product"}"#, "parse error: bad product"),
+                (CoreError::UnknownSatellite(sat), r#"{"family":"CoreError","kind":"unknown_satellite","message":"unknown satellite: G09","satellite_id":"G09"}"#, "unknown satellite: G09"),
+                (CoreError::MissingGlonassChannel, r#"{"family":"CoreError","kind":"missing_glonass_channel","message":"missing GLONASS FDMA channel"}"#, "missing GLONASS FDMA channel"),
+                (CoreError::MissingTerrainTile { lat_index: 12, lon_index: 34 }, r#"{"family":"CoreError","kind":"missing_terrain_tile","message":"missing terrain tile (12,34)","lat_index":12,"lon_index":34}"#, "missing terrain tile (12,34)"),
+                (CoreError::UnknownTerrainElevation { lat_index: 12, lon_index: 34, latitude_posting: 7, longitude_posting: 8 }, r#"{"family":"CoreError","kind":"unknown_terrain_elevation","message":"unknown terrain elevation at posting lon=8 lat=7 of tile (12,34)","lat_index":12,"lon_index":34,"latitude_posting":7,"longitude_posting":8}"#, "unknown terrain elevation at posting lon=8 lat=7 of tile (12,34)"),
+                (CoreError::NonWgs84TerrainTile { lat_index: 12, lon_index: 34, datum: DtedHorizontalDatum::Wgs72 }, r#"{"family":"CoreError","kind":"non_wgs84_terrain_tile","message":"terrain tile (12,34) states horizontal datum WGS72, not WGS84","lat_index":12,"lon_index":34,"datum":"WGS72"}"#, "terrain tile (12,34) states horizontal datum WGS72, not WGS84"),
+                (CoreError::TerrainTile { lat_index: 12, lon_index: 34, error: Box::new(dted) }, r#"{"family":"CoreError","kind":"terrain_tile","message":"terrain tile (12,34): N12E034.dt1 has invalid DTED dimensions lon_count=1 lat_count=257; both must be at least 2","lat_index":12,"lon_index":34,"cause":{"family":"DtedTileError","kind":"invalid_dimensions","message":"N12E034.dt1 has invalid DTED dimensions lon_count=1 lat_count=257; both must be at least 2","path":"N12E034.dt1","lon_count":1,"lat_count":257}}"#, "terrain tile (12,34): N12E034.dt1 has invalid DTED dimensions lon_count=1 lat_count=257; both must be at least 2"),
+                (CoreError::TerrainTileOrigin { path: "/tmp/N12E034.dt1".into(), lat_index: 12, lon_index: 34, origin_latitude: 11, origin_longitude: 34 }, r#"{"family":"CoreError","kind":"terrain_tile_origin","message":"/tmp/N12E034.dt1: DTED origin (11,34) does not match tile (12,34) named by the file","path":"/tmp/N12E034.dt1","lat_index":12,"lon_index":34,"origin_latitude":11,"origin_longitude":34}"#, "/tmp/N12E034.dt1: DTED origin (11,34) does not match tile (12,34) named by the file"),
+                (CoreError::IonexOutOfCoverage(IonexCoverageError::EpochBeforeFirstMap), r#"{"family":"CoreError","kind":"ionex_out_of_coverage","message":"IONEX out of coverage: epoch precedes first map","cause":{"family":"IonexCoverageError","kind":"epoch_before_first_map","message":"epoch precedes first map"}}"#, "IONEX out of coverage: epoch precedes first map"),
+                (CoreError::IonexNodesNotAvailable(Box::new(IonexNodeGap { earlier: Some(node), later: None })), r#"{"family":"CoreError","kind":"ionex_nodes_not_available","message":"IONEX nodes not available: map 2 cell [3][4] missing [3][4] [4][5]","cause":{"family":"IonexNodeGap","kind":"missing_nodes","message":"map 2 cell [3][4] missing [3][4] [4][5]","earlier":{"map_number":2,"lat_index":3,"lon_index":4,"lon_index_next":5,"missing":[true,false,false,true]},"later":null}}"#, "IONEX nodes not available: map 2 cell [3][4] missing [3][4] [4][5]"),
+                (CoreError::IonexSlantUnavailable(IonexSlantRefusal::VaryingHeights { map_number: 2, lat_index: 3, lon_index: 4 }), r#"{"family":"CoreError","kind":"ionex_slant_unavailable","message":"IONEX slant delay unavailable: height map 2 gives node [3][4] another single-layer height than the first node; the slant delay uses one shell height","cause":{"family":"IonexSlantRefusal","kind":"varying_heights","message":"height map 2 gives node [3][4] another single-layer height than the first node; the slant delay uses one shell height","map_number":2,"lat_index":3,"lon_index":4}}"#, "IONEX slant delay unavailable: height map 2 gives node [3][4] another single-layer height than the first node; the slant delay uses one shell height"),
+                (CoreError::IonexEpoch(IonexEpochError::NotWholeSecond { scale: TimeScale::Utc }), r#"{"family":"CoreError","kind":"ionex_epoch","message":"invalid input: IONEX map epoch in UTC is not a whole J2000 second","cause":{"family":"IonexEpochError","kind":"not_whole_second","message":"IONEX map epoch in UTC is not a whole J2000 second","scale":"UTC"}}"#, "invalid input: IONEX map epoch in UTC is not a whole J2000 second"),
+                (CoreError::EpochOutOfRange, r#"{"family":"CoreError","kind":"epoch_out_of_range","message":"epoch out of range"}"#, "epoch out of range"),
+                (CoreError::InsufficientPreciseNodes { sat, nodes: 2, required: 4 }, r#"{"family":"CoreError","kind":"insufficient_precise_nodes","message":"G09: 2 precise orbit nodes serve the query, 4 are needed","satellite_id":"G09","nodes":2,"required":4}"#, "G09: 2 precise orbit nodes serve the query, 4 are needed"),
+                (CoreError::Sp3EpochInterval(Sp3EpochIntervalError { field: "interval_s", value: 0.5, reason: Sp3EpochIntervalRejection::NotWholeTicks }), r#"{"family":"CoreError","kind":"sp3_epoch_interval","message":"invalid input: interval_s 0.5 s is not an SP3 epoch interval: it is not a whole number of the 10-nanosecond ticks an SP3 epoch states","field":"interval_s","value":0.5,"value_bits":"3fe0000000000000","reason":"not_whole_ticks"}"#, "invalid input: interval_s 0.5 s is not an SP3 epoch interval: it is not a whole number of the 10-nanosecond ticks an SP3 epoch states"),
+                (CoreError::Sp3MergeTolerance(MergeToleranceError { field: MergeToleranceField::Position, value: -1.0 }), r#"{"family":"CoreError","kind":"sp3_merge_tolerance","message":"invalid input: SP3 merge position tolerance (m) -1 must be finite and nonnegative","field":"position","value":-1.0,"value_bits":"bff0000000000000"}"#, "invalid input: SP3 merge position tolerance (m) -1 must be finite and nonnegative"),
+                (CoreError::ContinuityOptions(ContinuityOptionsError { field: "residual_tolerance_m", value: -2.5, reason: ContinuityOptionRejection::Negative }), r#"{"family":"CoreError","kind":"continuity_options","message":"invalid input: continuity residual_tolerance_m -2.5 is refused: it is negative","field":"residual_tolerance_m","value":-2.5,"value_bits":"c004000000000000","reason":"negative"}"#, "invalid input: continuity residual_tolerance_m -2.5 is refused: it is negative"),
+                (CoreError::SbasEncode(Box::new(SbasEncodeError::PadBits { value: 64 })), r#"{"family":"CoreError","kind":"sbas_encode","message":"SBAS encode error: SBAS pad bits value 64 does not fit six bits","cause":{"family":"SbasEncodeError","kind":"sbas_pad_bits","message":"SBAS encode error: SBAS pad bits value 64 does not fit six bits","value":64}}"#, "SBAS encode error: SBAS pad bits value 64 does not fit six bits"),
+                (CoreError::RtcmEncode(Box::new(RtcmEncodeError::FieldOutOfRange { message_number: 1005, field: "station_id".into(), value: 4096, width: 12, encoding: RtcmFieldEncoding::Unsigned })), r#"{"family":"CoreError","kind":"rtcm_encode","message":"invalid input: RTCM 1005 station_id 4096 does not fit its 12-bit unsigned field (0..=4095)","cause":{"family":"RtcmEncodeError","kind":"field_out_of_range","message":"invalid input: RTCM 1005 station_id 4096 does not fit its 12-bit unsigned field (0..=4095)","message_number":1005,"field":"station_id","value":4096,"width":12,"encoding":"unsigned"}}"#, "invalid input: RTCM 1005 station_id 4096 does not fit its 12-bit unsigned field (0..=4095)"),
+                (CoreError::RtcmConversion(Box::new(RtcmConversionError::WeekMismatch { message_number: 1019, full_week: 2048, week: 0 })), r#"{"family":"CoreError","kind":"rtcm_conversion","message":"invalid input: GPS full week 2048 disagrees with 10-bit RTCM week 0","cause":{"family":"RtcmConversionError","kind":"week_mismatch","message":"invalid input: GPS full week 2048 disagrees with 10-bit RTCM week 0","message_number":1019,"full_week":2048,"week":0}}"#, "invalid input: GPS full week 2048 disagrees with 10-bit RTCM week 0"),
+                (CoreError::Ut1OutsideCoverage(DegradeReason::BeforeCoverage), r#"{"family":"CoreError","kind":"ut1_outside_coverage","message":"UT1 outside the table: instant precedes the UT1 table coverage","reason":"before_coverage"}"#, "UT1 outside the table: instant precedes the UT1 table coverage"),
+            ];
+            assert_eq!(cases.len(), 22);
+            for (error, expected, display) in &cases {
+                check(py, error, expected, display);
+            }
+        });
+    }
+
+    #[test]
+    fn grouped1071_from_conversions_reach_the_attached_detail_route() {
+        Python::with_gil(|py| {
+            use sidereon_core::rinex::observations::RinexObsWriteError;
+            // Message::decode exercises OutOfInput -> DecodeError -> Error, covering both From rows.
+            let cases: Vec<(CoreError, &str, &str)> = vec![
+                (RinexObsWriteError::NotVersionTwo { version: 3.0 }.into(), r#"{"family":"CoreError","kind":"invalid_input","message":"invalid input: RINEX OBS version 3 is not a version 2","input_message":"RINEX OBS version 3 is not a version 2"}"#, "invalid input: RINEX OBS version 3 is not a version 2"),
+                (sidereon_core::rtcm::Message::decode(&[]).expect_err("truncated body"), r#"{"family":"CoreError","kind":"parse","message":"parse error: RTCM body truncated: need 12 more bits, 0 remain","parse_message":"RTCM body truncated: need 12 more bits, 0 remain"}"#, "parse error: RTCM body truncated: need 12 more bits, 0 remain"),
+                (SbasEncodeError::PadBits { value: 64 }.into(), r#"{"family":"CoreError","kind":"sbas_encode","message":"SBAS encode error: SBAS pad bits value 64 does not fit six bits","cause":{"family":"SbasEncodeError","kind":"sbas_pad_bits","message":"SBAS encode error: SBAS pad bits value 64 does not fit six bits","value":64}}"#, "SBAS encode error: SBAS pad bits value 64 does not fit six bits"),
+                (RtcmEncodeError::FieldOutOfRange { message_number: 1005, field: "station_id".into(), value: 4096, width: 12, encoding: RtcmFieldEncoding::Unsigned }.into(), r#"{"family":"CoreError","kind":"rtcm_encode","message":"invalid input: RTCM 1005 station_id 4096 does not fit its 12-bit unsigned field (0..=4095)","cause":{"family":"RtcmEncodeError","kind":"field_out_of_range","message":"invalid input: RTCM 1005 station_id 4096 does not fit its 12-bit unsigned field (0..=4095)","message_number":1005,"field":"station_id","value":4096,"width":12,"encoding":"unsigned"}}"#, "invalid input: RTCM 1005 station_id 4096 does not fit its 12-bit unsigned field (0..=4095)"),
+                (RtcmConversionError::WeekMismatch { message_number: 1019, full_week: 2048, week: 0 }.into(), r#"{"family":"CoreError","kind":"rtcm_conversion","message":"invalid input: GPS full week 2048 disagrees with 10-bit RTCM week 0","cause":{"family":"RtcmConversionError","kind":"week_mismatch","message":"invalid input: GPS full week 2048 disagrees with 10-bit RTCM week 0","message_number":1019,"full_week":2048,"week":0}}"#, "invalid input: GPS full week 2048 disagrees with 10-bit RTCM week 0"),
+            ];
+            assert_eq!(
+                cases.len() + 1,
+                6,
+                "decode accounts for both RTCM From rows"
+            );
+            for (error, expected, display) in &cases {
+                check(py, error, expected, display);
+            }
+        });
+    }
+}

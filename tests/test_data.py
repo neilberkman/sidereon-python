@@ -3190,3 +3190,50 @@ def test_network_fetch_merged_sp3_ultra(tmp_path):
     )
     assert isinstance(sp3, sidereon.Sp3)
     assert report.source_count >= 1
+
+
+def test_data_catalog_errors_preserve_exact_core_detail():
+    with pytest.raises(data.UnknownCenter) as unknown_center:
+        data.product("not-a-center", "ionex", IONEX_DATE)
+    assert unknown_center.value.detail == {
+        "family": "DataCatalogError",
+        "kind": "unknown_center",
+        "value": "not-a-center",
+        "message": 'unknown analysis center "not-a-center"',
+    }
+
+    with pytest.raises(data.UnsupportedProduct) as unsupported:
+        data.product("cod_rap", "sp3", IONEX_DATE)
+    assert unsupported.value.detail["family"] == "DataCatalogError"
+    assert unsupported.value.detail["kind"] == "unsupported_product"
+    assert unsupported.value.detail["center"] == "cod_rap"
+    assert unsupported.value.detail["product_type"] == "sp3"
+    assert unsupported.value.detail["message"] == str(unsupported.value)
+
+    with pytest.raises(data.InvalidCoordinate) as invalid_coordinate:
+        data.terrain_tile_index(91.0, 0.0)
+    detail = invalid_coordinate.value.detail
+    assert detail["family"] == "DataCatalogError"
+    assert detail["kind"] == "invalid_coordinate"
+    assert detail["lat_deg_bits"] == 4636103972657037312
+    assert detail["lon_deg_bits"] == 0
+    assert detail["message"] == str(invalid_coordinate.value)
+
+    with pytest.raises(data.InvalidTileIndex) as invalid_index:
+        data.skadi_tile_id(91, 0)
+    assert invalid_index.value.detail == {
+        "family": "DataCatalogError",
+        "kind": "invalid_tile_index",
+        "lat_index": 91,
+        "lon_index": 0,
+        "message": "invalid terrain tile index lat=91 lon=0",
+    }
+
+    with pytest.raises(data.InvalidTileId) as invalid_id:
+        data.parse_skadi_tile_id("bad")
+    assert invalid_id.value.detail == {
+        "family": "DataCatalogError",
+        "kind": "invalid_tile_id",
+        "value": "bad",
+        "message": 'invalid skadi tile id "bad"',
+    }

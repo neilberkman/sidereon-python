@@ -786,8 +786,7 @@ def test_downgrade_refuses_a_target_that_is_not_a_version_two():
     assert detail.kind == "NotVersionTwo"
     assert detail.version == 3.05
     assert detail.details() == {"version": 3.05}
-    # The typed payload carries the value; the message is not the only record.
-    assert "3.05" in detail.message
+    assert detail.message == "RINEX OBS version 3.05 is not a version 2"
     # A write refusal is still a RINEX OBS error for a caller catching broadly.
     assert isinstance(raised.value, sidereon.RinexObsParseError)
 
@@ -822,6 +821,10 @@ def test_downgrade_refuses_an_observable_version_two_cannot_represent():
             "code": "C1X",
             "version": version,
         }
+        assert detail.message == (
+            f"RINEX OBS BeiDou code C1X is on a carrier that version "
+            f"{version} cannot represent"
+        )
 
     # The refusal leaves the source product as it was.
     assert obs.header.obs_codes(sidereon.GnssSystem.BEIDOU) == ["C1X", "L1X"]
@@ -842,6 +845,9 @@ def test_downgrade_refuses_a_leap_seconds_token_the_target_version_lacks():
     assert detail.time_system == "BDT"
     assert detail.version == 2.11
     assert detail.details() == {"time_system": "BDT", "version": 2.11}
+    assert detail.message == (
+        "RINEX OBS LEAP SECONDS time system BDT is not supported in version 2.11"
+    )
 
     # The check is version-aware, not a blanket refusal: BDT is a 3.05 token,
     # so writing the same product as 3.05 keeps it and reads it back.
@@ -872,12 +878,14 @@ def test_downgrade_reports_every_change_and_keeps_slips():
     assert downgraded.header.version == 2.11
     assert downgraded.header.obs_codes(beidou) == ["C2I", "L2I"]
 
-    renames = {
-        (change.details()["from_code"], change.details()["to_code"])
-        for change in changes
-        if change.kind == "CodeRenamed"
-    }
-    assert renames == {("C1I", "C2I"), ("L1I", "L2I")}
+    renames = sorted(
+        (change.details() for change in changes if change.kind == "CodeRenamed"),
+        key=lambda fields: fields["from_code"],
+    )
+    assert renames == [
+        {"system": beidou, "from_code": "C1I", "to_code": "C2I"},
+        {"system": beidou, "from_code": "L1I", "to_code": "L2I"},
+    ]
     for change in changes:
         if change.kind == "CodeRenamed":
             assert change.system == beidou
