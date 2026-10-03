@@ -496,16 +496,21 @@ def allowed_hosts() -> list[str]:
     return sorted(_ALLOWED_HOSTS)
 
 
+def _copy_catalog_detail(error: DataError, exc: Exception) -> DataError:
+    """Copy a native catalog payload without changing the public exception."""
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, Mapping):
+        error.detail = dict(detail)
+    return error
+
+
 def _catalog_error(exc: Exception) -> DataError:
     message = str(exc)
     if message.startswith("unknown analysis center"):
         error: DataError = UnknownCenter(message)
     else:
         error = UnsupportedProduct(message)
-    detail = getattr(exc, "detail", None)
-    if isinstance(detail, dict):
-        error.detail = detail
-    return error
+    return _copy_catalog_detail(error, exc)
 
 
 def _terrain_catalog_error(exc: ValueError) -> DataError:
@@ -518,17 +523,14 @@ def _terrain_catalog_error(exc: ValueError) -> DataError:
         error = InvalidTileId(message)
     else:
         error = UnsupportedProduct(message)
-    detail = getattr(exc, "detail", None)
-    if isinstance(detail, dict):
-        error.detail = detail
-    return error
+    return _copy_catalog_detail(error, exc)
 
 
 def _hgt_conversion_error(exc: ValueError) -> DataError:
     message = str(exc)
     if message.startswith("invalid terrain tile index"):
-        return InvalidTileIndex(message)
-    return DecompressError(message)
+        return _copy_catalog_detail(InvalidTileIndex(message), exc)
+    return _copy_catalog_detail(DecompressError(message), exc)
 
 
 def _center_def(code: str) -> dict:
@@ -551,7 +553,7 @@ def gps_week(date: _dt.date) -> int:
     try:
         return int(_core_data_gps_week(date.year, date.month, date.day))
     except ValueError as exc:
-        raise UnsupportedProduct(str(exc)) from None
+        raise _copy_catalog_detail(UnsupportedProduct(str(exc)), exc) from None
 
 
 def day_of_year(date: _dt.date) -> int:
@@ -559,7 +561,7 @@ def day_of_year(date: _dt.date) -> int:
     try:
         return int(_core_data_day_of_year(date.year, date.month, date.day))
     except ValueError as exc:
-        raise UnsupportedProduct(str(exc)) from None
+        raise _copy_catalog_detail(UnsupportedProduct(str(exc)), exc) from None
 
 
 def skadi_source_entry() -> TerrainSourceEntry:
@@ -569,7 +571,7 @@ def skadi_source_entry() -> TerrainSourceEntry:
 
 
 def _space_weather_catalog_error(exc: ValueError) -> DataError:
-    return UnsupportedProduct(str(exc))
+    return _copy_catalog_detail(UnsupportedProduct(str(exc)), exc)
 
 
 def space_weather_source_entry() -> SpaceWeatherSourceEntry:

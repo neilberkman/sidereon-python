@@ -3237,3 +3237,21 @@ def test_data_catalog_errors_preserve_exact_core_detail():
         "value": "bad",
         "message": 'invalid skadi tile id "bad"',
     }
+
+    with pytest.raises(data.UnsupportedProduct) as before_gps_epoch:
+        data.gps_week(dt.date(1980, 1, 5))
+    assert before_gps_epoch.value.detail == {
+        "family": "DataCatalogError",
+        "kind": "date_before_gps_epoch",
+        "date": "1980-01-05",
+        "message": "product date 1980-01-05 is before the GPS week epoch",
+    }
+
+    with pytest.raises(data.UnsupportedProduct) as unknown_weather:
+        data.space_weather_filename("unknown_sw")
+    assert unknown_weather.value.detail == {
+        "family": "DataCatalogError",
+        "kind": "unknown_product_type",
+        "value": "unknown_sw",
+        "message": 'unknown product type "unknown_sw"',
+    }
