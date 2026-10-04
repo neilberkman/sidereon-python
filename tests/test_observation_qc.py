@@ -67,6 +67,20 @@ def test_observation_qc_matches_real_oracle_summary():
     )
     assert gps_c1c.value_observations == 1293
     assert gps_c1c.ssi.counts == [0, 0, 0, 5, 13, 156, 457, 295, 367, 0]
+    assert gps_c1c.snr is None
+
+    gps_s1c = next(
+        row
+        for row in report.system_signals
+        if row.system == sidereon.GnssSystem.GPS and row.code == "S1C"
+    )
+    assert gps_s1c.value_observations == 1293
+    assert gps_s1c.ssi.counts == [1293, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    assert gps_s1c.snr.n == 1293
+    assert gps_s1c.snr.mean == pytest.approx(42.54891724671307)
+    assert gps_s1c.snr.min == 19.75
+    assert gps_s1c.snr.max == 51.75
+    assert gps_s1c.snr.std == pytest.approx(6.226261014936549)
     assert report.clock_jumps == []
     assert report.notes == []
 
@@ -319,11 +333,14 @@ def test_observation_qc_projects_exact_nonempty_data_gap():
         0,
         0.0,
     )
-    assert (gap.end_epoch.hour, gap.end_epoch.minute, gap.end_epoch.second) == (
-        0,
-        1,
-        30.0,
-    )
+    assert (
+        gap.end_epoch.year,
+        gap.end_epoch.month,
+        gap.end_epoch.day,
+        gap.end_epoch.hour,
+        gap.end_epoch.minute,
+        gap.end_epoch.second,
+    ) == (2020, 1, 1, 0, 1, 30.0)
     assert gap.nominal_interval_s == 30.0
     assert gap.observed_delta_s == 90.0
     assert gap.missing_epochs == 2
