@@ -1,9 +1,12 @@
 """Public numerical contract for a sample-backed precise interpolant."""
 
+import math
+
 import numpy as np
 import pytest
 import sidereon
 
+C_M_S = 299_792_458.0
 STEP_S = 900.0
 BASE = np.asarray([20_200_000.0, 13_400_000.0, 21_700_000.0])
 SLOPE_PER_NODE = np.asarray([12.0, -8.0, 5.0])
@@ -73,3 +76,23 @@ def test_precise_interpolant_scalar_batch_and_exact_query_values():
         None,
     )
     assert interpolant.ephemeris_variance_at_epoch_query("G01", query, query) == 0.0
+
+    # The core's peph2pos term uses the exact query advanced by its 1 ms step.
+    after_query = query.checked_add_binary_seconds(0.001)
+    after_state = interpolant.position_at_epoch_query("G01", after_query)
+    velocity_over_step = (
+        np.asarray(after_state.position_m) - np.asarray(exact_state.position_m)
+    ) / 0.001
+    expected_relativity = (
+        -2.0
+        * math.fsum(
+            float(a * b) for a, b in zip(exact_state.position_m, velocity_over_step)
+        )
+        / C_M_S
+        / C_M_S
+    )
+    relativity = interpolant.clock_relativity_for_state_at_epoch_query(
+        "G01", query, exact_state.position_m
+    )
+    assert relativity.kind == "term"
+    assert relativity.term_s == pytest.approx(expected_relativity, rel=2e-10, abs=1e-25)
