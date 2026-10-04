@@ -2,6 +2,16 @@
 
 All notable changes to the Sidereon Python interface are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Opt-in `acquire(..., http_client_exception_diagnostics=callback)` reports
+  the class and bounded module/function metadata of unexpected exceptions
+  from caller-supplied HTTP transports. Diagnostics omit messages, arguments,
+  URLs and request/response data; observer failures leave the original terminal
+  exception unchanged.
+
 ## [3.0.0] - 2026-10-04
 
 ### Added

@@ -16,10 +16,11 @@ import json
 import netrc
 import os
 import time
+from collections import deque
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import Mapping, Optional, Sequence, Tuple, Union, cast
+from typing import Callable, Mapping, Optional, Sequence, Tuple, Union, cast
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -660,8 +661,19 @@ def acquire(
     max_archive_bytes: int = _DEFAULT_MAX_ARCHIVE_BYTES,
     max_product_bytes: int = _DEFAULT_MAX_PRODUCT_BYTES,
     http_client: Optional[httpx.Client] = None,
+    http_client_exception_diagnostics: Optional[
+        Callable[[Mapping[str, object]], None]
+    ] = None,
 ) -> AcquiredProduct:
-    """Acquire the exact product from only the ordered allowed distributors."""
+    """Acquire an exact product from the ordered distributors.
+
+    When a caller-supplied HTTP transport raises an unexpected exception, the
+    optional diagnostic callback receives only the exception class, a client
+    callsite, and up to eight module/function/arity frames. Exception messages,
+    arguments, URLs, headers, and response bodies are omitted. The original
+    exception is re-raised unchanged, and callback failures are ignored.
+    Payload keys are ``exception_class``, ``client_callsite`` and ``stack_frames``.
+    """
     return _acquire_impl(
         exact_request,
         cache_dir=cache_dir,
@@ -675,6 +687,7 @@ def acquire(
         max_archive_bytes=max_archive_bytes,
         max_product_bytes=max_product_bytes,
         http_client=http_client,
+        http_client_exception_diagnostics=http_client_exception_diagnostics,
         direct_location=None,
     )
 
@@ -706,6 +719,9 @@ def _acquire_impl(
     max_archive_bytes: int = _DEFAULT_MAX_ARCHIVE_BYTES,
     max_product_bytes: int = _DEFAULT_MAX_PRODUCT_BYTES,
     http_client: Optional[httpx.Client] = None,
+    http_client_exception_diagnostics: Optional[
+        Callable[[Mapping[str, object]], None]
+    ] = None,
     direct_location: Optional[tuple[str, str]],
 ) -> AcquiredProduct:
     _validate_requested_identity(exact_request.identity)
@@ -779,6 +795,7 @@ def _acquire_impl(
                             max_archive_bytes,
                             max_product_bytes,
                             http_client,
+                            http_client_exception_diagnostics,
                             attempts,
                             exact_cache,
                             direct_location,
@@ -850,6 +867,7 @@ def _acquire_one(
     max_archive_bytes: int,
     max_product_bytes: int,
     http_client: Optional[httpx.Client],
+    http_client_exception_diagnostics: Optional[Callable[[Mapping[str, object]], None]],
     attempts: Sequence[SourceFailure],
     exact_cache: _exact_cache.ExactCache,
     direct_location: Optional[tuple[str, str]],
@@ -871,6 +889,7 @@ def _acquire_one(
             backoff_s,
             max_archive_bytes,
             http_client,
+            http_client_exception_diagnostics,
         )
         archive = download.archive
     elif source is DistributionSource.NASA_CDDIS:
@@ -885,6 +904,7 @@ def _acquire_one(
             backoff_s,
             max_archive_bytes,
             http_client,
+            http_client_exception_diagnostics,
         )
         archive = download.archive
     elif source is DistributionSource.LOCAL_FILE:
@@ -1081,6 +1101,7 @@ def _download_http(
     backoff_s: float,
     max_bytes: int,
     supplied_client: Optional[httpx.Client],
+    http_client_exception_diagnostics: Optional[Callable[[Mapping[str, object]], None]],
 ) -> _Download:
     last_error: Optional[AcquisitionError] = None
     if urlsplit(original_url).scheme == "ftp":
@@ -1100,7 +1121,17 @@ def _download_http(
         for attempt in range(retries):
             try:
                 return _download_http_once(
-                    client, original_url, source, auth, timeout_s, max_bytes
+                    client,
+                    original_url,
+                    source,
+                    auth,
+                    timeout_s,
+                    max_bytes,
+                    (
+                        http_client_exception_diagnostics
+                        if supplied_client is not None
+                        else None
+                    ),
                 )
             except AcquisitionError as error:
                 last_error = error
@@ -1114,6 +1145,34 @@ def _download_http(
             client.close()
 
 
+def _http_client_exception_diagnostic(error: Exception) -> Mapping[str, object]:
+    """Return bounded exception metadata without reading message or arguments."""
+    exception_type = type(error)
+    class_name = f"{exception_type.__module__}.{exception_type.__qualname__}"[:256]
+    frames: deque[tuple[str, str, int]] = deque(maxlen=8)
+    traceback = error.__traceback__
+    while traceback is not None:
+        frame = traceback.tb_frame
+        module = frame.f_globals.get("__name__", "")
+        module_name = module[:256] if isinstance(module, str) else ""
+        function_name = frame.f_code.co_name[:256]
+        frames.append((module_name, function_name, frame.f_code.co_argcount))
+        traceback = traceback.tb_next
+    stack_frames = tuple(frames)
+    caller_frames = [
+        frame
+        for frame in stack_frames
+        if not frame[0].startswith("httpx.")
+        and frame[0] not in {"contextlib", __name__}
+    ]
+    callsite = caller_frames[-1] if caller_frames else ("", "", 0)
+    return {
+        "exception_class": class_name,
+        "client_callsite": callsite,
+        "stack_frames": stack_frames,
+    }
+
+
 def _download_http_once(
     client: httpx.Client,
     original_url: str,
@@ -1121,6 +1180,7 @@ def _download_http_once(
     auth: EarthdataAuth,
     timeout_s: float,
     max_bytes: int,
+    http_client_exception_diagnostics: Optional[Callable[[Mapping[str, object]], None]],
 ) -> _Download:
     current = original_url
     for redirect_count in range(_MAX_REDIRECTS + 1):
@@ -1208,6 +1268,15 @@ def _download_http_once(
             raise TransportFailure("connection", current) from None
         except httpx.RequestError:
             raise TransportFailure("other", current) from None
+        except Exception as error:  # noqa: BLE001 - caller transports may raise arbitrary errors
+            if http_client_exception_diagnostics is not None:
+                try:
+                    diagnostic = _http_client_exception_diagnostic(error)
+                    if diagnostic["client_callsite"] != ("", "", 0):
+                        http_client_exception_diagnostics(diagnostic)
+                except BaseException:  # noqa: BLE001 - diagnostics never mask the transport
+                    pass
+            raise
     raise RedirectPolicyFailure(f"too many redirects for {_sanitize_url(original_url)}")
 
 

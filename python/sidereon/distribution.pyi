@@ -4,7 +4,7 @@ import datetime as dt
 import enum
 import os
 from dataclasses import dataclass
-from typing import Mapping, Optional, Sequence, Tuple, Union
+from typing import Callable, Mapping, Optional, Sequence, Tuple, Union
 
 import httpx
 
@@ -185,6 +185,9 @@ def acquire(
     max_archive_bytes: int = ...,
     max_product_bytes: int = ...,
     http_client: Optional[httpx.Client] = ...,
+    http_client_exception_diagnostics: Optional[
+        Callable[[Mapping[str, object]], None]
+    ] = ...,
 ) -> AcquiredProduct: ...
 
 __all__: list[str]

@@ -120,6 +120,79 @@ def test_caller_transport_failure_is_terminal(tmp_path):
     assert distribution._distributor_fallback_kind(caught.value) is None
 
 
+def test_unexpected_caller_transport_error_is_observed_without_changing_propagation(
+    tmp_path,
+):
+    calls = 0
+    diagnostics = []
+    secret = "private token and message"
+    request = _request(
+        distribution.Distribution.nasa_cddis(),
+        distribution.Distribution.in_memory(_body(), compression="none"),
+    )
+
+    def handler(http_request):
+        nonlocal calls
+        calls += 1
+        raise ValueError(f"{secret}: {http_request.url}")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError) as caught:
+            distribution.acquire(
+                request,
+                cache_dir=tmp_path,
+                http_client=client,
+                http_client_exception_diagnostics=diagnostics.append,
+                retries=3,
+                backoff_s=0,
+            )
+
+    assert calls == 1
+    assert str(caught.value).startswith(secret)
+    assert distribution._distributor_fallback_kind(caught.value) is None
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert set(diagnostic) == {
+        "exception_class",
+        "client_callsite",
+        "stack_frames",
+    }
+    assert diagnostic["exception_class"] == "builtins.ValueError"
+    callsite = diagnostic["client_callsite"]
+    assert callsite == (__name__, "handler", 1)
+    frames = diagnostic["stack_frames"]
+    assert isinstance(frames, tuple) and 1 <= len(frames) <= 8
+    assert all(isinstance(frame, tuple) and len(frame) == 3 for frame in frames)
+    assert callsite in frames
+    assert secret not in repr(diagnostic)
+    assert "https://" not in repr(diagnostic)
+
+
+def test_transport_diagnostic_failure_does_not_mask_transport_error(tmp_path):
+    secret = "observer failure details"
+    request = _request(distribution.Distribution.nasa_cddis())
+
+    def handler(_http_request):
+        raise ValueError("original private transport error")
+
+    def observer(_diagnostic):
+        raise RuntimeError(secret)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError) as caught:
+            distribution.acquire(
+                request,
+                cache_dir=tmp_path,
+                http_client=client,
+                http_client_exception_diagnostics=observer,
+                retries=3,
+                backoff_s=0,
+            )
+
+    assert str(caught.value) == "original private transport error"
+    assert secret not in str(caught.value)
+
+
 @pytest.mark.parametrize("status", [600, 99999])
 def test_non_http_server_status_is_not_retryable_or_fallback_eligible(status):
     error = distribution.TransportFailure(f"http_{status}", "https://example.test")
