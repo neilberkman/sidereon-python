@@ -108,10 +108,28 @@ def test_public_kvn_route_retains_every_oem_field_and_comment():
         ],
     )
 
+    populated_metadata = sidereon.OemMetadata(
+        metadata.object_name,
+        metadata.object_id,
+        metadata.center_name,
+        metadata.ref_frame,
+        metadata.time_system,
+        metadata.start_time,
+        metadata.stop_time,
+        useable_start_time=metadata.useable_start_time,
+        useable_stop_time=metadata.useable_stop_time,
+        interpolation=metadata.interpolation,
+        interpolation_degree=metadata.interpolation_degree,
+        ref_frame_epoch="J2000",
+        comments=["metadata details"],
+    )
+    assert populated_metadata.ref_frame_epoch == "J2000"
+    assert populated_metadata.comments == ["metadata details"]
+
     edited = sidereon.Oem(
         segments=[
             sidereon.OemSegment(
-                metadata,
+                populated_metadata,
                 segment.states,
                 covariances=segment.covariances,
                 data_comments=[(1, "between state vectors")],
