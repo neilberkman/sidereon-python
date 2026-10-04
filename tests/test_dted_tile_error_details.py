@@ -228,3 +228,21 @@ def test_public_tile_lookup_retains_profile_fields_and_success(tmp_path):
         assert_elevation_error(path, longitude, latitude, kind, fields, message)
 
     assert sidereon.DtedTile.from_path(FIXTURE).height_m(36.0, -107.0) == -20
+
+
+def test_public_tile_lookup_error_details_compare_by_core_value():
+    tile = sidereon.DtedTile.from_path(FIXTURE)
+
+    def outside(latitude, longitude):
+        with pytest.raises(sidereon.TerrainError) as caught:
+            tile.height_m(latitude, longitude)
+        assert caught.value.detail.kind == "Outside"
+        return caught.value.detail
+
+    positive_zero = outside(0.0, 0.0)
+    repeated_positive_zero = outside(0.0, 0.0)
+    negative_zero = outside(-0.0, 0.0)
+
+    assert positive_zero == repeated_positive_zero
+    # Outside compares binary64 coordinate bits, so the zero sign bit matters.
+    assert positive_zero != negative_zero

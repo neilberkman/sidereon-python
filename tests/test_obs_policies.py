@@ -978,6 +978,63 @@ def test_downgrade_change_payloads_are_native_values_under_their_own_keys():
     assert obs.header.scale_factors[0].factor == 1000.0
 
 
+def test_write_details_and_downgrade_changes_compare_by_native_value():
+    obs = sidereon.parse_rinex_obs(
+        obs_text(
+            3.05,
+            [header_line("G    2 C1C L1C", "SYS / # / OBS TYPES")],
+            [
+                epoch_line(0, 0.0, 0, 1),
+                obs_record(
+                    "G01", [obs_field(20000000.0, 0, 7), obs_field(100.125, 0, 7)]
+                ),
+            ],
+            extra_headers=[header_line("G 1000   1 L1C", "SYS / SCALE FACTOR")],
+        )
+    )
+    _, changes = obs.downgrade_to_rinex2(2.11)
+    _, repeated_changes = obs.downgrade_to_rinex2(2.11)
+    removed = next(change for change in changes if change.kind == "ScaleFactorsRemoved")
+    repeated_removed = next(
+        change for change in repeated_changes if change.kind == "ScaleFactorsRemoved"
+    )
+    rounded = next(change for change in changes if change.kind == "ValueRounded")
+    assert removed == repeated_removed
+    assert removed != rounded
+
+    refused = sidereon.parse_rinex_obs(
+        obs_text(
+            3.05,
+            [header_line("G    1 C1C", "SYS / # / OBS TYPES")],
+            [
+                epoch_line(0, 0.0, 0, 1),
+                obs_record("G01", [obs_field(20000000.0, 0, 7)]),
+            ],
+        )
+    )
+    with pytest.raises(sidereon.RinexObsWriteError) as first_not_v2:
+        refused.downgrade_to_rinex2(3.05)
+    with pytest.raises(sidereon.RinexObsWriteError) as second_not_v2:
+        refused.downgrade_to_rinex2(3.05)
+    assert first_not_v2.value.detail == second_not_v2.value.detail
+
+    lines = [
+        (
+            "     3.05           OBSERVATION DATA    C                   "
+            "RINEX VERSION / TYPE"
+        ),
+        "C    1 C1X                                                  "
+        "SYS / # / OBS TYPES",
+        "                                                            END OF HEADER",
+        "> 2020 06 24 00 00  0.0000000  0  1",
+        "C01  22000000.000",
+    ]
+    unrepresentable = sidereon.parse_rinex_obs("\n".join(lines) + "\n")
+    with pytest.raises(sidereon.RinexObsWriteError) as other_error:
+        unrepresentable.downgrade_to_rinex2(2.11)
+    assert first_not_v2.value.detail != other_error.value.detail
+
+
 def test_written_text_reads_back_as_the_same_product():
     text = _three_correction_states_text()
     obs = sidereon.parse_rinex_obs(text)

@@ -2109,6 +2109,10 @@ impl From<CoreObsDowngradeChange> for PyObsDowngradeChange {
 
 #[pymethods]
 impl PyObsDowngradeChange {
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+
     /// Change kind discriminator string.
     #[getter]
     fn kind(&self) -> &'static str {
@@ -2290,6 +2294,10 @@ impl From<CoreRinexObsWriteError> for PyRinexObsWriteErrorDetail {
 
 #[pymethods]
 impl PyRinexObsWriteErrorDetail {
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+
     /// Error kind string matching the RinexObsWriteError variant name.
     #[getter]
     fn kind(&self) -> &'static str {
