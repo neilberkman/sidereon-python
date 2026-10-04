@@ -634,6 +634,150 @@ def test_ssr_decode_store_and_correction_queries():
     assert noisy.store.orbit("G30") is not None
 
 
+def test_ssr_com_orbit_requires_public_antenna_and_attitude_configuration():
+    frame_path = (
+        pathlib.Path(CORE_FIXTURES) / "ssr" / "SSRA02IGS0_2026181234930_1060.hex"
+    )
+    frame = bytes.fromhex(frame_path.read_text(encoding="ascii"))
+    rtcm = sidereon.decode_rtcm(frame)[0]
+    message = sidereon.decode_ssr_message(rtcm.encode())
+    store = sidereon.SsrCorrectionStore(
+        reference_point=sidereon.OrbitReferencePoint.CENTER_OF_MASS
+    )
+    store.ingest_ssr(message, 2425, 344_970.0)
+    lenient_ingest = sidereon.ssr_store_from_rtcm(
+        frame,
+        2425,
+        344_970.0,
+        reference_point=sidereon.OrbitReferencePoint.CENTER_OF_MASS,
+    )
+    assert lenient_ingest.is_complete
+    assert (
+        lenient_ingest.store.orbit("G30").reference_point
+        == sidereon.OrbitReferencePoint.CENTER_OF_MASS
+    )
+    strict_store = sidereon.ssr_store_from_rtcm_strict(
+        frame,
+        2425,
+        344_970.0,
+        reference_point=sidereon.OrbitReferencePoint.CENTER_OF_MASS,
+    )
+    assert (
+        strict_store.orbit("G30").reference_point
+        == sidereon.OrbitReferencePoint.CENTER_OF_MASS
+    )
+    broadcast = sidereon.load_rinex_nav(
+        pathlib.Path(CORE_FIXTURES) / "ssr" / "BRDC00WRD_S_20261820000_G30_G31.rnx"
+    )
+    antex = sidereon.load_antex(
+        pathlib.Path(__file__).parent / "fixtures" / "antex" / "igs20_wettzell_trim.atx"
+    )
+    epoch = 2425 * 604_800.0 + 344_970.0 - 630_763_200.0
+
+    unavailable = sidereon.SsrCorrectedEphemeris(
+        broadcast,
+        store,
+        max_staleness_s=60.0,
+        satellite_antennas=antex,
+        satellite_attitude=sidereon.SsrSatelliteAttitude.UNAVAILABLE,
+    )
+    assert unavailable.corrected_state_checked("G30", epoch)[0] is None
+
+    nominal = sidereon.SsrCorrectedEphemeris(
+        broadcast,
+        store,
+        max_staleness_s=60.0,
+        satellite_antennas=antex,
+        satellite_attitude=sidereon.SsrSatelliteAttitude.NOMINAL_SUN_FIXED,
+    )
+    checked, degraded = nominal.corrected_state_checked("G30", epoch)
+    assert checked is not None
+    assert degraded is None
+    position, clock_s = checked
+    assert position == pytest.approx(
+        [-6_327_381.448161609, 15_802_128.916795386, -20_121_896.861226305],
+        abs=1.0e-6,
+    )
+    assert clock_s == pytest.approx(0.0002800865527753679, abs=1.0e-15)
+    assert nominal.position_clock_at_j2000_s("G30", epoch) == checked
+
+    query = sidereon.ExactEpochQuery.from_binary_j2000_seconds(epoch)
+    queried, query_degraded = nominal.corrected_state_at_epoch_query(
+        "G30", query, query
+    )
+    assert queried == checked
+    assert query_degraded is None
+
+    apc_store = sidereon.ssr_store_from_rtcm(frame, 2425, 344_970.0)
+    apc = sidereon.SsrCorrectedEphemeris(
+        broadcast,
+        apc_store.store,
+        max_staleness_s=60.0,
+        satellite_antennas=antex,
+        satellite_attitude=sidereon.SsrSatelliteAttitude.NOMINAL_SUN_FIXED,
+    )
+    apc_checked, apc_degraded = apc.corrected_state_checked("G30", epoch)
+    assert apc_checked is not None
+    assert apc_degraded is None
+    assert apc_checked[0] != position
+
+    malformed_cases = [
+        (b"\x00" + frame, 1, 0, 0, 0),
+        (frame[:-1] + bytes([frame[-1] ^ 1]), len(frame), 1, 0, 0),
+        (frame + b"\xd3\x00", 2, 0, 2, 0),
+    ]
+    for payload, resync, crc_failures, trailing_len, refusal_count in malformed_cases:
+        apc_ingest = sidereon.ssr_store_from_rtcm(payload, 2425, 344_970.0)
+        com_ingest = sidereon.ssr_store_from_rtcm(
+            payload,
+            2425,
+            344_970.0,
+            reference_point=sidereon.OrbitReferencePoint.CENTER_OF_MASS,
+        )
+        for ingest in (apc_ingest, com_ingest):
+            assert ingest.diagnostics.resync_bytes == resync
+            assert ingest.diagnostics.crc_failures == crc_failures
+            assert ingest.trailing_partial_frame_len == trailing_len
+            assert len(ingest.ingest_refusals) == refusal_count
+        if resync or crc_failures or trailing_len:
+            with pytest.raises(sidereon.RtcmParseError) as apc_error:
+                sidereon.ssr_store_from_rtcm_strict(payload, 2425, 344_970.0)
+            with pytest.raises(sidereon.RtcmParseError) as com_error:
+                sidereon.ssr_store_from_rtcm_strict(
+                    payload,
+                    2425,
+                    344_970.0,
+                    reference_point=sidereon.OrbitReferencePoint.CENTER_OF_MASS,
+                )
+            assert str(apc_error.value) == str(com_error.value)
+
+    invalid_satellite_body = bytearray(sidereon.decode_rtcm(frame)[0].encode())
+    for bit in range(68, 74):
+        index, offset = divmod(bit, 8)
+        invalid_satellite_body[index] &= ~(1 << (7 - offset))
+    refused_payload = sidereon.encode_rtcm_frame(bytes(invalid_satellite_body))
+    apc_refused = sidereon.ssr_store_from_rtcm(refused_payload, 2425, 344_970.0)
+    com_refused = sidereon.ssr_store_from_rtcm(
+        refused_payload,
+        2425,
+        344_970.0,
+        reference_point=sidereon.OrbitReferencePoint.CENTER_OF_MASS,
+    )
+    assert len(apc_refused.ingest_refusals) == len(com_refused.ingest_refusals) == 1
+    assert apc_refused.ingest_refusals[0].message_number == 1060
+    assert com_refused.ingest_refusals[0].message_number == 1060
+    with pytest.raises(sidereon.RtcmParseError) as apc_error:
+        sidereon.ssr_store_from_rtcm_strict(refused_payload, 2425, 344_970.0)
+    with pytest.raises(sidereon.RtcmParseError) as com_error:
+        sidereon.ssr_store_from_rtcm_strict(
+            refused_payload,
+            2425,
+            344_970.0,
+            reference_point=sidereon.OrbitReferencePoint.CENTER_OF_MASS,
+        )
+    assert str(apc_error.value) == str(com_error.value)
+
+
 def test_solve_spp_robust_fde_returns_fde_result_and_alias_warns():
     sp3 = _load_sp3(_SP3_FILE)
     trace_path = os.path.join(CORE_FIXTURES, "spp_trace_L0_minimal.json")

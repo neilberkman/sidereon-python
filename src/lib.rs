@@ -23,7 +23,7 @@ use pyo3::types::{PyAny, PyDict, PyModule, PyTuple, PyType};
 mod almanac;
 mod angles;
 mod anomaly;
-mod antex;
+pub(crate) mod antex;
 mod araim;
 mod atmosphere;
 mod bias;

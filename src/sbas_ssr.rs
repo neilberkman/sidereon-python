@@ -10,9 +10,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList, PyModule};
 
 use sidereon::ephemeris::EphemerisSource;
+use sidereon_core::antex::Antex;
 use sidereon_core::astro::time::model::GnssWeekTow;
 use sidereon_core::frame::Wgs84Geodetic;
-use sidereon_core::rtcm::{SsrKind, SsrMessage};
+use sidereon_core::rtcm::{RtcmPolicy, SsrKind, SsrMessage, SsrStreamAssembler};
 use sidereon_core::sbas::{
     parse_ems_lines as core_parse_sbas_ems_lines, parse_ems_log as core_parse_sbas_ems_log,
     parse_rtklib_lines as core_parse_sbas_rtklib_lines,
@@ -30,10 +31,11 @@ use sidereon_core::ssr::{
     GnssSignal, MissingCorrectionAction, OrbitReferencePoint, RegionalPolicy, SignalCode,
     SsrClockCorrection, SsrCorrectedEphemeris, SsrCorrectionSize, SsrCorrectionSizePolicy,
     SsrCorrectionStore, SsrFallbackPolicy, SsrHighRateClock, SsrNavigationMessage,
-    SsrOrbitCorrection, SsrRawSignal, SsrSignalKey, SsrSolution, SsrSource,
+    SsrOrbitCorrection, SsrRawSignal, SsrSatelliteAttitude, SsrSignalKey, SsrSolution, SsrSource,
 };
 use sidereon_core::GnssSatelliteId;
 
+use crate::antex::PyAntex;
 use crate::exact_time::PyExactEpochQuery;
 use crate::frames::PyTimeScale;
 use crate::marshal::{debug_variant_snake, PyGnssSystem};
@@ -2758,6 +2760,30 @@ pub struct PySsrCorrectedEphemeris {
     max_staleness_s: Option<f64>,
     ut1_validity: crate::PyValidityMode,
     correction_size_policy: PySsrCorrectionSizePolicy,
+    satellite_antennas: Option<Antex>,
+    satellite_attitude: SsrSatelliteAttitude,
+}
+
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "SsrSatelliteAttitude",
+    eq,
+    eq_int
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PySsrSatelliteAttitude {
+    UNAVAILABLE,
+    NOMINAL_SUN_FIXED,
+}
+
+impl From<PySsrSatelliteAttitude> for SsrSatelliteAttitude {
+    fn from(value: PySsrSatelliteAttitude) -> Self {
+        match value {
+            PySsrSatelliteAttitude::UNAVAILABLE => Self::Unavailable,
+            PySsrSatelliteAttitude::NOMINAL_SUN_FIXED => Self::NominalSunFixed,
+        }
+    }
 }
 
 #[pyclass(
@@ -2827,14 +2853,18 @@ impl PySsrCorrectedEphemeris {
     /// outside the UT1 table, which `corrected_state_checked` raises as
     /// `Ut1OutsideCoverageError`; `PERMISSIVE` uses the long-term UT1 and
     /// reports the departure.
-    #[pyo3(signature = (broadcast, store, fallback=None, max_staleness_s=None, ut1_validity=crate::PyValidityMode::STRICT, correction_size_policy=PySsrCorrectionSizePolicy::STRICT))]
+    #[pyo3(signature = (broadcast, store, fallback=None, max_staleness_s=None, ut1_validity=crate::PyValidityMode::STRICT, correction_size_policy=PySsrCorrectionSizePolicy::STRICT, satellite_antennas=None, satellite_attitude=PySsrSatelliteAttitude::UNAVAILABLE))]
+    #[allow(clippy::too_many_arguments)] // Python exposes these named constructor options.
     fn new(
+        py: Python<'_>,
         broadcast: Py<PyBroadcastEphemeris>,
         store: Py<PySsrCorrectionStore>,
         fallback: Option<&PySsrFallbackPolicy>,
         max_staleness_s: Option<f64>,
         ut1_validity: crate::PyValidityMode,
         correction_size_policy: PySsrCorrectionSizePolicy,
+        satellite_antennas: Option<Py<PyAntex>>,
+        satellite_attitude: PySsrSatelliteAttitude,
     ) -> PyResult<Self> {
         if let Some(max_staleness_s) = max_staleness_s {
             if !max_staleness_s.is_finite() || max_staleness_s < 0.0 {
@@ -2852,6 +2882,8 @@ impl PySsrCorrectedEphemeris {
             max_staleness_s,
             ut1_validity,
             correction_size_policy,
+            satellite_antennas: satellite_antennas.map(|antex| antex.borrow(py).inner.clone()),
+            satellite_attitude: satellite_attitude.into(),
         })
     }
 
@@ -3012,14 +3044,18 @@ impl PySsrCorrectedEphemeris {
 
 impl PySsrCorrectedEphemeris {
     pub(crate) fn source<'a>(
-        &self,
+        &'a self,
         broadcast: &'a PyBroadcastEphemeris,
         store: &'a PySsrCorrectionStore,
     ) -> SsrCorrectedEphemeris<'a> {
         let mut source = SsrCorrectedEphemeris::new(&broadcast.inner, &store.inner)
             .with_fallback(self.fallback.clone())
             .with_validity(self.ut1_validity.into())
-            .with_correction_size_policy(self.correction_size_policy.into());
+            .with_correction_size_policy(self.correction_size_policy.into())
+            .with_satellite_attitude(self.satellite_attitude);
+        if let Some(antex) = self.satellite_antennas.as_ref() {
+            source = source.with_satellite_antennas(antex);
+        }
         if let Some(max_staleness_s) = self.max_staleness_s {
             source = source.with_staleness(sidereon_core::staleness::StalenessPolicy::seconds(
                 max_staleness_s,
@@ -3233,7 +3269,7 @@ impl PySsrRtcmIngest {
 }
 
 #[pyfunction]
-#[pyo3(signature = (bytes, week, tow_s, time_scale=PyTimeScale::GPST))]
+#[pyo3(signature = (bytes, week, tow_s, time_scale=PyTimeScale::GPST, reference_point=PyOrbitReferencePoint::ANTENNA_PHASE_CENTER))]
 /// Build an SSR correction store from every readable frame of framed RTCM
 /// bytes, read under `RtcmPolicy.LENIENT`, reporting in the returned
 /// `SsrRtcmIngest` the bytes outside frames, CRC-24Q failures, frames that
@@ -3245,31 +3281,54 @@ fn ssr_store_from_rtcm(
     week: u32,
     tow_s: f64,
     time_scale: PyTimeScale,
+    reference_point: PyOrbitReferencePoint,
 ) -> PyResult<PySsrRtcmIngest> {
     let epoch = gnss_week_tow(time_scale, week, tow_s)?;
-    let ingest = sidereon::ssr_store_from_rtcm(bytes, epoch);
+    if reference_point == PyOrbitReferencePoint::ANTENNA_PHASE_CENTER {
+        let ingest = sidereon::ssr_store_from_rtcm(bytes, epoch);
+        return Ok(PySsrRtcmIngest {
+            store: Py::new(
+                py,
+                PySsrCorrectionStore {
+                    inner: ingest.store,
+                },
+            )?,
+            diagnostics: ingest.diagnostics,
+            trailing_partial_frame_len: ingest.trailing_partial_frame_len,
+            ingest_refusals: ingest
+                .ingest_refusals
+                .into_iter()
+                .map(|refusal| PySsrIngestRefusal {
+                    message_number: refusal.message_number,
+                    error: refusal.error.to_string(),
+                })
+                .collect(),
+        });
+    }
+    let mut store = SsrCorrectionStore::new().with_reference_point(reference_point.into());
+    let mut assembler = SsrStreamAssembler::with_policy(RtcmPolicy::Lenient);
+    let mut decoded = assembler.push(bytes);
+    let trailing_partial_frame_len = assembler.retained_len();
+    decoded.extend(assembler.finish());
+    let mut ingest_refusals = Vec::new();
+    for message in decoded.into_iter().flatten() {
+        if let Err(error) = store.ingest(&message, epoch) {
+            ingest_refusals.push(PySsrIngestRefusal {
+                message_number: message.message_number(),
+                error: error.to_string(),
+            });
+        }
+    }
     Ok(PySsrRtcmIngest {
-        store: Py::new(
-            py,
-            PySsrCorrectionStore {
-                inner: ingest.store,
-            },
-        )?,
-        diagnostics: ingest.diagnostics,
-        trailing_partial_frame_len: ingest.trailing_partial_frame_len,
-        ingest_refusals: ingest
-            .ingest_refusals
-            .into_iter()
-            .map(|refusal| PySsrIngestRefusal {
-                message_number: refusal.message_number,
-                error: refusal.error.to_string(),
-            })
-            .collect(),
+        store: Py::new(py, PySsrCorrectionStore { inner: store })?,
+        diagnostics: assembler.diagnostics().clone(),
+        trailing_partial_frame_len,
+        ingest_refusals,
     })
 }
 
 #[pyfunction]
-#[pyo3(signature = (bytes, week, tow_s, time_scale=PyTimeScale::GPST))]
+#[pyo3(signature = (bytes, week, tow_s, time_scale=PyTimeScale::GPST, reference_point=PyOrbitReferencePoint::ANTENNA_PHASE_CENTER))]
 /// Build an SSR correction store from framed RTCM bytes, refusing with
 /// `RtcmParseError` anything it cannot read under `RtcmPolicy.STRICT` and
 /// apply in full: bytes outside a CRC-valid frame, a CRC-24Q failure, a
@@ -3280,11 +3339,34 @@ fn ssr_store_from_rtcm_strict(
     week: u32,
     tow_s: f64,
     time_scale: PyTimeScale,
+    reference_point: PyOrbitReferencePoint,
 ) -> PyResult<PySsrCorrectionStore> {
     let epoch = gnss_week_tow(time_scale, week, tow_s)?;
-    sidereon::ssr_store_from_rtcm_strict(bytes, epoch)
-        .map(|inner| PySsrCorrectionStore { inner })
-        .map_err(to_rtcm_err)
+    if reference_point == PyOrbitReferencePoint::ANTENNA_PHASE_CENTER {
+        return sidereon::ssr_store_from_rtcm_strict(bytes, epoch)
+            .map(|inner| PySsrCorrectionStore { inner })
+            .map_err(to_rtcm_err);
+    }
+    let mut store = SsrCorrectionStore::new().with_reference_point(reference_point.into());
+    let mut assembler = SsrStreamAssembler::new();
+    let mut decoded = assembler.push(bytes);
+    let trailing = assembler.retained_len();
+    decoded.extend(assembler.finish());
+    for message in decoded {
+        let message =
+            message.map_err(|error| to_rtcm_err(format!("SSR ingest failed: {error}")))?;
+        store
+            .ingest(&message, epoch)
+            .map_err(|error| to_rtcm_err(format!("SSR ingest failed: {error}")))?;
+    }
+    let diagnostics = assembler.diagnostics();
+    if diagnostics.resync_bytes > 0 {
+        return Err(to_rtcm_err(format!(
+            "SSR ingest failed: parse error: RTCM input has {} bytes outside CRC-valid frames ({} CRC-24Q failures, {trailing} bytes from an unfinished frame at the end)",
+            diagnostics.resync_bytes, diagnostics.crc_failures
+        )));
+    }
+    Ok(PySsrCorrectionStore { inner: store })
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -3325,6 +3407,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMissingCorrectionAction>()?;
     m.add_class::<PySsrFallbackPolicy>()?;
     m.add_class::<PySsrCorrectionSizePolicy>()?;
+    m.add_class::<PySsrSatelliteAttitude>()?;
     m.add_class::<PySsrCorrectionSize>()?;
     m.add_class::<PySsrOrbitCorrection>()?;
     m.add_class::<PySsrHighRateClock>()?;

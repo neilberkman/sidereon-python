@@ -19253,6 +19253,10 @@ class SsrFallbackPolicy:
     ) -> None: ...
     def __repr__(self) -> str: ...
 
+class SsrSatelliteAttitude(enum.Enum):
+    UNAVAILABLE: SsrSatelliteAttitude
+    NOMINAL_SUN_FIXED: SsrSatelliteAttitude
+
 class SsrCorrectionSizePolicy(enum.Enum):
     STRICT = ...
     LENIENT = ...
@@ -19402,6 +19406,8 @@ class SsrCorrectedEphemeris:
         max_staleness_s: float | None = ...,
         ut1_validity: ValidityMode = ...,
         correction_size_policy: SsrCorrectionSizePolicy = ...,
+        satellite_antennas: Antex | None = ...,
+        satellite_attitude: SsrSatelliteAttitude = ...,
     ) -> None: ...
     def position_clock_at_j2000_s(
         self, satellite_id: str, t_j2000_s: float
@@ -19476,12 +19482,14 @@ def ssr_store_from_rtcm(
     week: int,
     tow_s: float,
     time_scale: TimeScale = ...,
+    reference_point: OrbitReferencePoint = ...,
 ) -> SsrRtcmIngest: ...
 def ssr_store_from_rtcm_strict(
     bytes: bytes | bytearray,
     week: int,
     tow_s: float,
     time_scale: TimeScale = ...,
+    reference_point: OrbitReferencePoint = ...,
 ) -> SsrCorrectionStore: ...
 
 # Round-2 core surface additions.

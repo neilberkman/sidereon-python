@@ -915,7 +915,7 @@ impl PyAntexDateTime {
 #[pyclass(module = "sidereon._sidereon", name = "Antex")]
 #[derive(Clone)]
 pub struct PyAntex {
-    inner: Antex,
+    pub(crate) inner: Antex,
 }
 
 #[pymethods]
