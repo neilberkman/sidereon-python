@@ -10,6 +10,6 @@ description = "Writes tests/fixtures/core_goldens.json, the core results several
 [dependencies]
 flate2 = "1"
 sha2 = "0.10"
-sidereon = { version = "3.0.0", git = "https://github.com/neilberkman/sidereon", rev = "e2fb3dfdc392d23087ed8aa1ee028a0056b4021b" }
-sidereon-core = { version = "3.0.0", git = "https://github.com/neilberkman/sidereon", rev = "e2fb3dfdc392d23087ed8aa1ee028a0056b4021b" }
+sidereon = { version = "=3.0.0" }
+sidereon-core = { version = "=3.0.0" }
 serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
