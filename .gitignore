@@ -9,3 +9,4 @@ __pycache__/
 *.so
 *.dSYM/
 *.egg-info/
+/scripts/*/target

@@ -233,3 +233,82 @@ def test_sp3_prediction_summary_is_exposed():
     assert len(summary.epochs) == sp3.epoch_count
     assert all(epoch.observed for epoch in summary.epochs)
     assert summary.observed_through_j2000_seconds == sp3.epochs_j2000_seconds[-1]
+
+
+def test_merge_sp3_retains_a_clock_beside_a_missing_orbit():
+    a = _mini_sp3("IGS14", [("G01", [15000.0, -20000.0, 5000.0], 100.0)])
+    b = _mini_sp3(
+        "IGS14",
+        [
+            ("G01", [15000.0002, -20000.0, 5000.0], 100.0),
+            ("G02", [0.0, 0.0, 0.0], 250.0),
+        ],
+    )
+    assert b.clock_record("G02", 0).clock_us == 250.0
+
+    merged, report = sidereon.merge_sp3(
+        [a, b], sidereon.Sp3MergeOptions(clock_min_common=1)
+    )
+
+    assert merged.state("G01", 0).clock_s == pytest.approx(100.0e-6, abs=1.0e-12)
+    with pytest.raises(KeyError):
+        merged.state("G02", 0)
+    record = merged.clock_record("G02", 0)
+    assert record.clock_us == 250.0
+    assert record.clock_s == pytest.approx(250.0e-6, abs=1.0e-12)
+    assert record.velocity_m_s is None
+    assert record.clock_rate_s_s is None
+    assert merged.clock_records_at(0) == {"G02": record}
+
+    assert [
+        flag.sources for flag in report.single_source if flag.satellite == "G02"
+    ] == [[1]]
+    metric = next(m for m in report.agreement if m.satellite == "G02")
+    assert metric.position_members == 0
+    assert metric.position_rms_m is None
+    assert metric.position_max_m is None
+    assert metric.clock_members == 1
+    assert metric.clock_rms_s == 0.0
+    assert metric.clock_max_s == 0.0
+
+
+def test_merge_sp3_reports_no_position_spread_where_no_orbit_was_combined():
+    source = _mini_sp3(
+        "IGS14",
+        [
+            ("G01", [15000.0, -20000.0, 5000.0], 100.0),
+            ("G02", [0.0, 0.0, 0.0], 250.0),
+        ],
+    )
+
+    merged, report = sidereon.merge_sp3(
+        [source], sidereon.Sp3MergeOptions(clock_min_common=1)
+    )
+
+    orbit = next(m for m in report.agreement if m.satellite == "G01")
+    assert orbit.position_members == 1
+    assert orbit.position_rms_m == 0.0
+    assert orbit.position_max_m == 0.0
+    clock_only = next(m for m in report.agreement if m.satellite == "G02")
+    assert clock_only.position_rms_m is None
+    assert clock_only.position_max_m is None
+
+    # No multi-source orbit anywhere: no pooled spread, and the largest cell
+    # spread is the single-source orbit's zero.
+    assert report.position_agreement_rms_m is None
+    assert report.position_agreement_max_m == 0.0
+
+    (epoch,) = report.agreement_epochs
+    assert epoch.satellites == 0
+    assert epoch.position_rms_m is None
+    assert epoch.position_max_m is None
+    assert epoch.clock_rms_s is None
+    assert epoch.clock_max_s is None
+    assert report.per_epoch_agreement == [
+        (epoch.epoch_j2000_seconds, 0, None, None, None, None)
+    ]
+
+    again = sidereon.load_sp3(merged.to_sp3_string().encode("ascii"))
+    assert again.clock_record("G02", 0) == merged.clock_record("G02", 0)
+    with pytest.raises(KeyError):
+        again.state("G02", 0)

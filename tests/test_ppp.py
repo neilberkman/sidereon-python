@@ -2,16 +2,19 @@
 
 The fixture `ppp_esbc.json` is emitted by the crate's ESBC troposphere-corrected
 float-PPP integration test (`SIDEREON_DUMP_FIXTURES=1 cargo test --test
-ppp_real_arc ...`); it carries the built epoch arc, initial state, the
-troposphere-corrected config, and the engine's reference position. The binding
-loads the same committed SP3 product and must return the identical position.
+ppp_real_arc ...`); it carries the built epoch arc, initial state and the
+troposphere-corrected config. `scripts/ppp_esbc_expected` then solves the arc
+with the core entry points the binding calls, from inputs built as the Python
+constructors build them, and writes each solution into `expected`. The binding
+loads the same committed SP3 product and must return those solutions bit for
+bit.
 """
 
 import json
 import os
+import struct
 
 import numpy as np
-import pytest
 import sidereon
 from _helpers import CORE_FIXTURES, FIXTURES
 
@@ -132,6 +135,54 @@ def _fixed_config(fx):
     )
 
 
+def _bits(value):
+    return "0x" + struct.pack(">d", float(value)).hex()
+
+
+def _assert_position_bits(position, expected_bits):
+    assert [_bits(value) for value in position] == expected_bits
+
+
+def _assert_outcome(sol, expected):
+    """The solve outcome `scripts/ppp_esbc_expected` writes for a solution."""
+    _assert_position_bits(sol.position, expected["position_bits"])
+    assert sol.status.label == expected["status"]
+    assert sol.iterations == expected["iterations"]
+    assert sol.converged is expected["converged"]
+    assert [_bits(clock) for clock in sol.epoch_clocks_m] == expected[
+        "epoch_clocks_bits"
+    ]
+    assert sol.solved_epoch_indices == expected["solved_epoch_indices"]
+    assert [
+        {
+            "epoch_index": row.epoch_index,
+            "satellite_id": row.satellite_id,
+            "ambiguity_id": row.ambiguity_id,
+            "reason": row.reason,
+        }
+        for row in sol.unplaced_observations
+    ] == expected["unplaced_observations"]
+    assert len(sol.residuals_m) == expected["residuals"]["count"]
+    assert [
+        {
+            "epoch_index": row.epoch_index,
+            "satellite_id": row.satellite_id,
+            "ambiguity_id": row.ambiguity_id,
+            "code_m": _bits(row.code_m),
+            "phase_m": _bits(row.phase_m),
+            "code_weight": _bits(row.code_weight),
+            "phase_weight": _bits(row.phase_weight),
+        }
+        for row in sol.residuals_m[:5]
+    ] == expected["residuals"]["first"]
+    assert len(sol.ssr_bias_exclusions) == expected["ssr_bias_exclusion_count"]
+    if "residual_screen_removals" in expected:
+        assert [list(row) for row in sol.residual_screen_removals] == expected[
+            "residual_screen_removals"
+        ]
+        assert sol.residual_screen is expected["residual_screen"]
+
+
 def _integer_status(name):
     return {
         "Fixed": sidereon.IntegerStatus.FIXED,
@@ -142,24 +193,16 @@ def _integer_status(name):
 def _assert_matrix_close(actual, expected):
     assert isinstance(actual, np.ndarray)
     assert actual.dtype == np.float64
-    assert np.allclose(actual, np.array(expected), rtol=0.0, atol=1.0e-12)
+    assert np.array_equal(actual, np.array(expected))
 
 
 def _assert_temporal_correlation(actual, expected):
-    assert actual.lag1_autocorrelation == pytest.approx(
-        expected["lag1_autocorrelation"], abs=1.0e-15
-    )
-    assert actual.decorrelation_time_epochs == pytest.approx(
-        expected["decorrelation_time_epochs"], abs=1.0e-15
-    )
+    assert actual.lag1_autocorrelation == expected["lag1_autocorrelation"]
+    assert actual.decorrelation_time_epochs == expected["decorrelation_time_epochs"]
     assert actual.decorrelation_time_s == expected["decorrelation_time_s"]
     assert actual.nominal_sample_count == expected["nominal_sample_count"]
-    assert actual.effective_sample_count == pytest.approx(
-        expected["effective_sample_count"], abs=1.0e-15
-    )
-    assert actual.variance_inflation_factor == pytest.approx(
-        expected["variance_inflation_factor"], abs=1.0e-15
-    )
+    assert actual.effective_sample_count == expected["effective_sample_count"]
+    assert actual.variance_inflation_factor == expected["variance_inflation_factor"]
     assert actual.arcs_used == expected["arcs_used"]
 
 
@@ -188,14 +231,14 @@ def _assert_ppp_metadata(sol, expected):
         sol.temporal_position_covariance_enu_m2,
         expected["temporal_position_covariance_enu_m2"],
     )
-    assert sol.posterior_variance_factor == pytest.approx(
-        expected["posterior_variance_factor"], abs=1.0e-15
+    assert sol.posterior_variance_factor == expected["posterior_variance_factor"]
+    assert (
+        sol.position_covariance_scale_factor
+        == expected["position_covariance_scale_factor"]
     )
-    assert sol.position_covariance_scale_factor == pytest.approx(
-        expected["position_covariance_scale_factor"], abs=1.0e-15
-    )
-    assert sol.temporal_position_covariance_scale_factor == pytest.approx(
-        expected["temporal_position_covariance_scale_factor"], abs=1.0e-15
+    assert (
+        sol.temporal_position_covariance_scale_factor
+        == expected["temporal_position_covariance_scale_factor"]
     )
     _assert_temporal_correlation(
         sol.temporal_correlation,
@@ -230,17 +273,20 @@ def test_ppp_float_matches_reference():
         initial_state=_state(fx),
         config=_float_config(fx),
     )
-    expected = np.array(fx["expected"]["position_m"])
     assert isinstance(sol.position, np.ndarray)
     assert sol.position.dtype == np.float64
-    # Static PPP eliminates per-epoch clocks via Schur reduction (0.22), which is
-    # equivalent to the old dense solve to ~1e-9 m but not bit-identical. A
-    # micrometre tolerance is far below any requirement and above formulation noise.
-    assert np.allclose(sol.position, expected, rtol=0.0, atol=1.0e-6)
     assert sol.converged
     assert len(sol.used_sats) > 0
     assert "PppFloatSolution(" in repr(sol)
     _assert_ppp_metadata(sol, fx["expected"]["float_solution"])
+    _assert_outcome(sol, fx["expected"]["float_solution"])
+    options = sol.solve_options
+    opts = fx["config"]["opts"]
+    assert options.max_iterations == opts["max_iterations"]
+    assert options.position_tolerance_m == opts["position_tolerance_m"]
+    assert options.clock_tolerance_m == opts["clock_tolerance_m"]
+    assert options.ambiguity_tolerance_m == opts["ambiguity_tolerance_m"]
+    assert options.ztd_tolerance_m == opts["ztd_tolerance_m"]
 
 
 def test_ppp_fixed_matches_reference():
@@ -264,17 +310,10 @@ def test_ppp_fixed_matches_reference():
     exp = fx["expected"]
     assert isinstance(sol.position, np.ndarray)
     assert sol.position.dtype == np.float64
-    assert np.allclose(
-        sol.position, np.array(exp["fixed_position_m"]), rtol=0.0, atol=1.0e-6
-    )
-    assert np.allclose(
-        sol.float_solution.position,
-        np.array(exp["fixed_float_position_m"]),
-        rtol=0.0,
-        atol=1.0e-6,
-    )
+    _assert_outcome(sol, exp["fixed_solution"])
+    _assert_outcome(sol.float_solution, exp["fixed_float_solution"])
     assert sol.integer_status == _integer_status(exp["fixed_integer_status"])
-    assert sol.integer_ratio == pytest.approx(exp["fixed_integer_ratio"], rel=1.0e-6)
+    assert _bits(sol.integer_ratio) == exp["fixed_solution"]["integer_ratio_bits"]
     assert sol.integer_candidates == exp["fixed_integer_candidates"]
     assert sol.fixed_ambiguities_cycles == exp["fixed_ambiguities_cycles"]
     assert sol.fixed_ambiguities_m == exp["fixed_ambiguities_m"]
@@ -341,7 +380,7 @@ def test_ppp_elevation_cutoff_matches_reference():
     )
 
     expected = fx["expected"]["float_elevation_cutoff_10_deg"]
-    assert np.allclose(sol.position, np.array(expected["position_m"]), atol=1.0e-6)
+    _assert_position_bits(sol.position, expected["position_bits"])
     assert len(sol.used_sats) == expected["used_sat_count"]
 
 
@@ -370,16 +409,15 @@ def test_ppp_tropo_gradients_match_reference():
     )
 
     expected = fx["expected"]["float_tropo_gradients"]
-    assert np.allclose(sol.position, np.array(expected["position_m"]), atol=1.0e-6)
     _assert_ppp_metadata(sol, expected)
+    _assert_outcome(sol, expected)
 
 
 # --- SPP-seeded auto-initialization drivers --------------------------------
 #
 # `solve_ppp_auto_init_float` / `solve_ppp_auto_init_fixed` seed the float state
-# from a per-epoch SPP solve instead of taking an explicit `PppFloatState`. The
-# float solve converges to the same data-determined optimum, so the auto-init
-# result reproduces the explicitly-seeded reference position.
+# from a per-epoch SPP solve instead of taking an explicit `PppFloatState`.
+# `scripts/ppp_esbc_expected` runs the same auto-init solves through the core.
 
 
 def test_ppp_auto_init_float_recovers_reference():
@@ -390,10 +428,26 @@ def test_ppp_auto_init_float_recovers_reference():
         epochs=_epochs(fx),
         config=_float_config(fx),
     )
-    expected = np.array(fx["expected"]["position_m"])
     assert sol.converged
-    assert np.allclose(sol.position, expected, atol=1e-6)
+    _assert_outcome(sol, fx["expected"]["auto_init_float"])
     assert len(sol.used_sats) > 0
+
+
+def test_ppp_auto_init_empty_epochs_preserves_typed_error_detail():
+    fx = _load_fixture()
+    sp3 = _load_sp3(fx)
+
+    try:
+        sidereon.solve_ppp_auto_init_float(sp3, epochs=[], config=_float_config(fx))
+    except sidereon.SolveError as error:
+        assert str(error) == "PPP auto-init requires at least one epoch"
+        assert error.detail == {
+            "family": "PppAutoInitError",
+            "kind": "empty_epochs",
+            "message": "PPP auto-init requires at least one epoch",
+        }
+    else:
+        raise AssertionError("empty PPP arc unexpectedly solved")
 
 
 def test_ppp_auto_init_fixed_recovers_reference():
@@ -405,19 +459,17 @@ def test_ppp_auto_init_fixed_recovers_reference():
         float_config=_float_config(fx),
         fixed_config=_fixed_config(fx),
     )
-    exp = fx["expected"]
-    assert np.allclose(sol.position, np.array(exp["fixed_position_m"]), atol=1e-6)
-    assert np.allclose(
-        sol.float_solution.position, np.array(exp["position_m"]), atol=1e-6
-    )
-    assert sol.integer_status == _integer_status(exp["fixed_integer_status"])
+    exp = fx["expected"]["auto_init_fixed"]
+    _assert_outcome(sol, exp)
+    _assert_outcome(sol.float_solution, exp["float_solution"])
+    assert sol.integer_status == _integer_status(exp["integer_status"])
+    assert _bits(sol.integer_ratio) == exp["integer_ratio_bits"]
 
 
 def test_ppp_auto_init_explicit_guess_matches_spp_seed():
     fx = _load_fixture()
     sp3 = _load_sp3(fx)
-    # Seed the auto-init from the SPP-derived solution explicitly; with the same
-    # converged optimum, the position still recovers the reference.
+    # Seed the auto-init with the auto-init float position explicitly.
     spp_sol = sidereon.solve_ppp_auto_init_float(
         sp3, epochs=_epochs(fx), config=_float_config(fx)
     )
@@ -434,7 +486,7 @@ def test_ppp_auto_init_explicit_guess_matches_spp_seed():
         options=options,
     )
     assert sol.converged
-    assert np.allclose(sol.position, np.array(fx["expected"]["position_m"]), atol=1e-6)
+    _assert_outcome(sol, fx["expected"]["auto_init_explicit_guess"])
 
 
 def test_ppp_auto_init_options_defaults():
@@ -442,3 +494,62 @@ def test_ppp_auto_init_options_defaults():
     assert options.initial_guess_position_m is None
     assert options.spp_troposphere is False
     assert list(options.spp_initial_guess) == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_ppp_unplaced_codes_are_listed_and_their_epochs_left_unsolved():
+    fx = _load_fixture()
+    sp3 = _load_sp3(fx)
+    # As `scripts/ppp_esbc_expected` builds it: the first observation of epoch 3
+    # reads 0.0 and every observation of epoch 7 reads -1.0.
+    for index, obs in enumerate(fx["epochs"][3]["observations"]):
+        if index == 0:
+            obs["code_m"] = 0.0
+    for obs in fx["epochs"][7]["observations"]:
+        obs["code_m"] = -1.0
+    epochs = _epochs(fx)
+    raw = fx["config"]
+    config = sidereon.PppFloatConfig(
+        weights=_weights(raw["weights"]),
+        tropo=_tropo(raw["tropo"]),
+        options=_options(raw["opts"]),
+        residual_screen=True,
+    )
+
+    sol = sidereon.solve_ppp_float(
+        sp3, epochs=epochs, initial_state=_state(fx), config=config
+    )
+    expected = fx["expected"]["unplaced_code"]
+    _assert_outcome(sol, expected)
+
+    rows = sol.unplaced_observations
+    assert len(rows) == 1 + len(fx["epochs"][7]["observations"])
+    first = rows[0]
+    assert (first.epoch_index, first.satellite_id, first.ambiguity_id) == (
+        3,
+        fx["epochs"][3]["observations"][0]["satellite_id"],
+        fx["epochs"][3]["observations"][0]["ambiguity_id"],
+    )
+    assert first.reason == "code_not_positive"
+    assert "code is zero or negative" in first.message
+    assert "PppUnplacedObservation(" in repr(first)
+    assert {row.epoch_index for row in rows[1:]} == {7}
+    assert 7 not in sol.solved_epoch_indices
+    assert len(sol.epoch_clocks_m) == len(sol.solved_epoch_indices)
+
+    fixed = sidereon.solve_ppp_fixed(
+        sp3, epochs=epochs, float_solution=sol, config=_fixed_config(fx)
+    )
+    _assert_outcome(fixed, expected["fixed_solution"])
+
+
+def test_ppp_solution_record_classes():
+    assert sidereon.PppFloatStatus.STATE_TOLERANCE.label == "state_tolerance"
+    assert sidereon.PppFloatStatus.MAX_ITERATIONS.label == "max_iterations"
+    for name in (
+        "PppFloatResidual",
+        "PppSsrBiasExclusion",
+        "PppSsrTransmitTimeFailure",
+        "PppSsrObservationApplication",
+        "PppSsrSignalReport",
+    ):
+        assert hasattr(sidereon, name)

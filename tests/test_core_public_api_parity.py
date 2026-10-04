@@ -71,8 +71,10 @@ def test_signal_correlation_helpers_delegate_to_core():
 
 def test_quality_and_spp_scalar_helpers_delegate_to_core():
     assert sidereon.chi2_inv(0.999, 1) == pytest.approx(10.827566170662733)
-    with pytest.raises(ValueError):
+    with pytest.raises(sidereon.QualityError) as invalid_dof:
         sidereon.chi2_inv(0.95, 0)
+    assert isinstance(invalid_dof.value, ValueError)
+    assert invalid_dof.value.kind == "invalid_dof"
 
     assert sidereon.spp_residual_rms_m([]) == 0.0
     assert sidereon.spp_residual_rms_m([3.0, 4.0]) == pytest.approx(math.sqrt(12.5))

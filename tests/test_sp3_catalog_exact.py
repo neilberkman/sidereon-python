@@ -3,6 +3,7 @@
 import datetime as dt
 import gzip
 import hashlib
+import json
 import os
 
 import httpx
@@ -448,6 +449,36 @@ def test_historical_gfz_exact_request_and_acquisition_cross_gps_week(tmp_path):
     )
     assert acquired.provenance.requested_identity == identity
     assert acquired.provenance.resolved_identity.format_version == "SP3-d"
+
+
+def test_exact_start_mismatch_retains_ticks_when_j2000_seconds_collapse():
+    request = sidereon.ExactSp3Request(SP3_DATE, "01D", "05M")
+    lines = _base_sp3().decode("ascii").splitlines()
+    lines[0] = lines[0].replace("0.00000000", "0.00000001", 1)
+    content = ("\n".join(lines) + "\n").encode("ascii")
+
+    with pytest.raises(sidereon.ExactSp3ValidationError) as caught:
+        sidereon.parse_exact_sp3(content, request)
+
+    detail = caught.value.detail
+    assert caught.value.kind == "declared_start_mismatch"
+    assert detail["requested_tick"] != detail["declared_tick"]
+    assert detail["requested_j2000_s"] == detail["declared_j2000_s"]
+    json.dumps(detail, allow_nan=False)
+
+
+def test_exact_span_mismatch_retains_all_counts():
+    request = sidereon.ExactSp3Request(SP3_DATE, "01D", "05M")
+    with pytest.raises(sidereon.ExactSp3ValidationError) as caught:
+        sidereon.parse_exact_sp3(_with_epoch_count(_base_sp3(), 287), request)
+
+    assert caught.value.kind == "span_mismatch"
+    assert caught.value.detail == {
+        "kind": "span_mismatch",
+        "parsed": "287",
+        "half_open": "288",
+        "inclusive": "289",
+    }
 
 
 @pytest.mark.parametrize(

@@ -1,3 +1,4 @@
+import json
 import os
 
 import numpy as np
@@ -97,6 +98,13 @@ def test_check_continuity_interpolation_policy():
         sp3.check_continuity(
             orbit_class=None, residual_tolerance_m=1.0, gap_threshold_factor=1.0
         )
+
+    with pytest.raises(ValueError) as caught:
+        sidereon.Sp3ContinuityOptions(residual_tolerance_m=-1.0)
+    assert caught.value.kind == "continuity_options"
+    assert caught.value.field == "residual_tolerance_m"
+    assert caught.value.value == "-1.0"
+    json.dumps({"value": caught.value.value}, allow_nan=False)
 
 
 def test_continuity_verdict_interpolation_policy():

@@ -19,7 +19,8 @@ use crate::np_array;
 use crate::rinex::PyBroadcastEphemeris;
 
 fn duration_from_seconds(name: &str, seconds: f64) -> PyResult<Duration> {
-    Duration::from_seconds(seconds).map_err(|err| PyValueError::new_err(format!("{name}: {err}")))
+    Duration::from_seconds(seconds)
+        .map_err(|err| crate::time_model_error::py_error(err, format!("{name}: {err}")))
 }
 
 fn vec_from_array(name: &str, values: PyReadonlyArray1<'_, f64>) -> PyResult<Vec<f64>> {

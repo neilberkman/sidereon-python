@@ -17,8 +17,15 @@ use sidereon_core::GnssSystem;
 pub(crate) type ArrayPairF64<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>);
 
 /// GNSS constellation identifier shared across the RINEX and observable bindings.
-#[pyclass(module = "sidereon._sidereon", name = "GnssSystem", eq, eq_int)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "GnssSystem",
+    eq,
+    eq_int,
+    hash,
+    frozen
+)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum PyGnssSystem {
     /// GPS, RINEX letter `G`.
@@ -258,11 +265,102 @@ pub(crate) fn matrix3_from_array(
 /// Stable hash of a value's canonical `Debug` form, so a value object that
 /// defines structural `__eq__` can also define `__hash__` (equal values hash
 /// equal) and stay usable as a set member or dict key.
-pub(crate) fn hash_debug<T: std::fmt::Debug>(value: &T) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    format!("{value:?}").hash(&mut hasher);
-    hasher.finish()
+/// The variant name of a value's `Debug` form in snake case, such as
+/// `code_not_positive` for `CodeNotPositive` or `missing_record` for
+/// `MissingRecord("END OF HEADER")`. Labels for variants a newer core adds to a
+/// `#[non_exhaustive]` enum come from here, so a new variant keeps its name.
+pub(crate) fn debug_variant_snake<T: std::fmt::Debug>(value: &T) -> String {
+    let text = format!("{value:?}");
+    let name: String = text
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+        .collect();
+    let mut out = String::with_capacity(name.len() + 4);
+    let chars: Vec<char> = name.chars().collect();
+    for (index, ch) in chars.iter().enumerate() {
+        if ch.is_ascii_uppercase() {
+            let prev = index.checked_sub(1).map(|i| chars[i]);
+            let next = chars.get(index + 1);
+            let boundary = match prev {
+                Some(p) if p.is_ascii_lowercase() || p.is_ascii_digit() => true,
+                Some(p) if p.is_ascii_uppercase() => next.is_some_and(|n| n.is_ascii_lowercase()),
+                _ => false,
+            };
+            if boundary {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(*ch);
+        }
+    }
+    out
+}
+
+/// [`debug_variant_snake`] in upper case, for labels spelled `MISSING_RECORD`.
+pub(crate) fn debug_variant_upper<T: std::fmt::Debug>(value: &T) -> String {
+    debug_variant_snake(value).to_ascii_uppercase()
+}
+
+/// Hash value fields with an explicit type and field layout. Floating-point
+/// zero is canonicalized only in the hash input, matching `f64::PartialEq`;
+/// the value held by the caller is never modified.
+pub(crate) struct EqualityHasher(std::collections::hash_map::DefaultHasher);
+
+impl EqualityHasher {
+    pub(crate) fn new() -> Self {
+        Self(std::collections::hash_map::DefaultHasher::new())
+    }
+
+    pub(crate) fn begin(&mut self, type_name: &'static str) {
+        use std::hash::Hash;
+        "struct".hash(&mut self.0);
+        type_name.hash(&mut self.0);
+    }
+
+    pub(crate) fn field<T: std::hash::Hash + ?Sized>(&mut self, name: &'static str, value: &T) {
+        use std::hash::Hash;
+        "field".hash(&mut self.0);
+        name.hash(&mut self.0);
+        value.hash(&mut self.0);
+    }
+
+    fn normalized_float_bits(value: f64) -> u64 {
+        if value == 0.0 {
+            0.0f64.to_bits()
+        } else {
+            value.to_bits()
+        }
+    }
+
+    pub(crate) fn float_field(&mut self, name: &'static str, value: f64) {
+        self.field(name, &"f64");
+        self.field("f64 bits", &Self::normalized_float_bits(value));
+    }
+
+    pub(crate) fn float_array<const N: usize>(&mut self, name: &'static str, values: &[f64; N]) {
+        self.field(name, &"[f64]");
+        self.field("array length", &N);
+        for value in values {
+            self.field("f64 bits", &Self::normalized_float_bits(*value));
+        }
+    }
+
+    pub(crate) fn optional_float_field(&mut self, name: &'static str, value: Option<f64>) {
+        self.field(name, &"Option<f64>");
+        match value {
+            Some(value) => {
+                self.field("present", &true);
+                self.field("f64 bits", &Self::normalized_float_bits(value));
+            }
+            None => self.field("present", &false),
+        }
+    }
+
+    pub(crate) fn finish(self) -> u64 {
+        use std::hash::Hasher;
+        self.0.finish()
+    }
 }
 
 /// Read a `(6, 6)` numpy array into a row-major `6x6` matrix, the layout the
@@ -301,18 +399,20 @@ pub(crate) fn covariance6_from_array(
     name: &str,
 ) -> PyResult<Covariance6> {
     let matrix = matrix6_from_array(values, name, FinitePolicy::RequireFinite)?;
-    Covariance6::try_from_matrix(matrix).map_err(|err| {
-        let reason = match err {
-            Covariance6Error::NonFinite => "contains a non-finite entry",
-            Covariance6Error::Asymmetric => "is not symmetric",
-            Covariance6Error::NotPositiveSemidefinite => "is not positive semidefinite",
-            Covariance6Error::NotFactorizable => "is not factorable",
-            Covariance6Error::InvalidInterpolationParameter => {
-                "has an invalid interpolation parameter"
-            }
-        };
-        PyValueError::new_err(format!("{name} {reason}"))
-    })
+    Covariance6::try_from_matrix(matrix).map_err(|err| covariance6_error(name, err))
+}
+
+/// Map a [`Covariance6Error`] refusal of the covariance named `name` into a
+/// `ValueError` stating why.
+pub(crate) fn covariance6_error(name: &str, err: Covariance6Error) -> PyErr {
+    let reason = match err {
+        Covariance6Error::NonFinite => "contains a non-finite entry",
+        Covariance6Error::Asymmetric => "is not symmetric",
+        Covariance6Error::NotPositiveSemidefinite => "is not positive semidefinite",
+        Covariance6Error::NotFactorizable => "is not factorable",
+        Covariance6Error::InvalidInterpolationParameter => "has an invalid interpolation parameter",
+    };
+    PyValueError::new_err(format!("{name} {reason}"))
 }
 
 /// Pack a typed core [`Covariance6`] into a `(6, 6)` numpy `float64` array.

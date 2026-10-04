@@ -13,7 +13,7 @@
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2};
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyDict, PyModule};
 use pyo3::Bound;
 
 use sidereon::passes::UtcInstant;
@@ -94,6 +94,25 @@ impl PyCoverageGrid {
         })
     }
 
+    /// Complete typed error payload for a failed cell, or `None` for a
+    /// successful cell or out-of-range index. The existing NaN arrays remain
+    /// unchanged; this accessor retains the original core error variants.
+    fn cell_error<'py>(
+        &self,
+        py: Python<'py>,
+        satellite_index: usize,
+        station_index: usize,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(Err(error)) = self
+            .grid
+            .get(satellite_index)
+            .and_then(|row| row.get(station_index))
+        else {
+            return Ok(None);
+        };
+        look_angle_error_value(py, error).map(Some)
+    }
+
     /// Boolean `[satellite][station]` visibility at or above `min_elevation_deg`.
     /// Error cells are not visible.
     fn visible_mask(&self, min_elevation_deg: f64) -> Vec<Vec<bool>> {
@@ -116,6 +135,105 @@ impl PyCoverageGrid {
             "CoverageGrid(n_satellites={}, n_stations={})",
             self.n_satellites, self.n_stations
         )
+    }
+}
+
+fn error_node<'py>(
+    py: Python<'py>,
+    kind: &str,
+    fields: impl FnOnce(&Bound<'py, PyDict>) -> PyResult<()>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let node = PyDict::new(py);
+    node.set_item("kind", kind)?;
+    let payload = PyDict::new(py);
+    fields(&payload)?;
+    node.set_item("fields", payload)?;
+    Ok(node)
+}
+
+pub(crate) fn sgp4_error_value<'py>(
+    py: Python<'py>,
+    error: &sidereon::sgp4::Error,
+) -> PyResult<Bound<'py, PyDict>> {
+    use sidereon::sgp4::Error as E;
+    match error {
+        E::InvalidInput { field, kind } => error_node(py, "invalid_input", |fields| {
+            fields.set_item("field", field)?;
+            fields.set_item("kind", sgp4_input_kind(*kind))
+        }),
+        E::NonFiniteOutput { field } => error_node(py, "non_finite_output", |fields| {
+            fields.set_item("field", field)
+        }),
+        E::InvalidTle(message) => error_node(py, "invalid_tle", |fields| {
+            fields.set_item("message", message)
+        }),
+        E::Sgp4 { code } => error_node(py, "sgp4", |fields| fields.set_item("code", code)),
+        E::ResonanceStepBudget { budget } => error_node(py, "resonance_step_budget", |fields| {
+            fields.set_item("budget", budget)
+        }),
+    }
+}
+
+fn sgp4_input_kind(kind: sidereon::sgp4::Sgp4InputErrorKind) -> &'static str {
+    use sidereon::sgp4::Sgp4InputErrorKind as K;
+    match kind {
+        K::NonFinite => "non_finite",
+        K::NotPositive => "not_positive",
+        K::Negative => "negative",
+        K::OutOfRange => "out_of_range",
+        K::Missing => "missing",
+        K::FloatParse => "float_parse",
+        K::IntParse => "int_parse",
+        K::InvalidCivilDate => "invalid_civil_date",
+        K::InvalidCivilTime => "invalid_civil_time",
+    }
+}
+
+pub(crate) fn look_angle_error_value<'py>(
+    py: Python<'py>,
+    error: &sidereon_core::astro::passes::LookAngleError,
+) -> PyResult<Bound<'py, PyDict>> {
+    use sidereon_core::astro::passes::LookAngleError as E;
+    match error {
+        E::InvalidInput { field, reason } => error_node(py, "invalid_input", |fields| {
+            fields.set_item("field", field)?;
+            fields.set_item("reason", reason)
+        }),
+        E::Init(source) => error_node(py, "init", |fields| {
+            fields.set_item("cause", sgp4_error_value(py, source)?)
+        }),
+        E::Propagate(source) => error_node(py, "propagate", |fields| {
+            fields.set_item("cause", sgp4_error_value(py, source)?)
+        }),
+        E::FrameTransform(source) => {
+            use sidereon_core::astro::frames::transforms::FrameTransformError as F;
+            error_node(py, "frame_transform", |fields| {
+                let cause = match source {
+                    F::InvalidInput { field, reason } => {
+                        error_node(py, "invalid_input", |details| {
+                            details.set_item("field", field)?;
+                            details.set_item("reason", reason)
+                        })?
+                    }
+                    F::Ut1OutsideCoverage { reason } => {
+                        error_node(py, "ut1_outside_coverage", |details| {
+                            details.set_item(
+                                "reason",
+                                match reason {
+                                    sidereon_core::astro::time::DegradeReason::BeforeCoverage => {
+                                        "before_coverage"
+                                    }
+                                    sidereon_core::astro::time::DegradeReason::AfterCoverage => {
+                                        "after_coverage"
+                                    }
+                                },
+                            )
+                        })?
+                    }
+                };
+                fields.set_item("cause", cause)
+            })
+        }
     }
 }
 

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "sidereon"
-version = "2.1.1"
+version = "3.0.0"
 description = "Python (PyO3) bindings over the sidereon engine: SP3 loading and SPP/RTK/PPP positioning solves"
 readme = "README.md"
 license = { text = "MIT" }
@@ -71,6 +71,7 @@ warn_unused_configs = true
 no_implicit_optional = true
 
 [tool.maturin]
+locked = true
 # Mixed Rust/Python layout: the compiled extension is `sidereon._sidereon`, and
 # the hand-written ergonomic surface lives under python/sidereon/.
 python-source = "python"
@@ -81,7 +82,7 @@ include = [
   "third_party_licenses/ERFA-BSD-3-Clause.txt",
   "third_party_licenses/IERS-CONVENTIONS-SOFTWARE-LICENSE.txt",
   "third_party_licenses/SciPy-BSD-3-Clause.txt",
-  "third_party_source/sidereon-core-0.35.0/tides/mod.rs",
-  "third_party_source/sidereon-core-0.35.0/tides/ocean.rs",
-  "third_party_source/sidereon-core-0.35.0/tides/pole.rs",
+  "third_party_source/sidereon-core-3.0.0/tides/mod.rs",
+  "third_party_source/sidereon-core-3.0.0/tides/ocean.rs",
+  "third_party_source/sidereon-core-3.0.0/tides/pole.rs",
 ]

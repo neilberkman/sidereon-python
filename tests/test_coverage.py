@@ -82,3 +82,42 @@ def test_empty_inputs_give_empty_grid():
     assert grid.n_satellites == 0
     assert grid.azimuth_deg().shape == (0, 2)
     assert grid.access_counts(0.0) == []
+
+
+def test_indexed_cell_error_retains_invalid_station_detail():
+    grid = sidereon.coverage_look_angles(
+        _tles(),
+        [
+            sidereon.GroundStation(
+                latitude_deg=51.5, longitude_deg=-0.1, altitude_m=11.0
+            ),
+            sidereon.GroundStation(
+                latitude_deg=91.0, longitude_deg=0.0, altitude_m=0.0
+            ),
+        ],
+        EPOCH_US,
+    )
+
+    assert grid.cell_error(0, 0) is None
+    error = grid.cell_error(0, 1)
+    assert error == {
+        "kind": "invalid_input",
+        "fields": {"field": "ground_station.latitude_deg", "reason": "out of range"},
+    }
+    assert grid.cell_error(0, 99) is None
+
+
+def test_indexed_cell_error_retains_strict_ut1_refusal():
+    early_epoch = int(np.datetime64("1900-01-01T00:00:00", "us").astype("int64"))
+    grid = sidereon.coverage_look_angles(_tles(), _stations()[:1], early_epoch)
+
+    error = grid.cell_error(0, 0)
+    assert error == {
+        "kind": "frame_transform",
+        "fields": {
+            "cause": {
+                "kind": "ut1_outside_coverage",
+                "fields": {"reason": "before_coverage"},
+            }
+        },
+    }

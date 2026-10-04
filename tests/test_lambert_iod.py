@@ -153,3 +153,44 @@ def test_iod_rejects_wrong_shape():
     ok = np.array([0.0, 1.0, 2.0], dtype=np.float64)
     with pytest.raises(ValueError):
         sidereon.gibbs(bad, ok, ok)
+
+
+def test_iod_typed_errors_preserve_solve_error_and_message():
+    zero = np.zeros(3, dtype=np.float64)
+    position = np.array([0.0, 0.0, 6378.1363], dtype=np.float64)
+    middle = np.array([0.0, -4464.696, -5102.509], dtype=np.float64)
+    last = np.array([0.0, 5740.323, 3189.068], dtype=np.float64)
+
+    with pytest.raises(sidereon.SolveError) as gibbs_error:
+        sidereon.gibbs(zero, middle, last)
+    assert str(gibbs_error.value) == "position vector has near-zero magnitude"
+    assert gibbs_error.value.detail == {"family": "IodError", "kind": "zero_vector"}
+
+    with pytest.raises(sidereon.SolveError) as hgibbs_error:
+        sidereon.hgibbs(position, middle, last, 1.0, 1.0, 1.0)
+    assert str(hgibbs_error.value) == "observation times are equal or near-equal"
+    assert hgibbs_error.value.detail == {
+        "family": "IodError",
+        "kind": "invalid_time_geometry",
+    }
+
+    with pytest.raises(sidereon.SolveError) as gauss_error:
+        sidereon.gauss_angles(
+            np.zeros(3, dtype=np.float64),
+            np.zeros(3, dtype=np.float64),
+            np.array([2_456_159.5] * 3, dtype=np.float64),
+            np.array([0.1, 0.2, 0.3], dtype=np.float64),
+            np.array(
+                [
+                    [4054.881, 2748.195, 4074.237],
+                    [3956.224, 2888.232, 4074.364],
+                    [3905.073, 2956.935, 4074.430],
+                ],
+                dtype=np.float64,
+            ),
+        )
+    assert str(gauss_error.value) == "line-of-sight determinant too small"
+    assert gauss_error.value.detail == {
+        "family": "IodError",
+        "kind": "determinant_too_small",
+    }

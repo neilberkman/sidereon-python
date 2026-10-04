@@ -17,6 +17,10 @@ use sidereon_core::positioning::{
     DEFAULT_ROBUST_SCALE_FLOOR_M,
 };
 use sidereon_core::precise_positioning::defaults as ppp_defaults;
+use sidereon_core::quality::{
+    DEFAULT_FDE_MAX_EXCLUSION_RMS_M, DEFAULT_P_FA, FDE_MIN_CANDIDATE_SATELLITES,
+    FDE_MIN_OBSERVATIONS,
+};
 use sidereon_core::rtk_filter::defaults as rtk_defaults;
 use sidereon_core::rtk_filter::defaults::{CODE_SIGMA_M, MAX_ITERATIONS, PHASE_SIGMA_M};
 
@@ -41,6 +45,16 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     m.add("SPP_DEFAULT_ROBUST_MAX_OUTER", DEFAULT_ROBUST_MAX_OUTER)?;
     m.add("SPP_DEFAULT_ROBUST_OUTER_TOL_M", DEFAULT_ROBUST_OUTER_TOL_M)?;
+
+    // RAIM and FDE defaults (sidereon_core::quality): RTKLIB demo5's chisqr
+    // alpha, raim_fde's initial rms and its satellite-count floors.
+    m.add("RAIM_DEFAULT_P_FA", DEFAULT_P_FA)?;
+    m.add(
+        "FDE_DEFAULT_MAX_EXCLUSION_RMS_M",
+        DEFAULT_FDE_MAX_EXCLUSION_RMS_M,
+    )?;
+    m.add("FDE_MIN_OBSERVATIONS", FDE_MIN_OBSERVATIONS)?;
+    m.add("FDE_MIN_CANDIDATE_SATELLITES", FDE_MIN_CANDIDATE_SATELLITES)?;
 
     // PPP solve defaults (sidereon_core::precise_positioning::defaults).
     m.add("PPP_DEFAULT_MAX_ITERATIONS", ppp_defaults::MAX_ITERATIONS)?;
@@ -69,7 +83,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("HATCH_DEFAULT_WINDOW_CAP", DEFAULT_HATCH_WINDOW_CAP)?;
 
     // Standard-atmosphere surface meteorology defaults
-    // (sidereon_core::spp::SurfaceMet::default()). Shared by SPP troposphere
+    // (sidereon_core::positioning::SurfaceMet::default()). Shared by SPP troposphere
     // input, PPP troposphere options, and PPP SPP-seed auto-init.
     let surface_met = SurfaceMet::default();
     m.add("SURFACE_MET_DEFAULT_PRESSURE_HPA", surface_met.pressure_hpa)?;

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use numpy::{PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyDict, PyModule};
 
 use sidereon_core::carrier_phase::{
     self, ArcEpoch, CarrierPhaseError, CycleSlipOptions, IonoFreeSmoothResult, SlipReason,
@@ -32,25 +32,27 @@ use sidereon_core::positioning::{
     DopplerObservation as CoreDopplerObservation, ReceiverSolution,
 };
 use sidereon_core::quality::{
-    self, PseudorangeVarianceModel, PseudorangeVarianceOptions, QualityError, RaimWeights,
-    WeightEntry,
+    self, PseudorangeVarianceModel, PseudorangeVarianceOptions, RaimWeights, WeightEntry,
 };
 use sidereon_core::signal::{
     self, AcquisitionGrid, AcquisitionOptions, AcquisitionResult, CorrelateOptions,
     CorrelationResult, IqSample, ReplicaOptions, SignalError,
 };
 use sidereon_core::velocity::{
-    self, VelocityObservable, VelocityObservation, VelocitySolution, VelocitySolveOptions,
+    self, VelocityError, VelocityObservable, VelocityObservation, VelocitySolution,
+    VelocitySolveOptions,
 };
 use sidereon_core::GnssSatelliteId;
 
+use crate::core_error_detail::attach_observables_error_detail;
+use crate::exact_time::PyExactEpoch;
 use crate::marshal::{
     fixed_array, mat3_to_array, option_py_or_default, rows3_from_array, rows_to_array, EmptyPolicy,
     FinitePolicy, PyGnssSystem,
 };
 use crate::rinex::PyBroadcastEphemeris;
 use crate::spp::{PySppConfig, PySppSolution};
-use crate::{np_array, to_solve_err, PyPreciseEphemerisSamples, PySp3};
+use crate::{np_array, quality_err, to_solve_err, PyPreciseEphemerisSamples, PySp3};
 
 type PyPseudorangeObservation = (String, f64);
 type PyDroppedPseudorange = (String, PyPseudorangeDropReason);
@@ -477,13 +479,30 @@ pub struct PyRaimWeights {
     inner: RaimWeights,
 }
 
+impl PyRaimWeights {
+    pub(crate) fn inner(&self) -> &RaimWeights {
+        &self.inner
+    }
+}
+
 #[pymethods]
 impl PyRaimWeights {
-    /// Create unit RAIM weights.
+    /// Create the core default RAIM weighting, `RaimWeights.solution()`.
     #[new]
     fn new() -> Self {
         Self {
-            inner: RaimWeights::Unit,
+            inner: RaimWeights::default(),
+        }
+    }
+
+    /// The variances the estimator weighted each residual by: the statistic is
+    /// `sum (r / sigma)^2`, each residual over its own standard deviation, as
+    /// RTKLIB demo5 `valsol` forms it. Residuals without variances are
+    /// refused. The core default.
+    #[staticmethod]
+    fn solution() -> Self {
+        Self {
+            inner: RaimWeights::Solution,
         }
     }
 
@@ -513,8 +532,8 @@ impl PyRaimWeights {
         let mut map = BTreeMap::new();
         for (satellite_id, weight) in satellite_ids.into_iter().zip(weights.iter().copied()) {
             if !weight.is_finite() || weight <= 0.0 {
-                return Err(PyValueError::new_err(
-                    "RAIM weights must be positive finite values",
+                return Err(quality_err(
+                    sidereon_core::quality::QualityError::InvalidWeight,
                 ));
             }
             map.insert(satellite_id, weight);
@@ -525,26 +544,35 @@ impl PyRaimWeights {
         })
     }
 
+    /// True when the residuals are tested against the solution's own
+    /// variances.
+    #[getter]
+    fn is_solution(&self) -> bool {
+        matches!(self.inner, RaimWeights::Solution)
+    }
+
     /// True when all satellites use unit weight.
     #[getter]
     fn is_unit(&self) -> bool {
         matches!(self.inner, RaimWeights::Unit)
     }
 
-    /// Satellite tokens for per-satellite weights, sorted by token.
+    /// Satellite tokens for per-satellite weights, sorted by token; empty for
+    /// the solution and unit modes.
     #[getter]
     fn satellite_ids(&self) -> Vec<String> {
         match &self.inner {
-            RaimWeights::Unit => Vec::new(),
+            RaimWeights::Solution | RaimWeights::Unit => Vec::new(),
             RaimWeights::BySatellite(weights) => weights.keys().cloned().collect(),
         }
     }
 
-    /// Inverse-variance weights as numpy `(n,)`, sorted by satellite token.
+    /// Inverse-variance weights as numpy `(n,)`, sorted by satellite token;
+    /// empty for the solution and unit modes.
     #[getter]
     fn weights<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         match &self.inner {
-            RaimWeights::Unit => PyArray1::from_slice(py, &[]),
+            RaimWeights::Solution | RaimWeights::Unit => PyArray1::from_slice(py, &[]),
             RaimWeights::BySatellite(weights) => {
                 let values: Vec<_> = weights.values().copied().collect();
                 np_array(py, &values)
@@ -554,6 +582,7 @@ impl PyRaimWeights {
 
     fn __repr__(&self) -> String {
         match &self.inner {
+            RaimWeights::Solution => "RaimWeights.solution()".to_string(),
             RaimWeights::Unit => "RaimWeights.unit()".to_string(),
             RaimWeights::BySatellite(weights) => {
                 format!("RaimWeights.by_satellite(n={})", weights.len())
@@ -646,6 +675,7 @@ impl PyArcEpoch {
         f1_hz=None,
         f2_hz=None,
         gap_time_s=None,
+        gap_epoch=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -658,6 +688,7 @@ impl PyArcEpoch {
         f1_hz: Option<f64>,
         f2_hz: Option<f64>,
         gap_time_s: Option<f64>,
+        gap_epoch: Option<&PyExactEpoch>,
     ) -> Self {
         Self {
             inner: ArcEpoch {
@@ -670,6 +701,7 @@ impl PyArcEpoch {
                 f1_hz,
                 f2_hz,
                 gap_time_s,
+                gap_epoch: gap_epoch.map(|epoch| epoch.inner),
             },
         }
     }
@@ -728,9 +760,14 @@ impl PyArcEpoch {
         self.inner.gap_time_s
     }
 
+    #[getter]
+    fn gap_epoch(&self) -> Option<PyExactEpoch> {
+        self.inner.gap_epoch.map(|inner| PyExactEpoch { inner })
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "ArcEpoch(phi1_cycles={:?}, phi2_cycles={:?}, p1_m={:?}, p2_m={:?}, lli1={:?}, lli2={:?}, f1_hz={:?}, f2_hz={:?}, gap_time_s={:?})",
+            "ArcEpoch(phi1_cycles={:?}, phi2_cycles={:?}, p1_m={:?}, p2_m={:?}, lli1={:?}, lli2={:?}, f1_hz={:?}, f2_hz={:?}, gap_time_s={:?}, gap_epoch={:?})",
             self.inner.phi1_cycles,
             self.inner.phi2_cycles,
             self.inner.p1_m,
@@ -739,7 +776,8 @@ impl PyArcEpoch {
             self.inner.lli2,
             self.inner.f1_hz,
             self.inner.f2_hz,
-            self.inner.gap_time_s
+            self.inner.gap_time_s,
+            self.inner.gap_epoch
         )
     }
 }
@@ -1220,6 +1258,7 @@ pub struct PySppDopplerSolution {
     receiver: ReceiverSolution,
     velocity: Option<VelocitySolution>,
     velocity_error: Option<String>,
+    velocity_error_detail: Option<VelocityError>,
 }
 
 #[pymethods]
@@ -1242,6 +1281,14 @@ impl PySppDopplerSolution {
     #[getter]
     fn velocity_error(&self) -> Option<String> {
         self.velocity_error.clone()
+    }
+
+    /// Complete typed details for the retained velocity solve failure, when present.
+    #[getter]
+    fn velocity_error_detail(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
+        self.velocity_error_detail
+            .map(|error| velocity_error_detail(py, error).map(|detail| detail.unbind()))
+            .transpose()
     }
 
     fn __repr__(&self) -> String {
@@ -1769,7 +1816,7 @@ fn pseudorange_variance(
     options: Option<Py<PyPseudorangeVarianceOptions>>,
 ) -> PyResult<f64> {
     let options = pseudorange_variance_options(py, options.as_ref());
-    quality::pseudorange_variance(elevation_deg, options).map_err(quality_error)
+    quality::pseudorange_variance(elevation_deg, options).map_err(crate::quality_err)
 }
 
 /// Build satellite-keyed pseudorange sigmas in metres.
@@ -1916,14 +1963,80 @@ fn smooth_iono_free_code(
 
 /// Convert a Doppler shift in hertz to pseudorange rate in metres per second.
 #[pyfunction]
-fn doppler_to_range_rate(doppler_hz: f64, carrier_hz: f64) -> PyResult<f64> {
-    velocity::doppler_to_range_rate(doppler_hz, carrier_hz).map_err(to_solve_err)
+fn doppler_to_range_rate(py: Python<'_>, doppler_hz: f64, carrier_hz: f64) -> PyResult<f64> {
+    velocity::doppler_to_range_rate(doppler_hz, carrier_hz)
+        .map_err(|error| velocity_error(py, error))
 }
 
 /// Convert a pseudorange rate in metres per second to Doppler shift in hertz.
 #[pyfunction]
-fn range_rate_to_doppler(range_rate_m_s: f64, carrier_hz: f64) -> PyResult<f64> {
-    velocity::range_rate_to_doppler(range_rate_m_s, carrier_hz).map_err(to_solve_err)
+fn range_rate_to_doppler(py: Python<'_>, range_rate_m_s: f64, carrier_hz: f64) -> PyResult<f64> {
+    velocity::range_rate_to_doppler(range_rate_m_s, carrier_hz)
+        .map_err(|error| velocity_error(py, error))
+}
+
+fn velocity_error(py: Python<'_>, error: VelocityError) -> PyErr {
+    let result = crate::SolveError::new_err(error.to_string());
+    let payload = match velocity_error_detail(py, error) {
+        Ok(payload) => payload,
+        Err(error) => return error,
+    };
+    if let Err(error) = result.value(py).setattr("detail", payload) {
+        return error;
+    }
+    result
+}
+
+fn velocity_error_detail<'py>(
+    py: Python<'py>,
+    error: VelocityError,
+) -> PyResult<Bound<'py, PyDict>> {
+    let payload = PyDict::new(py);
+    payload.set_item("family", "VelocityError")?;
+    payload.set_item("message", error.to_string())?;
+    match error {
+        VelocityError::NoObservations => payload.set_item("kind", "no_observations")?,
+        VelocityError::TooFewSatellites { used, required } => {
+            payload.set_item("kind", "too_few_satellites")?;
+            payload.set_item("used", used)?;
+            payload.set_item("required", required)?;
+        }
+        VelocityError::SingularGeometry => payload.set_item("kind", "singular_geometry")?,
+        VelocityError::DuplicateObservation { satellite_id } => {
+            payload.set_item("kind", "duplicate_observation")?;
+            payload.set_item("satellite_id", satellite_id.to_string())?;
+        }
+        VelocityError::InvalidCarrier { satellite_id } => {
+            payload.set_item("kind", "invalid_carrier")?;
+            payload.set_item("satellite_id", satellite_id.to_string())?;
+        }
+        VelocityError::InvalidInput { field, reason } => {
+            payload.set_item("kind", "invalid_input")?;
+            payload.set_item("field", field)?;
+            payload.set_item("reason", reason)?;
+        }
+        VelocityError::InvalidObservation { satellite_id } => {
+            payload.set_item("kind", "invalid_observation")?;
+            payload.set_item("satellite_id", satellite_id.to_string())?;
+        }
+        VelocityError::InvalidReceiverState => {
+            payload.set_item("kind", "invalid_receiver_state")?
+        }
+    }
+    Ok(payload)
+}
+
+fn spp_solve_error(py: Python<'_>, error: sidereon_core::positioning::SppError) -> PyErr {
+    let message = error.to_string();
+    let detail = match crate::spp_error_detail::spp_detail(py, &error) {
+        Ok(detail) => detail,
+        Err(error) => return error,
+    };
+    let python_error = crate::SolveError::new_err(message);
+    if let Err(error) = python_error.value(py).setattr("detail", detail) {
+        return error;
+    }
+    python_error
 }
 
 /// Solve receiver ECEF velocity and clock drift from one epoch of observations.
@@ -1959,7 +2072,7 @@ fn solve_velocity(
         t_rx_j2000_s,
         options,
     )
-    .map_err(to_solve_err)?;
+    .map_err(|error| velocity_error(py, error))?;
     Ok(PyVelocitySolution { inner })
 }
 
@@ -1999,7 +2112,7 @@ fn solve_velocity_broadcast(
         t_rx_j2000_s,
         options,
     )
-    .map_err(to_solve_err)?;
+    .map_err(|error| velocity_error(py, error))?;
     Ok(PyVelocitySolution { inner })
 }
 
@@ -2022,11 +2135,12 @@ fn solve_spp_with_doppler_velocity(
         &observations,
         config.with_geodetic_flag(),
     )
-    .map_err(to_solve_err)?;
+    .map_err(|error| spp_solve_error(py, error))?;
     Ok(PySppDopplerSolution {
         receiver: result.receiver,
         velocity: result.velocity,
         velocity_error: result.velocity_error.map(|error| error.to_string()),
+        velocity_error_detail: result.velocity_error,
     })
 }
 
@@ -2133,12 +2247,13 @@ fn parse_satellite(token: &str) -> PyResult<GnssSatelliteId> {
 /// gap is folded to a `None` batch entry at the call site before this runs, so on
 /// the batch path it only ever classifies a genuine failure.
 fn observables_error(err: ObservablesError) -> PyErr {
-    match err {
+    let python_error = match &err {
         ObservablesError::InvalidInput { .. } | ObservablesError::Media(_) => {
             PyValueError::new_err(err.to_string())
         }
-        ObservablesError::NoEphemeris | ObservablesError::Ephemeris(_) => to_solve_err(err),
-    }
+        ObservablesError::NoEphemeris | ObservablesError::Ephemeris(_) => to_solve_err(err.clone()),
+    };
+    attach_observables_error_detail(python_error, &err)
 }
 
 /// Predict geometric observables for one satellite from an SP3 precise product.
@@ -2677,19 +2792,89 @@ fn band_variant_name(band: CarrierBand) -> &'static str {
 }
 
 fn ionosphere_free_error(err: IonosphereFreeError) -> PyErr {
-    PyValueError::new_err(err.to_string())
+    let message = err.to_string();
+    typed_value_error(message, |_py, payload| {
+        payload.set_item("family", "IonosphereFreeError")?;
+        payload.set_item("message", err.to_string())?;
+        match err {
+            IonosphereFreeError::UnknownSystem(system) => {
+                payload.set_item("kind", "unknown_system")?;
+                payload.set_item("system", system.to_string())?;
+            }
+            IonosphereFreeError::UnknownBand { system, band } => {
+                payload.set_item("kind", "unknown_band")?;
+                payload.set_item("system", system.to_string())?;
+                payload.set_item("band", band)?;
+            }
+            IonosphereFreeError::EqualFrequencies => {
+                payload.set_item("kind", "equal_frequencies")?
+            }
+            IonosphereFreeError::InvalidFrequency => {
+                payload.set_item("kind", "invalid_frequency")?
+            }
+            IonosphereFreeError::InvalidObservation => {
+                payload.set_item("kind", "invalid_observation")?
+            }
+        }
+        Ok(())
+    })
 }
 
 fn carrier_phase_error(err: CarrierPhaseError) -> PyErr {
-    PyValueError::new_err(err.to_string())
-}
-
-fn quality_error(err: QualityError) -> PyErr {
-    PyValueError::new_err(err.to_string())
+    let message = err.to_string();
+    typed_value_error(message, |_py, payload| {
+        payload.set_item("family", "CarrierPhaseError")?;
+        payload.set_item("message", err.to_string())?;
+        payload.set_item(
+            "kind",
+            match err {
+                CarrierPhaseError::EqualFrequencies => "equal_frequencies",
+                CarrierPhaseError::InvalidFrequency => "invalid_frequency",
+                CarrierPhaseError::InvalidObservation => "invalid_observation",
+                CarrierPhaseError::InvalidThreshold => "invalid_threshold",
+            },
+        )?;
+        Ok(())
+    })
 }
 
 fn signal_error(err: SignalError) -> PyErr {
-    PyValueError::new_err(err.to_string())
+    let message = err.to_string();
+    typed_value_error(message, |_py, payload| {
+        payload.set_item("family", "SignalError")?;
+        payload.set_item("message", err.to_string())?;
+        match err {
+            SignalError::UnsupportedPrn(prn) => {
+                payload.set_item("kind", "unsupported_prn")?;
+                payload.set_item("prn", prn)?;
+            }
+            SignalError::InvalidInput { field, reason } => {
+                payload.set_item("kind", "invalid_input")?;
+                payload.set_item("field", field)?;
+                payload.set_item("reason", reason)?;
+            }
+            SignalError::EmptySamples => payload.set_item("kind", "empty_samples")?,
+            SignalError::TooShort => payload.set_item("kind", "too_short")?,
+        }
+        Ok(())
+    })
+}
+
+fn typed_value_error(
+    message: String,
+    populate: impl for<'py> FnOnce(Python<'py>, &Bound<'py, PyDict>) -> PyResult<()>,
+) -> PyErr {
+    Python::with_gil(|py| {
+        let payload = PyDict::new(py);
+        if let Err(error) = populate(py, &payload) {
+            return error;
+        }
+        let error = PyValueError::new_err(message);
+        if let Err(error) = error.value(py).setattr("detail", payload) {
+            return error;
+        }
+        error
+    })
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

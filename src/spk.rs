@@ -11,20 +11,127 @@
 
 use std::path::PathBuf;
 
-use numpy::PyArray1;
+use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyByteArray, PyBytes, PyModule};
+use pyo3::types::{PyByteArray, PyBytes, PyDict, PyModule};
 
-use sidereon_core::astro::spk::{Spk, SpkError, SpkSegmentDescriptor, SpkState};
+use sidereon_core::astro::spk::{
+    inertial_frame_name as core_inertial_frame_name,
+    inertial_frame_rotation as core_inertial_frame_rotation, Spk, SpkError, SpkKernels,
+    SpkSegmentDescriptor, SpkState,
+};
 
 use crate::{np_array, to_solve_err};
 
+fn spk_detail<'py>(py: Python<'py>, err: &SpkError) -> PyResult<Bound<'py, PyDict>> {
+    let detail = PyDict::new(py);
+    detail.set_item("family", "spk")?;
+    let kind = match err {
+        SpkError::Io { path, message } => {
+            detail.set_item("path", path)?;
+            detail.set_item("message", message)?;
+            "Io"
+        }
+        SpkError::Truncated {
+            context,
+            needed,
+            actual,
+        } => {
+            detail.set_item("context", context)?;
+            detail.set_item("needed", *needed)?;
+            detail.set_item("actual", *actual)?;
+            "Truncated"
+        }
+        SpkError::UnsupportedDafId { id_word } => {
+            detail.set_item("id_word", id_word)?;
+            "UnsupportedDafId"
+        }
+        SpkError::UnsupportedBinaryFormat { binary_format } => {
+            detail.set_item("binary_format", binary_format)?;
+            "UnsupportedBinaryFormat"
+        }
+        SpkError::UnsupportedSummaryShape { nd, ni } => {
+            detail.set_item("nd", *nd)?;
+            detail.set_item("ni", *ni)?;
+            "UnsupportedSummaryShape"
+        }
+        SpkError::InvalidField { field, value } => {
+            detail.set_item("field", field)?;
+            detail.set_item("value", *value)?;
+            "InvalidField"
+        }
+        SpkError::InvalidDoubleField { field, value } => {
+            detail.set_item("field", field)?;
+            detail.set_item("value", *value)?;
+            detail.set_item("value_bits_hex", format!("{:016x}", value.to_bits()))?;
+            "InvalidDoubleField"
+        }
+        SpkError::OutOfCoverage {
+            et,
+            start_et,
+            stop_et,
+        } => {
+            for (name, value) in [("et", et), ("start_et", start_et), ("stop_et", stop_et)] {
+                detail.set_item(name, *value)?;
+                detail.set_item(
+                    format!("{name}_bits_hex"),
+                    format!("{:016x}", value.to_bits()),
+                )?;
+            }
+            "OutOfCoverage"
+        }
+        SpkError::UnsupportedSegmentType { expected, actual } => {
+            detail.set_item("expected", *expected)?;
+            detail.set_item("actual", *actual)?;
+            "UnsupportedSegmentType"
+        }
+        SpkError::InvalidSegmentLayout { context } => {
+            detail.set_item("context", context)?;
+            "InvalidSegmentLayout"
+        }
+        SpkError::UnknownBody { body } => {
+            detail.set_item("body", *body)?;
+            "UnknownBody"
+        }
+        SpkError::NoSegmentPath { target, center } => {
+            detail.set_item("target", *target)?;
+            detail.set_item("center", *center)?;
+            "NoSegmentPath"
+        }
+        SpkError::CoverageGap { target, center, et } => {
+            detail.set_item("target", *target)?;
+            detail.set_item("center", *center)?;
+            detail.set_item("et", *et)?;
+            detail.set_item("et_bits_hex", format!("{:016x}", et.to_bits()))?;
+            "CoverageGap"
+        }
+        SpkError::UnsupportedStateSegmentType { data_type } => {
+            detail.set_item("data_type", *data_type)?;
+            "UnsupportedStateSegmentType"
+        }
+        SpkError::NonInertialFrameRotation { from, to } => {
+            detail.set_item("from", *from)?;
+            detail.set_item("to", *to)?;
+            "NonInertialFrameRotation"
+        }
+    };
+    detail.set_item("kind", kind)?;
+    Ok(detail)
+}
+
+fn attach_spk_detail(py: Python<'_>, py_err: &PyErr, err: &SpkError) -> PyResult<()> {
+    py_err.value(py).setattr("detail", spk_detail(py, err)?)
+}
+
 /// Map an SPK/DAF parse failure into [`SpkParseError`](crate::SpkParseError),
-/// preserving the engine message. It derives from `ParseError`, so callers can
-/// catch the product-specific type or the shared base.
-fn to_spk_err<E: std::fmt::Display>(err: E) -> PyErr {
-    crate::SpkParseError::new_err(err.to_string())
+/// preserving the engine message and exact variant payload.
+fn to_spk_err(py: Python<'_>, err: SpkError) -> PyErr {
+    let py_err = crate::SpkParseError::new_err(err.to_string());
+    if let Err(error) = attach_spk_detail(py, &py_err, &err) {
+        return error;
+    }
+    py_err
 }
 
 /// Translate a state-query [`SpkError`] into the right Python exception.
@@ -35,8 +142,8 @@ fn to_spk_err<E: std::fmt::Display>(err: E) -> PyErr {
 /// malformed segment) is a query the loaded kernel cannot satisfy ->
 /// `SolveError`, mirroring how the SP3 binding splits `UnknownSatellite` from
 /// the rest.
-fn state_query_err(err: SpkError) -> PyErr {
-    match err {
+fn state_query_err(py: Python<'_>, err: SpkError) -> PyErr {
+    let py_err = match &err {
         SpkError::UnknownBody { body } => {
             PyValueError::new_err(format!("body {body} is not present in any kernel segment"))
         }
@@ -44,7 +151,11 @@ fn state_query_err(err: SpkError) -> PyErr {
             "no SPK segment path connects target {target} to center {center}"
         )),
         other => to_solve_err(other.to_string()),
+    };
+    if let Err(error) = attach_spk_detail(py, &py_err, &err) {
+        return error;
     }
+    py_err
 }
 
 /// One SPK segment descriptor: the body pair, frame, data type, and coverage
@@ -146,15 +257,17 @@ impl PySpkSegment {
 /// The state of one body relative to another, evaluated from an SPK kernel.
 ///
 /// `position_km` is the position of `target` relative to `center` (kilometres);
-/// `velocity_km_s` is the relative velocity (km/s), or `None` when the resolved
-/// segment path runs through a position-only Type 2 segment. `frame` is the NAIF
-/// reference-frame id shared by the path. Returned by [`Spk.state`].
+/// `velocity_km_s` is the relative velocity (km/s), which every supported
+/// segment type yields (for Type 2, the derivative of the position Chebyshev
+/// expansion, as CSPICE `SPKE02` forms it). `frame` is the NAIF frame of the
+/// state: the one requested with `state_in_frame`, or for `state` the frame of
+/// the first segment the query evaluated. Returned by [`Spk.state`].
 #[pyclass(module = "sidereon._sidereon", name = "SpkState")]
 pub struct PySpkState {
     target: i32,
     center: i32,
     position_km: [f64; 3],
-    velocity_km_s: Option<[f64; 3]>,
+    velocity_km_s: [f64; 3],
     frame: i32,
 }
 
@@ -192,14 +305,13 @@ impl PySpkState {
     }
 
     /// Velocity of `target` relative to `center` as a numpy `(3,)` array in
-    /// km/s, or `None` when the path runs through a position-only Type 2
-    /// segment.
+    /// km/s.
     #[getter]
-    fn velocity_km_s<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray1<f64>>> {
-        self.velocity_km_s.map(|v| np_array(py, &v))
+    fn velocity_km_s<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        np_array(py, &self.velocity_km_s)
     }
 
-    /// NAIF reference-frame identifier shared by the resolved segment path.
+    /// NAIF reference-frame identifier of the position and velocity.
     #[getter]
     fn frame(&self) -> i32 {
         self.frame
@@ -207,13 +319,15 @@ impl PySpkState {
 
     fn __repr__(&self) -> String {
         format!(
-            "SpkState(target={}, center={}, position_km=[{}, {}, {}], velocity_km_s={:?}, frame={})",
+            "SpkState(target={}, center={}, position_km=[{}, {}, {}], velocity_km_s=[{}, {}, {}], frame={})",
             self.target,
             self.center,
             self.position_km[0],
             self.position_km[1],
             self.position_km[2],
-            self.velocity_km_s,
+            self.velocity_km_s[0],
+            self.velocity_km_s[1],
+            self.velocity_km_s[2],
             self.frame
         )
     }
@@ -226,6 +340,7 @@ impl PySpkState {
 /// with [`Spk.state`]. Wraps [`sidereon_core::astro::spk::Spk`] unchanged; it
 /// reads SPK segment Types 2, 3, and 21.
 #[pyclass(module = "sidereon._sidereon", name = "Spk")]
+#[derive(Clone)]
 pub struct PySpk {
     pub(crate) inner: Spk,
 }
@@ -255,11 +370,30 @@ impl PySpk {
     /// from the kernel or no segment chain connects them, and `SolveError` if a
     /// chain exists but none covers `et`, the path needs an unsupported segment
     /// type, or a segment is malformed.
-    fn state(&self, target: i32, center: i32, et: f64) -> PyResult<PySpkState> {
+    fn state(&self, py: Python<'_>, target: i32, center: i32, et: f64) -> PyResult<PySpkState> {
         let state = self
             .inner
             .spk_state(target, center, et)
-            .map_err(state_query_err)?;
+            .map_err(|err| state_query_err(py, err))?;
+        Ok(PySpkState::from_state(state))
+    }
+
+    /// Query the state of `target` relative to `center` at `et` in the NAIF
+    /// frame `frame`, rotating legs in other NAIF inertial frames (1-21) with
+    /// the constant `IRFROT` rotations. A rotation that involves any other
+    /// frame raises `SolveError`.
+    fn state_in_frame(
+        &self,
+        py: Python<'_>,
+        target: i32,
+        center: i32,
+        et: f64,
+        frame: i32,
+    ) -> PyResult<PySpkState> {
+        let state = self
+            .inner
+            .spk_state_in_frame(target, center, et, frame)
+            .map_err(|err| state_query_err(py, err))?;
         Ok(PySpkState::from_state(state))
     }
 
@@ -270,6 +404,102 @@ impl PySpk {
             self.inner.segments().len()
         )
     }
+}
+
+/// SPK kernels in load order, queried with the NAIF segment-priority rules: a
+/// segment of a later-loaded kernel takes precedence over every segment of an
+/// earlier one, and within a kernel a later segment over an earlier one, as
+/// CSPICE applies them across the files loaded with `FURNSH`.
+#[pyclass(module = "sidereon._sidereon", name = "SpkKernels")]
+pub struct PySpkKernels {
+    inner: SpkKernels,
+}
+
+#[pymethods]
+impl PySpkKernels {
+    /// Build a kernel set from kernels in load order (lowest precedence
+    /// first).
+    #[new]
+    #[pyo3(signature = (kernels=Vec::new()))]
+    fn new(kernels: Vec<PySpk>) -> Self {
+        let mut inner = SpkKernels::new();
+        for kernel in kernels {
+            inner.push(kernel.inner);
+        }
+        Self { inner }
+    }
+
+    /// Add a kernel; it takes precedence over every kernel added before it.
+    fn push(&mut self, kernel: PySpk) {
+        self.inner.push(kernel.inner);
+    }
+
+    /// The kernels in load order (lowest precedence first).
+    #[getter]
+    fn kernels(&self) -> Vec<PySpk> {
+        self.inner
+            .kernels()
+            .iter()
+            .cloned()
+            .map(|inner| PySpk { inner })
+            .collect()
+    }
+
+    /// Query the state of `target` relative to `center` at `et` across every
+    /// kernel held, in the frame of the first segment evaluated.
+    fn state(&self, py: Python<'_>, target: i32, center: i32, et: f64) -> PyResult<PySpkState> {
+        let state = self
+            .inner
+            .spk_state(target, center, et)
+            .map_err(|err| state_query_err(py, err))?;
+        Ok(PySpkState::from_state(state))
+    }
+
+    /// Query the state of `target` relative to `center` at `et` across every
+    /// kernel held, in the NAIF frame `frame`.
+    fn state_in_frame(
+        &self,
+        py: Python<'_>,
+        target: i32,
+        center: i32,
+        et: f64,
+        frame: i32,
+    ) -> PyResult<PySpkState> {
+        let state = self
+            .inner
+            .spk_state_in_frame(target, center, et, frame)
+            .map_err(|err| state_query_err(py, err))?;
+        Ok(PySpkState::from_state(state))
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("SpkKernels(kernels={})", self.inner.len())
+    }
+}
+
+/// The name of a NAIF inertial frame (ids 1-21), or `None` for any other id.
+#[pyfunction]
+fn spk_inertial_frame_name(frame: i32) -> Option<&'static str> {
+    core_inertial_frame_name(frame)
+}
+
+/// The constant rotation from NAIF inertial frame `from_frame` to `to_frame`
+/// (ids 1-21), as SPICELIB `IRFROT` builds it, as a numpy `(3, 3)` array.
+/// Raises `ValueError` for a frame outside 1-21.
+#[pyfunction]
+fn spk_inertial_frame_rotation<'py>(
+    py: Python<'py>,
+    from_frame: i32,
+    to_frame: i32,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let rotation = core_inertial_frame_rotation(from_frame, to_frame)
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+    let rows: Vec<Vec<f64>> = rotation.iter().map(|row| row.to_vec()).collect();
+    PyArray2::from_vec2(py, &rows).map_err(|err| PyValueError::new_err(err.to_string()))
 }
 
 /// Parse a JPL/NAIF SPK (DAF `.bsp`) ephemeris kernel from in-memory bytes or a
@@ -283,16 +513,17 @@ impl PySpk {
 /// `OSError` if the path cannot be read, and `ValueError` if `source` is neither
 /// bytes nor a path.
 #[pyfunction]
-fn load_spk(source: &Bound<'_, PyAny>) -> PyResult<PySpk> {
+fn load_spk(py: Python<'_>, source: &Bound<'_, PyAny>) -> PyResult<PySpk> {
     // bytes-like first, so a `bytes` argument keeps the "content" meaning.
     if let Ok(bytes) = source.downcast::<PyBytes>() {
-        let inner = Spk::from_bytes(bytes.as_bytes()).map_err(to_spk_err)?;
+        let inner = Spk::from_bytes(bytes.as_bytes()).map_err(|err| to_spk_err(py, err))?;
         return Ok(PySpk { inner });
     }
     if let Ok(buf) = source.downcast::<PyByteArray>() {
         // SAFETY: the buffer is copied into the parser synchronously here; no
         // Python code runs in between to mutate or free it.
-        let inner = Spk::from_bytes(unsafe { buf.as_bytes() }).map_err(to_spk_err)?;
+        let inner =
+            Spk::from_bytes(unsafe { buf.as_bytes() }).map_err(|err| to_spk_err(py, err))?;
         return Ok(PySpk { inner });
     }
     // Otherwise treat it as a path (str / os.PathLike via PyO3's fspath support).
@@ -300,12 +531,17 @@ fn load_spk(source: &Bound<'_, PyAny>) -> PyResult<PySpk> {
         PyValueError::new_err("load_spk expects bytes, bytearray, or a path (str/os.PathLike)")
     })?;
     let data = std::fs::read(&path)?;
-    let inner = Spk::from_bytes(&data).map_err(to_spk_err)?;
+    let inner = Spk::from_bytes(&data).map_err(|err| to_spk_err(py, err))?;
     Ok(PySpk { inner })
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.getattr("SpkParseError")?
+        .setattr("detail", m.py().None())?;
     m.add_class::<PySpk>()?;
+    m.add_class::<PySpkKernels>()?;
+    m.add_function(wrap_pyfunction!(spk_inertial_frame_name, m)?)?;
+    m.add_function(wrap_pyfunction!(spk_inertial_frame_rotation, m)?)?;
     m.add_class::<PySpkState>()?;
     m.add_class::<PySpkSegment>()?;
     m.add_function(wrap_pyfunction!(load_spk, m)?)?;

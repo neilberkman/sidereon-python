@@ -189,6 +189,9 @@ from sidereon._sidereon import (
 from sidereon._sidereon import (
     sp3_merge_input_identity as _core_sp3_merge_input_identity,
 )
+from sidereon._sidereon import (
+    sp3_orbit_class_speed_bound_m_s as _core_sp3_orbit_class_speed_bound_m_s,
+)
 
 if TYPE_CHECKING:
     from sidereon.distribution import (
@@ -300,6 +303,7 @@ __all__ = [
     "RetiredEndpoint",
     "MalformedUrl",
     "TransportFailure",
+    "HttpStatusFailure",
     "InvalidContentType",
     "ErrorDocument",
     "ContentLengthMismatch",
@@ -324,6 +328,8 @@ _DISTRIBUTION_EXPORTS = frozenset(__all__[__all__.index("DistributionSource") :]
 
 class DataError(Exception):
     """Base class for every fetch/cache failure in :mod:`sidereon.data`."""
+
+    detail: Optional[dict[str, object]] = None
 
 
 class UnknownCenter(DataError):
@@ -490,29 +496,41 @@ def allowed_hosts() -> list[str]:
     return sorted(_ALLOWED_HOSTS)
 
 
-def _catalog_error(exc: ValueError) -> DataError:
+def _copy_catalog_detail(error: DataError, exc: Exception) -> DataError:
+    """Copy a native catalog payload without changing the public exception."""
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, Mapping):
+        error.detail = dict(detail)
+    return error
+
+
+def _catalog_error(exc: Exception) -> DataError:
     message = str(exc)
     if message.startswith("unknown analysis center"):
-        return UnknownCenter(message)
-    return UnsupportedProduct(message)
+        error: DataError = UnknownCenter(message)
+    else:
+        error = UnsupportedProduct(message)
+    return _copy_catalog_detail(error, exc)
 
 
 def _terrain_catalog_error(exc: ValueError) -> DataError:
     message = str(exc)
     if message.startswith("invalid terrain coordinate"):
-        return InvalidCoordinate(message)
-    if message.startswith("invalid terrain tile index"):
-        return InvalidTileIndex(message)
-    if message.startswith("invalid skadi tile id"):
-        return InvalidTileId(message)
-    return UnsupportedProduct(message)
+        error: DataError = InvalidCoordinate(message)
+    elif message.startswith("invalid terrain tile index"):
+        error = InvalidTileIndex(message)
+    elif message.startswith("invalid skadi tile id"):
+        error = InvalidTileId(message)
+    else:
+        error = UnsupportedProduct(message)
+    return _copy_catalog_detail(error, exc)
 
 
 def _hgt_conversion_error(exc: ValueError) -> DataError:
     message = str(exc)
     if message.startswith("invalid terrain tile index"):
-        return InvalidTileIndex(message)
-    return DecompressError(message)
+        return _copy_catalog_detail(InvalidTileIndex(message), exc)
+    return _copy_catalog_detail(DecompressError(message), exc)
 
 
 def _center_def(code: str) -> dict:
@@ -535,7 +553,7 @@ def gps_week(date: _dt.date) -> int:
     try:
         return int(_core_data_gps_week(date.year, date.month, date.day))
     except ValueError as exc:
-        raise UnsupportedProduct(str(exc)) from None
+        raise _copy_catalog_detail(UnsupportedProduct(str(exc)), exc) from None
 
 
 def day_of_year(date: _dt.date) -> int:
@@ -543,7 +561,7 @@ def day_of_year(date: _dt.date) -> int:
     try:
         return int(_core_data_day_of_year(date.year, date.month, date.day))
     except ValueError as exc:
-        raise UnsupportedProduct(str(exc)) from None
+        raise _copy_catalog_detail(UnsupportedProduct(str(exc)), exc) from None
 
 
 def skadi_source_entry() -> TerrainSourceEntry:
@@ -553,7 +571,7 @@ def skadi_source_entry() -> TerrainSourceEntry:
 
 
 def _space_weather_catalog_error(exc: ValueError) -> DataError:
-    return UnsupportedProduct(str(exc))
+    return _copy_catalog_detail(UnsupportedProduct(str(exc)), exc)
 
 
 def space_weather_source_entry() -> SpaceWeatherSourceEntry:
@@ -720,7 +738,7 @@ def default_sample_for_date(center: str, content: str, date: _dt.date) -> str:
             center, content, date.year, date.month, date.day
         )
     except (AttributeError, ValueError) as exc:
-        raise _catalog_error(ValueError(str(exc))) from None
+        raise _catalog_error(exc) from None
 
 
 def supported_samples(
@@ -743,7 +761,7 @@ def supported_samples(
             )
         )
     except (AttributeError, ValueError) as exc:
-        raise _catalog_error(ValueError(str(exc))) from None
+        raise _catalog_error(exc) from None
 
 
 def product_solution_class(center: str, content: str) -> str:
@@ -785,7 +803,7 @@ def sp3_content_start_convention(
             center, date.year, date.month, date.day, issue
         )
     except (AttributeError, ValueError) as exc:
-        raise _catalog_error(ValueError(str(exc))) from None
+        raise _catalog_error(exc) from None
 
     try:
         convention = Sp3ContentStartConvention(code)
@@ -1956,6 +1974,13 @@ def _fetch_dted_tile(
     path = _terrain_cache_path(root, relpath)
 
     state, detail = _classify(path, sha256)
+    if state == "hit" and sha256 is None and _zero_void_conversion(path):
+        if offline:
+            raise OfflineCacheMiss(
+                f"cached {tile_id} was converted with SRTM voids written as 0 m; "
+                "fetch it online to reconvert"
+            )
+        state = "reconvert"
     if state == "hit":
         return ("cached", path)
     if state == "absent":
@@ -2019,6 +2044,23 @@ def _fetch_dted_tile(
     return ("fetched", committed)
 
 
+# The converter label recorded in a converted tile's provenance.
+_DTED_CONVERTER = "sidereon-core hgt_to_dted v2"
+# Converters that wrote SRTM voids (-32768) as 0 m instead of the DTED null, so
+# a tile they wrote reads as sea level at its voids instead of as an unknown
+# elevation.
+_DTED_ZERO_VOID_CONVERTERS = frozenset({"sidereon-core hgt_to_dted v1"})
+
+
+def _zero_void_conversion(path: str) -> bool:
+    """Whether a cached tile's provenance names a converter that wrote voids
+    as 0 m. A tile with no converter record was not converted here."""
+    prov = _read_provenance(path)
+    if not prov:
+        return False
+    return prov.get("converter") in _DTED_ZERO_VOID_CONVERTERS
+
+
 def _terrain_provenance(
     *,
     url: str,
@@ -2049,7 +2091,7 @@ def _terrain_provenance(
         "sha256_hgt": hgt_digest,
         "sha256_dt2": dt2_digest,
         "size_dt2": len(dt2),
-        "converter": "sidereon-core hgt_to_dted v1",
+        "converter": _DTED_CONVERTER,
         "tile_id": tile_id,
         "lat_index": lat_index,
         "lon_index": lon_index,
@@ -2314,10 +2356,13 @@ class AbsentCenter:
     pattern: Optional[str] = None
     url: Optional[str] = None
     http_status: Optional[int] = None
+    #: The raw text of a candidate failure no canonical reason describes
+    #: (``reason == "unclassified"``); None otherwise.
+    detail: Optional[str] = None
 
     def to_dict(self) -> dict:
         """Return the secret-free public absence record."""
-        return {
+        out = {
             "center": self.center,
             "filename": self.filename,
             "reason": self.reason,
@@ -2325,6 +2370,9 @@ class AbsentCenter:
             "url": self.url,
             "http_status": self.http_status,
         }
+        if self.reason == "unclassified":
+            out["detail"] = self.detail
+        return out
 
 
 _PRODUCT_IDENTITY_FIELDS = {
@@ -2458,23 +2506,41 @@ def _exact_public_url(value: object, description: str) -> Optional[str]:
     return result
 
 
+def _exact_http_status(value: object, description: str) -> Optional[int]:
+    """None, or an HTTP status code: an integer in 100-599 (RFC 9110
+    section 15)."""
+    if value is None:
+        return None
+    status = _exact_int(value, description, minimum=100)
+    if status > 599:
+        raise ValueError(f"{description} is not an HTTP status")
+    return status
+
+
 def _exact_source_failure(value: object) -> "SourceFailure":
     from sidereon import distribution
 
-    fields = _exact_fields(value, _SOURCE_FAILURE_FIELDS, "source failure")
+    unclassified = (
+        isinstance(value, Mapping)
+        and value.get("error_type") == distribution.UNCLASSIFIED_FAILURE
+    )
+    fields = _exact_fields(
+        value,
+        _SOURCE_FAILURE_FIELDS | ({"detail"} if unclassified else set()),
+        "source failure",
+    )
     source = distribution.DistributionSource(
         _exact_str(fields["source"], "source failure source")
     )
     error_type = _exact_str(fields["error_type"], "source failure error_type")
     message = _exact_str(fields["message"], "source failure message")
     url = _exact_public_url(fields["url"], "source failure URL")
-    status_value = fields["status"]
-    status = (
-        None
-        if status_value is None
-        else _exact_int(status_value, "source failure status", minimum=0)
+    status = _exact_http_status(fields["status"], "source failure status")
+    # An unclassified failure keeps its raw type and text.
+    detail = (
+        _exact_str(fields["detail"], "source failure detail") if unclassified else None
     )
-    return distribution.SourceFailure(source, error_type, message, url, status)
+    return distribution.SourceFailure(source, error_type, message, url, status, detail)
 
 
 @dataclass(frozen=True)
@@ -2754,6 +2820,215 @@ def _agreement_epoch_to_dict(epoch: "sidereon.Sp3EpochAgreement") -> dict:
     }
 
 
+def _merge_epoch_to_dict(epoch: "sidereon.ClockInstant") -> dict:
+    """An exact merge epoch: its time scale with the split Julian date, or with
+    the integer nanoseconds from J2000 for an epoch held that way."""
+    if epoch.repr_kind == "Nanos":
+        return {"time_scale": epoch.scale.abbrev, "nanos_since_j2000": epoch.nanos}
+    return {
+        "time_scale": epoch.scale.abbrev,
+        "jd_whole": epoch.jd_whole,
+        "jd_fraction": epoch.fraction,
+    }
+
+
+def _optional_merge_epoch_to_dict(
+    epoch: Optional["sidereon.ClockInstant"],
+) -> Optional[dict]:
+    return None if epoch is None else _merge_epoch_to_dict(epoch)
+
+
+def _cell_selection_to_dict(
+    selection: Optional["sidereon.Sp3CellSelection"],
+) -> Optional[dict]:
+    """How the merge arrived at a written value: the one source it came from,
+    or the members a rule combined."""
+    if selection is None:
+        return None
+    if selection.kind == "single_source":
+        return {"kind": "single_source", "source": selection.selected_source}
+    if selection.kind == "precedence":
+        return {
+            "kind": "precedence",
+            "source": selection.selected_source,
+            "members": list(selection.members),
+        }
+    return {
+        "kind": "combined",
+        "rule": selection.rule.label,
+        "members": list(selection.members),
+    }
+
+
+def _continuity_defect_to_dict(defect: "sidereon.Sp3ContinuityDefect") -> dict:
+    """A continuity defect with the summary `Sp3.check_continuity` reports
+    (`from_j2000_s`, `to_j2000_s`, `magnitude`, `bound`) and every field of its
+    kind."""
+    kind = defect.kind
+    out = {"kind": kind, "satellite": defect.satellite}
+    if kind == "duplicate_epoch":
+        out.update(
+            from_j2000_s=defect.epoch_j2000_s,
+            to_j2000_s=defect.epoch_j2000_s,
+            magnitude=float(defect.occurrences),
+            bound=None,
+            epoch_j2000_s=defect.epoch_j2000_s,
+            occurrences=defect.occurrences,
+        )
+    elif kind == "single_sample_series":
+        out.update(from_j2000_s=None, to_j2000_s=None, magnitude=None, bound=None)
+    elif kind == "unusable_sample":
+        out.update(
+            from_j2000_s=defect.epoch_j2000_s,
+            to_j2000_s=defect.epoch_j2000_s,
+            magnitude=None,
+            bound=None,
+            epoch_j2000_s=defect.epoch_j2000_s,
+            sample_index=defect.sample_index,
+            reason=defect.reason,
+        )
+    elif kind == "speed_bound":
+        out.update(
+            from_j2000_s=defect.from_j2000_s,
+            to_j2000_s=defect.to_j2000_s,
+            magnitude=defect.implied_speed_m_s,
+            bound=defect.bound_m_s,
+            interval_s=defect.interval_s,
+            displacement_m=defect.displacement_m,
+            implied_speed_m_s=defect.implied_speed_m_s,
+            bound_m_s=defect.bound_m_s,
+        )
+    elif kind == "hold_out_residual":
+        out.update(
+            from_j2000_s=defect.preceding_j2000_s,
+            to_j2000_s=defect.epoch_j2000_s,
+            magnitude=defect.residual_m,
+            bound=defect.tolerance_m,
+            epoch_j2000_s=defect.epoch_j2000_s,
+            preceding_j2000_s=defect.preceding_j2000_s,
+            residual_m=defect.residual_m,
+            tolerance_m=defect.tolerance_m,
+            node_epochs_j2000_s=list(defect.node_epochs_j2000_s),
+        )
+    else:  # pragma: no cover - a defect kind this binding does not name
+        raise ValueError(f"unknown SP3 continuity defect kind {kind!r}")
+    return out
+
+
+def _merge_continuity_to_dict(
+    continuity: Optional["sidereon.Sp3MergeContinuityReport"],
+) -> Optional[dict]:
+    if continuity is None:
+        return None
+    violations = [
+        {
+            "defect": _continuity_defect_to_dict(violation.defect),
+            "from_sources": list(violation.from_sources),
+            "to_sources": list(violation.to_sources),
+            "cells": [
+                {
+                    "epoch_j2000_s": cell.epoch_j2000_s,
+                    "role": cell.role,
+                    "selection": _cell_selection_to_dict(cell.selection),
+                }
+                for cell in violation.cells
+            ],
+            "sources": list(violation.sources),
+            "crosses_contributors": violation.crosses_contributors,
+        }
+        for violation in continuity.violations
+    ]
+    return {
+        "defects": [_continuity_defect_to_dict(item) for item in continuity.defects],
+        "attested": continuity.attested,
+        "pairs_checked": continuity.pairs_checked,
+        "residuals_checked": continuity.residuals_checked,
+        "residuals_skipped": continuity.residuals_skipped,
+        "violations": violations,
+        "splices": [item for item in violations if item["crosses_contributors"]],
+    }
+
+
+def _merge_provenance_to_dict(
+    provenance: Optional["sidereon.Sp3MergeProvenance"],
+) -> Optional[dict]:
+    if provenance is None:
+        return None
+    return {
+        "mode": provenance.mode.label,
+        "cells": [
+            {
+                "epoch": _merge_epoch_to_dict(cell.epoch),
+                "satellite": cell.satellite,
+                "position": _cell_selection_to_dict(cell.position),
+                "clock": _cell_selection_to_dict(cell.clock),
+            }
+            for cell in provenance.cells
+        ],
+        "transitions": [
+            {
+                "satellite": transition.satellite,
+                "epoch": _merge_epoch_to_dict(transition.epoch),
+                "from_source": transition.from_source,
+                "to_source": transition.to_source,
+                "reason": transition.reason,
+            }
+            for transition in provenance.transitions
+        ],
+        "coverage": [
+            {
+                "source": coverage.source,
+                "cells_contributed": coverage.cells_contributed,
+                "cells_selected": coverage.cells_selected,
+                "first_epoch": _optional_merge_epoch_to_dict(coverage.first_epoch),
+                "last_epoch": _optional_merge_epoch_to_dict(coverage.last_epoch),
+                "cells_absent": coverage.cells_absent,
+            }
+            for coverage in provenance.coverage
+        ],
+    }
+
+
+def _merge_audit_to_dict(report: "sidereon.Sp3MergeReport") -> dict:
+    """What a merge did not write, and the continuity and provenance it was
+    asked for: the report schema 3 fields."""
+    return {
+        "dropped_input_epochs": [
+            {
+                "source": dropped.source,
+                "epoch_index": dropped.epoch_index,
+                "epoch": _merge_epoch_to_dict(dropped.epoch),
+                "reason": dropped.reason,
+            }
+            for dropped in report.dropped_input_epochs
+        ],
+        "omitted_epochs": [
+            _merge_epoch_to_dict(epoch) for epoch in report.omitted_epochs
+        ],
+        "arc_withheld": [
+            {
+                "satellite": flag.satellite,
+                "epoch": _merge_epoch_to_dict(flag.epoch),
+                "sources": list(flag.sources),
+            }
+            for flag in report.arc_withheld
+        ],
+        "clock_omissions": [
+            {
+                "epoch": _merge_epoch_to_dict(omission.epoch),
+                "satellite": omission.satellite,
+                "source": omission.source,
+                "reason": omission.reason,
+                "preferred": omission.preferred_source,
+                "cell_has_clock": omission.cell_has_clock,
+            }
+            for omission in report.clock_omissions
+        ],
+        "continuity": _merge_continuity_to_dict(report.continuity),
+        "provenance": _merge_provenance_to_dict(report.provenance),
+    }
+
+
 def _merge_result_to_dict(report: "sidereon.Sp3MergeReport") -> dict:
     return {
         "frame_reconciliations": [
@@ -2775,6 +3050,7 @@ def _merge_result_to_dict(report: "sidereon.Sp3MergeReport") -> dict:
                 _agreement_epoch_to_dict(item) for item in report.agreement_epochs
             ],
         },
+        **_merge_audit_to_dict(report),
     }
 
 
@@ -2785,6 +3061,14 @@ class MergeReport:
     Carries the per-center contribution audit plus the binding's own SP3 merge
     report (``merge_report``). Single contributors deliberately follow the same
     merge path so every supplied merge option is applied consistently.
+    :meth:`to_dict` writes merged-SP3 report schema 3. As in schema 2, an
+    agreement cell for a clock-only record has no position metrics and an epoch
+    with no multi-source position consensus has no position spread (both
+    ``None``). Schema 3 adds what the merge did not write
+    (``dropped_input_epochs``, ``omitted_epochs``, ``arc_withheld``,
+    ``clock_omissions``) and the ``continuity`` and ``provenance`` records
+    (each ``None`` when the merge was not asked for it), and the merge policy
+    records the ``verify_continuity`` and ``provenance`` options that asked.
     """
 
     contributors: list[Contributor]
@@ -2809,7 +3093,7 @@ class MergeReport:
         if self.merge_report is None:
             raise ValueError("merged-SP3 result audit is incomplete")
         return {
-            "schema_version": 1,
+            "schema_version": _MERGE_REPORT_SCHEMA_VERSION,
             "contributors": [
                 contributor.to_dict() for contributor in self.contributors
             ],
@@ -2918,12 +3202,8 @@ def _fetch_center_sp3(
             # being silently recorded as an absent center.
             last = (prod, filename, exc)
             candidate_attempts.append(
-                distribution.SourceFailure(
-                    source=distribution.DistributionSource.DIRECT,
-                    error_type=getattr(exc, "code", type(exc).__name__),
-                    message=str(exc),
-                    url=getattr(exc, "url", None),
-                    status=getattr(exc, "status", None),
+                distribution._source_failure(
+                    distribution.DistributionSource.DIRECT, exc
                 )
             )
             continue
@@ -2948,32 +3228,45 @@ def _fetch_center_sp3(
             sp3,
         )
     if last is not None:
+        from sidereon import distribution
+
+        reason, detail = _absence_reason(last[2])
         return (
             "absent",
             AbsentCenter(
                 center,
                 last[1],
-                _reason_str(last[2]),
+                reason,
                 last[0].pattern,
                 last[0].archive_url(),
-                getattr(last[2], "status", None),
+                distribution._http_status(getattr(last[2], "status", None)),
+                detail,
             ),
         )
     return ("absent", AbsentCenter(center, None, "no_candidate"))
 
 
-def _reason_str(exc: DataError) -> str:
+def _absence_reason(exc: DataError) -> tuple[str, Optional[str]]:
+    """The canonical spelling of why a center is absent (``_ABSENCE_REASONS``),
+    and the raw text of a failure no canonical reason describes."""
     if isinstance(exc, OfflineCacheMiss):
-        return "offline_miss"
+        return "offline_cache_miss", None
     if isinstance(exc, FileNotFoundOnArchive) or getattr(exc, "code", None) == (
         "product_not_published"
     ):
-        return "candidate_not_found"
+        return "product_not_published", None
     if isinstance(exc, ChecksumMismatch):
-        return "checksum"
-    if isinstance(exc, HttpStatusError):
-        return f"http_status:{exc.status}"
-    return type(exc).__name__
+        return "checksum_mismatch", None
+    status = getattr(exc, "status", None)
+    if (
+        isinstance(exc, HttpStatusError)
+        and type(status) is int
+        and 100 <= status <= 599
+    ):
+        return "http_status", None
+    raw = getattr(exc, "code", None) or type(exc).__name__
+    text = str(exc)
+    return "unclassified", f"{raw}: {text}" if text else raw
 
 
 def sp3_merge_input_identity(
@@ -3029,8 +3322,14 @@ def _merge_options_from_policy(value: Mapping[str, object]):
         "helmert",
         "precedence_artifact_sha256",
     }
+    if not isinstance(value, Mapping):
+        raise ValueError("merged-SP3 policy must be a mapping")
+    policy_schema = value.get("schema_version")
+    if type(policy_schema) is not int or policy_schema not in (1, 2):
+        raise ValueError("unsupported merged-SP3 policy schema version")
+    if policy_schema == 2:
+        expected_fields = expected_fields | {"verify_continuity", "provenance"}
     fields = _exact_fields(value, expected_fields, "merged-SP3 policy")
-    _exact_schema_version(fields["schema_version"], "merged-SP3 policy")
     position_tolerance_m = _exact_float(
         fields["position_tolerance_m"],
         "merged-SP3 position tolerance",
@@ -3080,9 +3379,11 @@ def _merge_options_from_policy(value: Mapping[str, object]):
         target_interval = _exact_float(
             target_interval, "merged-SP3 target epoch interval"
         )
+        tick_count = target_interval * 100_000_000.0
         if (
-            target_interval < 1.0
-            or abs(target_interval - round(target_interval)) > 1e-6
+            target_interval <= 0.0
+            or target_interval >= 100_000.0
+            or tick_count != round(tick_count)
         ):
             raise ValueError("invalid merged-SP3 target epoch interval")
     systems = fields["systems"]
@@ -3122,6 +3423,13 @@ def _merge_options_from_policy(value: Mapping[str, object]):
         type(digest) is not str for digest in precedence
     ):
         raise ValueError("invalid merged-SP3 precedence contributor policy")
+    verify_continuity = None
+    provenance = None
+    if policy_schema == 2:
+        verify_continuity = _continuity_options_from_policy(fields["verify_continuity"])
+        provenance = fields["provenance"]
+        if provenance is not None and provenance not in {"summary", "full"}:
+            raise ValueError("invalid merged-SP3 provenance policy")
     return sidereon.Sp3MergeOptions(
         position_tolerance_m=position_tolerance_m,
         clock_tolerance_s=clock_tolerance_s,
@@ -3134,8 +3442,64 @@ def _merge_options_from_policy(value: Mapping[str, object]):
         systems=systems,
         asserted_frame_label_sets=frame_sets,
         helmert=helmert,
+        provenance=provenance,
+        verify_continuity=verify_continuity,
     )
 
+
+def _continuity_options_from_policy(
+    value: object,
+) -> Optional["sidereon.Sp3ContinuityOptions"]:
+    """The continuity post-condition a persisted policy asked for, validated by
+    the core as the merge would take it."""
+    if value is None:
+        return None
+    fields = _exact_fields(
+        value,
+        {"orbit_class", "residual_tolerance_m", "gap_threshold_factor"},
+        "merged-SP3 continuity policy",
+    )
+    orbit_class = fields["orbit_class"]
+    if orbit_class is not None and orbit_class not in {
+        "meo_gnss",
+        "geosynchronous",
+        "leo",
+    }:
+        raise ValueError("invalid merged-SP3 continuity orbit class")
+    tolerance = fields["residual_tolerance_m"]
+    if tolerance is not None:
+        _exact_float(tolerance, "merged-SP3 continuity tolerance", nonnegative=True)
+    factor = fields["gap_threshold_factor"]
+    # The core's interpolation options take a finite factor greater than 1.
+    if factor is not None and not (
+        _exact_float(factor, "merged-SP3 continuity gap threshold factor") > 1.0
+    ):
+        raise ValueError("invalid merged-SP3 continuity gap threshold factor")
+    return sidereon.Sp3ContinuityOptions(
+        orbit_class=orbit_class,
+        residual_tolerance_m=tolerance,
+        gap_threshold_factor=factor,
+    )
+
+
+# Merged-SP3 report schemas `verify_merge_report` reads. Schema 1 was written
+# while every accepted merge cell carried an orbit: its agreement cells always
+# hold position metrics, and an epoch with no multi-source position consensus
+# holds a 0.0 position spread, with the maximum taken over every cell of the
+# epoch. Schema 2 is written since the merge retains clock-only records: such a
+# cell has no position metrics, and an epoch spread covers only its
+# multi-source position cells and is None where it has none. Schema 3 keeps
+# the schema 2 agreement and adds what the merge did not write (dropped input
+# epochs, omitted epochs, withheld arc cells, clock omissions) and its
+# continuity and provenance records, with the two options that ask for them in
+# merge policy schema 2. Each schema is verified by the rules its writer
+# followed.
+_MERGE_REPORT_SCHEMA_VERSION = 3
+_MERGE_REPORT_SCHEMA_VERSIONS = (1, 2, 3)
+# The merge policy schema each report schema carries: policy schema 2 adds
+# `verify_continuity` and `provenance`, which change neither the merged product
+# nor the stable input identity.
+_MERGE_POLICY_SCHEMA_FOR_REPORT = {1: 1, 2: 1, 3: 2}
 
 _MERGE_REPORT_FIELDS = {
     "schema_version",
@@ -3159,6 +3523,75 @@ _CONTRIBUTOR_FIELDS = {
     "artifact_identity",
     "acquisition_facts",
 }
+# One spelling per acquisition-failure case, shared with the Elixir interface
+# and written by report schema 3 as a source failure's `error_type`.
+_ACQUISITION_FAILURE_TYPES = frozenset(
+    {
+        "authentication_required",
+        "authentication_failed",
+        "authorization_denied",
+        "product_not_published",
+        "retired_endpoint",
+        "redirect_policy_failure",
+        "malformed_url",
+        "transport_failure",
+        "http_client_failure",
+        "http_status",
+        "invalid_content_type",
+        "error_document",
+        "content_length_mismatch",
+        "download_size_exceeded",
+        "checksum_mismatch",
+        "decompression_failure",
+        "product_validation_failure",
+        "cache_read_failure",
+        "cache_write_failure",
+        "offline_cache_miss",
+        "unsupported_distribution",
+        # A failure no case above describes; its record keeps the raw type
+        # and text in a required non-empty `detail`.
+        "unclassified_failure",
+    }
+)
+# Spellings report schemas 1 and 2 hold that schema 3 does not write: the
+# Elixir interface's earlier names for the same cases, and the unclassified
+# catch-alls either interface could record.
+_LEGACY_ACQUISITION_FAILURE_TYPES = frozenset(
+    {
+        "transport",
+        "decompression_failed",
+        "product_validation_failed",
+        "cache_read_failed",
+        "cache_write_failed",
+        "acquisition",
+        "unknown",
+        "acquisition_error",
+        "all_distributors_failed",
+        "exact_product_set_error",
+    }
+)
+# Why a center is absent, in schema 3: no candidate product at all, no
+# cataloged naming convention for the date, or the failure of its last
+# candidate, as the failure's own canonical spelling.
+_ABSENCE_REASONS = frozenset(
+    {
+        "no_candidate",
+        "catalog_unavailable",
+        "offline_cache_miss",
+        "product_not_published",
+        "checksum_mismatch",
+        "http_status",
+        # A candidate failure no case above describes, with its raw text in a
+        # required non-empty `detail`.
+        "unclassified",
+    }
+)
+# The schema 1 and 2 absence spellings: `offline_miss`, `candidate_not_found`
+# and `checksum`, and the parametrized `http_status:<status>` and
+# `product_not_published:<status>`.
+_LEGACY_ABSENCE_REASONS = frozenset({"offline_miss", "candidate_not_found", "checksum"})
+_LEGACY_PARAMETRIZED_ABSENCE_REASONS = ("http_status:", "product_not_published:")
+
 _ABSENT_CENTER_FIELDS = {
     "center",
     "filename",
@@ -3174,6 +3607,14 @@ _MERGE_RESULT_FIELDS = {
     "position_outliers",
     "clock_outliers",
     "agreement",
+}
+_MERGE_AUDIT_FIELDS = {
+    "dropped_input_epochs",
+    "omitted_epochs",
+    "arc_withheld",
+    "clock_omissions",
+    "continuity",
+    "provenance",
 }
 _MERGE_FLAG_FIELDS = {"satellite", "jd_whole", "jd_fraction", "sources"}
 _AGREEMENT_FIELDS = {
@@ -3230,15 +3671,10 @@ _HELMERT_RATE_FIELDS = {
     "rotation_mas_per_year",
 }
 _SYSTEM_ORDER = {"G": 0, "R": 1, "E": 2, "C": 3, "J": 4, "I": 5, "S": 6}
-_SATELLITE_PRN_RANGES = {
-    "G": (1, 32),
-    "R": (1, 27),
-    "E": (1, 36),
-    "C": (1, 63),
-    "J": (1, 9),
-    "I": (1, 14),
-    "S": (20, 58),
-}
+# The core satellite identifier takes the shared SP3-d token range, a system
+# letter plus 01..99, for every constellation; a merge cell names a satellite
+# the core can hold, so the report is checked against the same range.
+_SATELLITE_PRN_RANGES = {system: (1, 99) for system in _SYSTEM_ORDER}
 _TERRESTRIAL_FRAMES = {"ITRF2020", "ITRF2014", "ITRF2008"}
 
 
@@ -3290,17 +3726,77 @@ def _contributor_matches_catalog(
     )
 
 
-def _validate_absent_center(value: object) -> str:
-    fields = _exact_fields(value, _ABSENT_CENTER_FIELDS, "absent center")
+def _validate_failure_type(attempt: "SourceFailure", schema: int) -> None:
+    """A source failure's `error_type` is a canonical spelling in schema 3,
+    where an HTTP status failure also carries its status; schemas 1 and 2
+    also hold the legacy spellings."""
+    error_type = attempt.error_type
+    if schema >= 3:
+        if error_type not in _ACQUISITION_FAILURE_TYPES:
+            raise ValueError("source failure type is not a canonical spelling")
+        if error_type == "http_status" and attempt.status is None:
+            raise ValueError("HTTP status failure carries no status")
+    elif error_type == "unclassified_failure" or (
+        error_type not in _ACQUISITION_FAILURE_TYPES
+        and error_type not in _LEGACY_ACQUISITION_FAILURE_TYPES
+    ):
+        # Schemas 1 and 2 predate the unclassified case and its detail.
+        raise ValueError("source failure type is unknown")
+
+
+def _legacy_absence_reason(reason: str) -> bool:
+    """Whether a schema 1 or 2 record may state this absence reason. Those
+    schemas predate the unclassified reason and its detail; their
+    parametrized spellings name an HTTP status (100-599)."""
+    if reason == "unclassified":
+        return False
+    if reason in _ABSENCE_REASONS or reason in _LEGACY_ABSENCE_REASONS:
+        return True
+    for prefix in _LEGACY_PARAMETRIZED_ABSENCE_REASONS:
+        if reason.startswith(prefix):
+            status = reason[len(prefix) :]
+            return (
+                status.isascii()
+                and status.isdigit()
+                and str(int(status)) == status
+                and 100 <= int(status) <= 599
+            )
+    return False
+
+
+def _validate_absent_center(value: object, schema: int) -> str:
+    unclassified = isinstance(value, Mapping) and value.get("reason") == "unclassified"
+    fields = _exact_fields(
+        value,
+        _ABSENT_CENTER_FIELDS | ({"detail"} if unclassified else set()),
+        "absent center",
+    )
     center = _exact_str(fields["center"], "absent center code")
     _center_def(center)
     filename = _optional_exact_str(fields["filename"], "absent center filename")
     pattern = _optional_exact_str(fields["pattern"], "absent center pattern")
     url = _exact_public_url(fields["url"], "absent center URL")
-    _exact_str(fields["reason"], "absent center reason")
-    status = fields["http_status"]
-    if status is not None:
-        _exact_int(status, "absent center HTTP status", minimum=0)
+    reason = _exact_str(fields["reason"], "absent center reason")
+    status = _exact_http_status(fields["http_status"], "absent center HTTP status")
+    if unclassified:
+        # An unclassified absence keeps the raw text of its failure.
+        _exact_str(fields["detail"], "absent center detail")
+    if schema >= 3:
+        if reason not in _ABSENCE_REASONS:
+            raise ValueError("absent center reason is not a canonical spelling")
+        # With no candidate tried there is no candidate to name; a failed
+        # candidate is named, an HTTP status failure carries its status, and
+        # an offline cache miss has none.
+        untried = reason in {"no_candidate", "catalog_unavailable"}
+        if (
+            (untried and (filename is not None or status is not None))
+            or (not untried and filename is None)
+            or (reason == "http_status" and status is None)
+            or (reason == "offline_cache_miss" and status is not None)
+        ):
+            raise ValueError("absent center reason disagrees with its candidate")
+    elif not _legacy_absence_reason(reason):
+        raise ValueError("absent center reason is unknown")
     if (filename is None) != (url is None) or (
         filename is None and pattern is not None
     ):
@@ -3344,7 +3840,29 @@ def _strictly_ascending(values: Sequence[object]) -> bool:
     return all(first < second for first, second in zip(values, values[1:]))
 
 
+def _positive_leap_second_day(jd_whole: float) -> bool:
+    """Whether the UTC day starting at ``jd_whole`` ends with a positive leap
+    second."""
+    try:
+        before = sidereon.timescale_offset_at(
+            sidereon.TimeScale.UTC, sidereon.TimeScale.TAI, jd_whole
+        )
+        after = sidereon.timescale_offset_at(
+            sidereon.TimeScale.UTC, sidereon.TimeScale.TAI, jd_whole + 1.0
+        )
+    except (TypeError, ValueError):
+        return False
+    return after - before == 1.0
+
+
 def _validate_epoch(fields: Mapping[str, object], description: str) -> None:
+    """A canonical split Julian date: a half-integer day and a fraction in
+    [0, 1], with the leap-second spellings the core writes for a UTC
+    ``23:59:60.x`` label. A fraction of exactly 1.0 is the end of a day that
+    ends with a positive leap second (the 2.x spelling); a fraction in
+    [-1/86400, 0) is the core's spelling since 3.0.0, on the next day's
+    boundary with the negative fraction ``(x - 1) / 86400``, after such a day.
+    """
     jd_whole = _exact_float(fields["jd_whole"], f"{description} jd_whole")
     fraction = _exact_float(fields["jd_fraction"], f"{description} jd_fraction")
     if (
@@ -3352,20 +3870,15 @@ def _validate_epoch(fields: Mapping[str, object], description: str) -> None:
         or jd_whole - _math.floor(jd_whole) != 0.5
     ):
         raise ValueError(f"{description} jd_whole is not canonical")
-    if not 0.0 <= fraction <= 1.0:
-        raise ValueError(f"{description} jd_fraction is not canonical")
-    if fraction == 1.0:
-        try:
-            before = sidereon.timescale_offset_at(
-                sidereon.TimeScale.UTC, sidereon.TimeScale.TAI, jd_whole
-            )
-            after = sidereon.timescale_offset_at(
-                sidereon.TimeScale.UTC, sidereon.TimeScale.TAI, jd_whole + 1.0
-            )
-        except (TypeError, ValueError):
-            raise ValueError(f"{description} jd_fraction is not canonical") from None
-        if after - before != 1.0:
+    if fraction < 0.0:
+        if not (
+            fraction >= -1.0 / 86_400.0 and _positive_leap_second_day(jd_whole - 1.0)
+        ):
             raise ValueError(f"{description} jd_fraction is not canonical")
+    elif fraction > 1.0 or (
+        fraction == 1.0 and not _positive_leap_second_day(jd_whole)
+    ):
+        raise ValueError(f"{description} jd_fraction is not canonical")
 
 
 def _validate_source_indices(
@@ -3453,7 +3966,7 @@ def _validate_member_metric_bound(
 
 
 def _validate_agreement_cells(
-    value: object, source_count: int
+    value: object, source_count: int, schema: int
 ) -> list[Mapping[str, object]]:
     if type(value) is not list:
         raise ValueError("SP3 agreement cells must be a list")
@@ -3462,13 +3975,22 @@ def _validate_agreement_cells(
         fields = _exact_fields(item, _AGREEMENT_CELL_FIELDS, "SP3 agreement cell")
         _satellite_key(fields["satellite"])
         _validate_epoch(fields, f"SP3 agreement cell {index}")
+        # Schema 2 carries clock-only cells: no position members and no
+        # position metrics, which the member bound below requires together.
         position_members = _exact_int(
-            fields["position_members"], "SP3 position member count", minimum=1
+            fields["position_members"],
+            "SP3 position member count",
+            minimum=1 if schema == 1 else 0,
         )
         clock_members = _exact_int(fields["clock_members"], "SP3 clock member count")
         if position_members > source_count or clock_members > source_count:
             raise ValueError("SP3 agreement member count exceeds source count")
-        position_rms, position_max = _validate_metric_pair(
+        if position_members == 0 and clock_members == 0:
+            raise ValueError("SP3 agreement cell carries neither orbit nor clock")
+        validate_position_pair = (
+            _validate_metric_pair if schema == 1 else _validate_optional_metric_pair
+        )
+        position_rms, position_max = validate_position_pair(
             fields["position_rms_m"],
             fields["position_max_m"],
             "SP3 position agreement",
@@ -3504,7 +4026,9 @@ def _validate_agreement_cells(
     return cells
 
 
-def _validate_agreement_epochs(value: object) -> list[Mapping[str, object]]:
+def _validate_agreement_epochs(
+    value: object, schema: int
+) -> list[Mapping[str, object]]:
     if type(value) is not list:
         raise ValueError("SP3 agreement epochs must be a list")
     epochs = []
@@ -3512,7 +4036,10 @@ def _validate_agreement_epochs(value: object) -> list[Mapping[str, object]]:
         fields = _exact_fields(item, _AGREEMENT_EPOCH_FIELDS, "SP3 agreement epoch")
         _validate_epoch(fields, f"SP3 agreement epoch {index}")
         _exact_int(fields["satellites"], "SP3 agreement epoch satellite count")
-        _validate_metric_pair(
+        validate_position_pair = (
+            _validate_metric_pair if schema == 1 else _validate_optional_metric_pair
+        )
+        validate_position_pair(
             fields["position_rms_m"],
             fields["position_max_m"],
             "SP3 epoch position agreement",
@@ -3549,8 +4076,10 @@ def _agreement_aggregate(cells: Sequence[Mapping[str, object]]) -> dict:
     position_max = None
     clock_max = None
     for cell in cells:
+        # A clock-only cell has no position spread to fold in.
         value = cell["position_max_m"]
-        position_max = value if position_max is None else max(position_max, value)
+        if value is not None:
+            position_max = value if position_max is None else max(position_max, value)
         if cell["clock_members"] > 0:
             value = cell["clock_max_s"]
             clock_max = value if clock_max is None else max(clock_max, value)
@@ -3571,7 +4100,7 @@ def _agreement_aggregate(cells: Sequence[Mapping[str, object]]) -> dict:
 
 
 def _agreement_epoch_aggregates(
-    cells: Sequence[Mapping[str, object]],
+    cells: Sequence[Mapping[str, object]], schema: int
 ) -> list[dict]:
     groups: list[list[Mapping[str, object]]] = []
     for cell in cells:
@@ -3587,17 +4116,29 @@ def _agreement_epoch_aggregates(
         for cell in multi_clock:
             value = cell["clock_max_s"]
             clock_max = value if clock_max is None else max(clock_max, value)
+        position_rms = _pooled_rms(
+            (cell["position_rms_m"], cell["position_members"])
+            for cell in multi_position
+        )
+        position_max = None
+        if schema == 1:
+            # Schema 1 spelled an epoch without a multi-source position
+            # consensus as a 0.0 spread and took the maximum over every cell.
+            position_rms = position_rms or 0.0
+            position_max = max(cell["position_max_m"] for cell in group)
+        else:
+            for cell in multi_position:
+                value = cell["position_max_m"]
+                position_max = (
+                    value if position_max is None else max(position_max, value)
+                )
         out.append(
             {
                 "jd_whole": first["jd_whole"],
                 "jd_fraction": first["jd_fraction"],
                 "satellites": len(multi_position),
-                "position_rms_m": _pooled_rms(
-                    (cell["position_rms_m"], cell["position_members"])
-                    for cell in multi_position
-                )
-                or 0.0,
-                "position_max_m": max(cell["position_max_m"] for cell in group),
+                "position_rms_m": position_rms,
+                "position_max_m": position_max,
                 "clock_rms_s": _pooled_rms(
                     (cell["clock_rms_s"], cell["clock_members"]) for cell in multi_clock
                 ),
@@ -3608,7 +4149,7 @@ def _agreement_epoch_aggregates(
 
 
 def _validate_agreement(
-    value: object, source_count: int
+    value: object, source_count: int, schema: int
 ) -> tuple[
     Mapping[str, object], list[Mapping[str, object]], list[Mapping[str, object]]
 ]:
@@ -3620,15 +4161,15 @@ def _validate_agreement(
         "clock_max_s",
     ):
         _optional_nonnegative_float(fields[name], f"SP3 agreement {name}")
-    cells = _validate_agreement_cells(fields["cells"], source_count)
-    epochs = _validate_agreement_epochs(fields["epochs"])
+    cells = _validate_agreement_cells(fields["cells"], source_count, schema)
+    epochs = _validate_agreement_epochs(fields["epochs"], schema)
     expected = _agreement_aggregate(cells)
     for name in expected:
         if fields[name] != expected[name] or type(fields[name]) is not type(
             expected[name]
         ):
             raise ValueError("SP3 agreement aggregate disagrees with cells")
-    if epochs != _agreement_epoch_aggregates(cells):
+    if epochs != _agreement_epoch_aggregates(cells, schema):
         raise ValueError("SP3 agreement epoch aggregates disagree with cells")
     return fields, cells, epochs
 
@@ -3911,7 +4452,10 @@ def _validate_agreement_policy(
                 position_selects_member=True,
                 clock_selects_member=True,
             )
-            if cell["position_max_m"] > position_bound:
+            if (
+                cell["position_max_m"] is not None
+                and cell["position_max_m"] > position_bound
+            ):
                 raise ValueError("SP3 position agreement exceeds merge policy")
             if cell["clock_max_s"] is not None and cell["clock_max_s"] > clock_bound:
                 raise ValueError("SP3 clock agreement exceeds merge policy")
@@ -3923,10 +4467,12 @@ def _validate_agreement_policy(
             position_selects_member=False,
             clock_selects_member=cell["clock_members"] % 2 == 1,
         )
-        if not _within_scaled_relative_policy_bound(
-            cell["position_max_m"],
-            policy["position_tolerance_m"],
-            _math.sqrt(3.0),
+        if cell["position_max_m"] is not None and not (
+            _within_scaled_relative_policy_bound(
+                cell["position_max_m"],
+                policy["position_tolerance_m"],
+                _math.sqrt(3.0),
+            )
         ):
             raise ValueError("SP3 position agreement exceeds merge policy")
         if cell["clock_max_s"] is not None and not (
@@ -4023,6 +4569,7 @@ def _validate_accepted_cells(
     clock_outliers: Sequence[Mapping[str, object]],
     source_count: int,
     policy: Mapping[str, object],
+    schema: int,
 ) -> None:
     single_by_key = {_cell_key(flag): flag for flag in single_source}
     position_by_key = {_cell_key(flag): flag for flag in position_outliers}
@@ -4039,12 +4586,27 @@ def _validate_accepted_cells(
         clock_sources = cell["clock_members"] + (
             0 if clock is None else len(clock["sources"])
         )
-        if clock_sources > position_sources:
+        # A clock-only cell (schema 2) has no orbit. Its clock can also come
+        # from a source that holds a clock-only record while another source
+        # holds the orbit, so schema 2 does not bound clock contributors by
+        # position contributors.
+        clock_only = cell["position_members"] == 0
+        if schema == 1 and clock_sources > position_sources:
             raise ValueError("clock contributor count exceeds position contributors")
-        if single is not None and (
-            cell["position_members"] != 1 or position is not None
+        if single is not None:
+            if clock_only:
+                # One source carried the clock, so nothing was rejected.
+                if cell["clock_members"] != 1 or clock is not None:
+                    raise ValueError("single-source and outlier flags contradict")
+            elif cell["position_members"] != 1 or position is not None:
+                raise ValueError("single-source and outlier flags contradict")
+        if (
+            clock_only
+            and cell["clock_members"] == 1
+            and clock is None
+            and single is None
         ):
-            raise ValueError("single-source and outlier flags contradict")
+            raise ValueError("single-source clock-only SP3 cell lacks an audit flag")
         if position is not None and (
             source_count < 2
             or position_sources > source_count
@@ -4076,10 +4638,27 @@ def _validate_accepted_cells(
             raise ValueError("invalid SP3 clock outlier")
 
 
+def _single_product_cell(cell: Mapping[str, object], schema: int) -> bool:
+    """Whether an accepted cell is one a single-product merge can write.
+
+    One source carries at most one orbit and one clock for a cell. Schema 1
+    cells always carry the orbit; from schema 2 a cell can instead be a
+    clock-only record, which then carries that source's clock.
+    """
+    if cell["clock_members"] > 1:
+        return False
+    if cell["position_members"] == 1:
+        return True
+    return schema >= 2 and cell["position_members"] == 0 and cell["clock_members"] == 1
+
+
 def _validate_merge_result(
-    value: object, source_count: int, policy: Mapping[str, object]
+    value: object, source_count: int, policy: Mapping[str, object], schema: int
 ) -> None:
-    fields = _exact_fields(value, _MERGE_RESULT_FIELDS, "SP3 merge result")
+    expected_fields = _MERGE_RESULT_FIELDS
+    if schema >= 3:
+        expected_fields = expected_fields | _MERGE_AUDIT_FIELDS
+    fields = _exact_fields(value, expected_fields, "SP3 merge result")
     _validate_frame_reconciliations(
         fields["frame_reconciliations"], source_count, policy
     )
@@ -4093,8 +4672,11 @@ def _validate_merge_result(
     clock_outliers = _validate_flags(
         fields["clock_outliers"], source_count, "clock-outlier"
     )
-    _, cells, epochs = _validate_agreement(fields["agreement"], source_count)
+    _, cells, epochs = _validate_agreement(fields["agreement"], source_count, schema)
     accepted_keys = {_cell_key(cell) for cell in cells}
+    # Accepted cells that carry an orbit. In schema 2 a cell whose orbit was
+    # quarantined can still be accepted as a clock-only record.
+    orbit_keys = {_cell_key(cell) for cell in cells if cell["position_members"] > 0}
     quarantined_keys = {_cell_key(flag) for flag in quarantined}
     single_keys = {_cell_key(flag) for flag in single_source}
     position_keys = {_cell_key(flag) for flag in position_outliers}
@@ -4105,26 +4687,56 @@ def _validate_merge_result(
         raise ValueError("quarantine is impossible under the merge policy")
     if any(len(flag["sources"]) != 1 for flag in single_source):
         raise ValueError("single-source SP3 flags require one source")
-    if not quarantined_keys.isdisjoint(
-        accepted_keys | single_keys | position_keys | clock_keys
-    ):
-        raise ValueError("quarantined SP3 flags contradict accepted records")
-    if not (
-        single_keys <= accepted_keys
-        and position_keys <= accepted_keys
-        and clock_keys <= accepted_keys
-    ):
-        raise ValueError("SP3 merge flags refer to unaccepted cells")
-    if not single_keys.isdisjoint(position_keys | clock_keys):
-        raise ValueError("single-source SP3 flags contradict outliers")
+    if schema == 1:
+        if not quarantined_keys.isdisjoint(
+            accepted_keys | single_keys | position_keys | clock_keys
+        ):
+            raise ValueError("quarantined SP3 flags contradict accepted records")
+        if not (
+            single_keys <= accepted_keys
+            and position_keys <= accepted_keys
+            and clock_keys <= accepted_keys
+        ):
+            raise ValueError("SP3 merge flags refer to unaccepted cells")
+        if not single_keys.isdisjoint(position_keys | clock_keys):
+            raise ValueError("single-source SP3 flags contradict outliers")
+    else:
+        # A quarantined orbit leaves no position at that cell, but the clock
+        # consensus there is independent: it can still be accepted as a
+        # clock-only record, with its own single-source or outlier flag.
+        if not quarantined_keys.isdisjoint(orbit_keys | position_keys):
+            raise ValueError("quarantined SP3 flags contradict accepted records")
+        if not (single_keys <= accepted_keys and position_keys <= accepted_keys):
+            raise ValueError("SP3 merge flags refer to unaccepted cells")
+        # A guarded precedence clock consensus that fails flags every clock
+        # source; with no orbit accepted either, that cell has no record.
+        for flag in clock_outliers:
+            if _cell_key(flag) in accepted_keys:
+                continue
+            if not (
+                policy["combine"] == "precedence"
+                and policy["outlier_reject"] is not None
+                and len(flag["sources"]) >= 2
+            ):
+                raise ValueError("SP3 merge flags refer to unaccepted cells")
+        # A single-source orbit can sit beside a clock consensus that rejected
+        # a clock-only record from another source, so only position outliers
+        # contradict a single-source flag here; the clock-only case is checked
+        # per cell.
+        if not single_keys.isdisjoint(position_keys):
+            raise ValueError("single-source SP3 flags contradict outliers")
     _validate_agreement_policy(cells, policy)
+    audited_epochs: list[Mapping[str, object]] = []
+    if schema >= 3:
+        audited_epochs = _validate_merge_audit(fields, cells, source_count, policy)
     _validate_epoch_grid(
         list(quarantined)
         + list(single_source)
         + list(position_outliers)
         + list(clock_outliers)
         + list(cells)
-        + list(epochs),
+        + list(epochs)
+        + audited_epochs,
         policy["target_epoch_interval_s"],
     )
     _validate_precedence_flags(
@@ -4141,6 +4753,7 @@ def _validate_merge_result(
         clock_outliers,
         source_count,
         policy,
+        schema,
     )
     if source_count == 1:
         if (
@@ -4148,13 +4761,13 @@ def _validate_merge_result(
             or position_outliers
             or clock_outliers
             or accepted_keys != single_keys
-            or any(
-                cell["position_members"] != 1 or cell["clock_members"] > 1
-                for cell in cells
-            )
+            or any(not _single_product_cell(cell, schema) for cell in cells)
         ):
             raise ValueError("invalid single-product SP3 merge report")
     systems = policy["systems"]
+    audited = []
+    if schema >= 3:
+        audited = list(fields["arc_withheld"]) + list(fields["clock_omissions"])
     if systems is not None and any(
         record["satellite"][0] not in systems
         for record in list(quarantined)
@@ -4162,8 +4775,823 @@ def _validate_merge_result(
         + list(position_outliers)
         + list(clock_outliers)
         + list(cells)
+        + audited
     ):
         raise ValueError("SP3 merge report contains a filtered system")
+
+
+# --- report schema 3: what the merge did not write, continuity, provenance ---
+
+_MERGE_TIME_SCALES = {
+    "UTC",
+    "TAI",
+    "TT",
+    "TCG",
+    "TDB",
+    "TCB",
+    "GPST",
+    "GST",
+    "BDT",
+    "GLONASST",
+    "QZSST",
+}
+_NANOS_PER_DAY = 86_400_000_000_000
+_CONTINUITY_ROLES = {"held_out", "interpolation_node", "pair_end", "repeated_epoch"}
+_TRANSITION_REASONS = {
+    "sole_availability",
+    "precedence",
+    "outlier_rejection",
+    "consensus_change",
+}
+_CLOCK_OMISSION_REASONS = {
+    "datum_not_observable",
+    "preferred_source_without_clock",
+    "no_consensus",
+}
+_DROPPED_EPOCH_REASONS = {"off_target_grid", "not_on_tick_axis"}
+_CONTINUITY_DEFECT_SUMMARY = {
+    "kind",
+    "satellite",
+    "from_j2000_s",
+    "to_j2000_s",
+    "magnitude",
+    "bound",
+}
+_CONTINUITY_DEFECT_KIND_FIELDS = {
+    "duplicate_epoch": {"epoch_j2000_s", "occurrences"},
+    "single_sample_series": set(),
+    "unusable_sample": {"epoch_j2000_s", "sample_index", "reason"},
+    "speed_bound": {"interval_s", "displacement_m", "implied_speed_m_s", "bound_m_s"},
+    "hold_out_residual": {
+        "epoch_j2000_s",
+        "preceding_j2000_s",
+        "residual_m",
+        "tolerance_m",
+        "node_epochs_j2000_s",
+    },
+}
+
+
+def _merge_epoch_split(
+    value: object, description: str, scales: set[str]
+) -> tuple[float, float]:
+    """Validate a persisted merge epoch and return its split Julian date.
+
+    An integer-nanosecond epoch is split from the civil midnight before the
+    J2000 origin, as an SP3 epoch line states it. Every epoch of one report
+    carries the product's one time scale, collected in ``scales``.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{description} must be a mapping")
+    if "nanos_since_j2000" in value:
+        fields = _exact_fields(value, {"time_scale", "nanos_since_j2000"}, description)
+        nanos = fields["nanos_since_j2000"]
+        if type(nanos) is not int:
+            raise ValueError(f"{description} nanoseconds must be an integer")
+        shifted = nanos + _NANOS_PER_DAY // 2
+        split = {
+            "jd_whole": 2_451_544.5 + float(shifted // _NANOS_PER_DAY),
+            "jd_fraction": (shifted % _NANOS_PER_DAY) / _NANOS_PER_DAY,
+        }
+    else:
+        fields = _exact_fields(
+            value, {"time_scale", "jd_whole", "jd_fraction"}, description
+        )
+        split = fields
+    scale = fields["time_scale"]
+    if type(scale) is not str or scale not in _MERGE_TIME_SCALES:
+        raise ValueError(f"{description} time scale is unknown")
+    scales.add(scale)
+    if len(scales) > 1:
+        raise ValueError("SP3 merge report epochs disagree on the time scale")
+    _validate_epoch(split, description)
+    return (split["jd_whole"], split["jd_fraction"])
+
+
+def _validate_source_index(value: object, source_count: int, description: str) -> int:
+    source = _exact_int(value, description)
+    if source >= source_count:
+        raise ValueError(f"{description} names an unknown source")
+    return source
+
+
+def _validate_optional_source_index(
+    value: object, source_count: int, description: str
+) -> Optional[int]:
+    if value is None:
+        return None
+    return _validate_source_index(value, source_count, description)
+
+
+def _validate_possibly_empty_sources(
+    value: object, source_count: int, description: str
+) -> list[int]:
+    if type(value) is list and not value:
+        return value
+    return _validate_source_indices(value, source_count, description)
+
+
+def _validate_cell_selection(
+    value: object, source_count: int, policy: Mapping[str, object], description: str
+) -> Optional[tuple[tuple[int, ...], int]]:
+    """Validate a persisted cell selection; return the sources its written
+    value came from and its member count, or None for no selection.
+
+    A single-source value came from its one source. A precedence pick came
+    from one agreeing member and occurs only under precedence combination; a
+    combined value came from every member, by the policy's mean or median.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{description} must be a mapping")
+    kind = value.get("kind")
+    if kind == "single_source":
+        fields = _exact_fields(value, {"kind", "source"}, description)
+        source = _validate_source_index(fields["source"], source_count, description)
+        return (source,), 1
+    if kind == "precedence":
+        fields = _exact_fields(value, {"kind", "source", "members"}, description)
+        members = _validate_source_indices(
+            fields["members"], source_count, f"{description} members"
+        )
+        source = _validate_source_index(fields["source"], source_count, description)
+        if source not in members or policy["combine"] != "precedence":
+            raise ValueError(f"{description} is not a precedence pick")
+        return (source,), len(members)
+    if kind == "combined":
+        fields = _exact_fields(value, {"kind", "rule", "members"}, description)
+        members = _validate_source_indices(
+            fields["members"], source_count, f"{description} members"
+        )
+        if (
+            fields["rule"] not in {"mean", "median"}
+            or fields["rule"] != policy["combine"]
+        ):
+            raise ValueError(f"{description} rule disagrees with the merge policy")
+        return tuple(members), len(members)
+    raise ValueError(f"{description} kind is unknown")
+
+
+def _validate_dropped_input_epochs(
+    value: object,
+    source_count: int,
+    policy: Mapping[str, object],
+    scales: set[str],
+) -> None:
+    if type(value) is not list:
+        raise ValueError("SP3 dropped input epochs must be a list")
+    keys = []
+    for index, item in enumerate(value):
+        description = f"SP3 dropped input epoch {index}"
+        fields = _exact_fields(
+            item, {"source", "epoch_index", "epoch", "reason"}, description
+        )
+        source = _validate_source_index(fields["source"], source_count, description)
+        epoch_index = _exact_int(fields["epoch_index"], f"{description} index")
+        _merge_epoch_split(fields["epoch"], f"{description} epoch", scales)
+        reason = fields["reason"]
+        if reason not in _DROPPED_EPOCH_REASONS:
+            raise ValueError(f"{description} reason is unknown")
+        # The default grid holds every input epoch; only an explicit target
+        # grid leaves one off.
+        if reason == "off_target_grid" and policy["target_epoch_interval_s"] is None:
+            raise ValueError(f"{description} is off a grid the policy never set")
+        keys.append((source, epoch_index))
+    if not _strictly_ascending(keys):
+        raise ValueError("SP3 dropped input epochs are not ordered and unique")
+
+
+def _validate_arc_withheld(
+    value: object,
+    source_count: int,
+    policy: Mapping[str, object],
+    orbit_keys: set[tuple[float, float, int, int]],
+    scales: set[str],
+) -> None:
+    if type(value) is not list:
+        raise ValueError("SP3 withheld arc cells must be a list")
+    # Cell precedence always prefers a source that carries the cell, so only
+    # satellite-arc precedence withholds a position another source carried.
+    if value and not (
+        policy["combine"] == "precedence"
+        and policy["precedence_scope"] == "satellite_arc"
+    ):
+        raise ValueError("SP3 withheld arc cells need satellite-arc precedence")
+    keys = []
+    for index, item in enumerate(value):
+        description = f"SP3 withheld arc cell {index}"
+        fields = _exact_fields(item, {"satellite", "epoch", "sources"}, description)
+        system, prn = _satellite_key(fields["satellite"])
+        jd_whole, jd_fraction = _merge_epoch_split(
+            fields["epoch"], f"{description} epoch", scales
+        )
+        _validate_source_indices(
+            fields["sources"], source_count, f"{description} sources"
+        )
+        key = (jd_whole, jd_fraction, system, prn)
+        # Its position was not written, so no accepted cell there has one.
+        if key in orbit_keys:
+            raise ValueError(f"{description} is a written position")
+        keys.append(key)
+    if not _strictly_ascending(keys):
+        raise ValueError("SP3 withheld arc cells are not ordered and unique")
+
+
+def _validate_clock_omissions(
+    value: object,
+    source_count: int,
+    policy: Mapping[str, object],
+    clock_members: Mapping[tuple[float, float, int, int], int],
+    scales: set[str],
+) -> None:
+    if type(value) is not list:
+        raise ValueError("SP3 clock omissions must be a list")
+    keys = []
+    omitted_per_cell: dict[tuple[float, float, int, int], int] = {}
+    for index, item in enumerate(value):
+        description = f"SP3 clock omission {index}"
+        fields = _exact_fields(
+            item,
+            {"epoch", "satellite", "source", "reason", "preferred", "cell_has_clock"},
+            description,
+        )
+        jd_whole, jd_fraction = _merge_epoch_split(
+            fields["epoch"], f"{description} epoch", scales
+        )
+        system, prn = _satellite_key(fields["satellite"])
+        source = _validate_source_index(fields["source"], source_count, description)
+        reason = fields["reason"]
+        if reason not in _CLOCK_OMISSION_REASONS:
+            raise ValueError(f"{description} reason is unknown")
+        preferred = _validate_optional_source_index(
+            fields["preferred"], source_count, f"{description} preferred source"
+        )
+        if reason == "preferred_source_without_clock":
+            if policy["combine"] != "precedence":
+                raise ValueError(f"{description} names a preference without one")
+        elif preferred is not None:
+            raise ValueError(f"{description} names a preferred source")
+        # Clock datums are estimated against source 0, which is the datum.
+        if reason == "datum_not_observable" and source == 0:
+            raise ValueError(f"{description} puts the reference off its own datum")
+        has_clock = fields["cell_has_clock"]
+        if type(has_clock) is not bool:
+            raise ValueError(f"{description} cell_has_clock must be a boolean")
+        key = (jd_whole, jd_fraction, system, prn)
+        if has_clock != (clock_members.get(key, 0) > 0):
+            raise ValueError(f"{description} disagrees with the merged cell's clock")
+        omitted_per_cell[key] = omitted_per_cell.get(key, 0) + 1
+        keys.append((jd_whole, jd_fraction, system, prn, source))
+    if not _strictly_ascending(keys):
+        raise ValueError("SP3 clock omissions are not ordered and unique")
+    # A source's clock is written or omitted, never both.
+    for key, omitted in omitted_per_cell.items():
+        if clock_members.get(key, 0) + omitted > source_count:
+            raise ValueError("SP3 clock omissions exceed the cell's sources")
+
+
+def _validate_continuity_defect(value: object, description: str) -> Mapping:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{description} must be a mapping")
+    kind = value.get("kind")
+    if kind not in _CONTINUITY_DEFECT_KIND_FIELDS:
+        raise ValueError(f"{description} kind is unknown")
+    fields = _exact_fields(
+        value,
+        _CONTINUITY_DEFECT_SUMMARY | _CONTINUITY_DEFECT_KIND_FIELDS[kind],
+        description,
+    )
+    _satellite_key(fields["satellite"])
+    # The summary restates the kind's own fields as `check_continuity` reports
+    # them.
+    if kind == "duplicate_epoch":
+        epoch = _exact_float(fields["epoch_j2000_s"], f"{description} epoch")
+        occurrences = _exact_int(
+            fields["occurrences"], f"{description} occurrences", minimum=2
+        )
+        summary = (epoch, epoch, float(occurrences), None)
+    elif kind == "single_sample_series":
+        summary = (None, None, None, None)
+    elif kind == "unusable_sample":
+        epoch = fields["epoch_j2000_s"]
+        if epoch is not None:
+            epoch = _exact_float(epoch, f"{description} epoch")
+        _exact_int(fields["sample_index"], f"{description} sample index")
+        if fields["reason"] not in {"epoch_not_placed", "non_finite_position"}:
+            raise ValueError(f"{description} unusable-sample reason is unknown")
+        if (fields["reason"] == "epoch_not_placed") != (epoch is None):
+            raise ValueError(
+                f"{description} unusable-sample reason disagrees with epoch"
+            )
+        summary = (epoch, epoch, None, None)
+    elif kind == "speed_bound":
+        interval = _exact_float(fields["interval_s"], f"{description} interval")
+        displacement = _exact_float(
+            fields["displacement_m"], f"{description} displacement", nonnegative=True
+        )
+        speed = _exact_float(fields["implied_speed_m_s"], f"{description} speed")
+        bound = _exact_float(
+            fields["bound_m_s"], f"{description} bound", nonnegative=True
+        )
+        from_s = _exact_float(fields["from_j2000_s"], f"{description} from")
+        to_s = _exact_float(fields["to_j2000_s"], f"{description} to")
+        # The core forms the interval, and the speed from it, exactly so.
+        if (
+            interval <= 0.0
+            or interval != to_s - from_s
+            or speed != displacement / interval
+            or speed <= bound
+        ):
+            raise ValueError(f"{description} speed is inconsistent")
+        summary = (from_s, to_s, speed, bound)
+    else:
+        epoch = _exact_float(fields["epoch_j2000_s"], f"{description} epoch")
+        preceding = _exact_float(fields["preceding_j2000_s"], f"{description} pair")
+        residual = _exact_float(
+            fields["residual_m"], f"{description} residual", nonnegative=True
+        )
+        tolerance = _exact_float(fields["tolerance_m"], f"{description} tolerance")
+        nodes = fields["node_epochs_j2000_s"]
+        if type(nodes) is not list:
+            raise ValueError(f"{description} nodes must be a list")
+        for node in nodes:
+            _exact_float(node, f"{description} node")
+        if (
+            not _strictly_ascending(nodes)
+            or preceding >= epoch
+            or residual <= tolerance
+        ):
+            raise ValueError(f"{description} residual is inconsistent")
+        summary = (preceding, epoch, residual, tolerance)
+    if (
+        fields["from_j2000_s"],
+        fields["to_j2000_s"],
+        fields["magnitude"],
+        fields["bound"],
+    ) != summary or any(
+        type(stated) is not type(expected)
+        for stated, expected in zip(
+            (
+                fields["from_j2000_s"],
+                fields["to_j2000_s"],
+                fields["magnitude"],
+                fields["bound"],
+            ),
+            summary,
+        )
+    ):
+        raise ValueError(f"{description} summary disagrees with its fields")
+    return fields
+
+
+def _continuity_defect_cells(defect: Mapping[str, object]) -> list[tuple]:
+    kind = defect["kind"]
+    if kind == "hold_out_residual":
+        cells = [(defect["epoch_j2000_s"], "held_out")] + [
+            (node, "interpolation_node") for node in defect["node_epochs_j2000_s"]
+        ]
+    elif kind == "speed_bound":
+        cells = [
+            (defect["from_j2000_s"], "pair_end"),
+            (defect["to_j2000_s"], "pair_end"),
+        ]
+    elif kind == "duplicate_epoch":
+        cells = [(defect["epoch_j2000_s"], "repeated_epoch")]
+    else:
+        cells = []
+    # A stable sort by epoch, as the core orders a violation's cells.
+    return sorted(cells, key=lambda cell: cell[0])
+
+
+def _validate_merge_continuity(
+    value: object,
+    requested: Optional[Mapping[str, object]],
+    source_count: int,
+    policy: Mapping[str, object],
+) -> None:
+    """Present exactly when the policy asked for it. The core attributes one
+    violation to each defect, in defect order; the splices are the violations
+    that cross a contributor change."""
+    if value is None and requested is None:
+        return
+    if value is None or requested is None:
+        raise ValueError("SP3 continuity record disagrees with the merge policy")
+    fields = _exact_fields(
+        value,
+        {
+            "defects",
+            "attested",
+            "pairs_checked",
+            "residuals_checked",
+            "residuals_skipped",
+            "violations",
+            "splices",
+        },
+        "SP3 continuity record",
+    )
+    defects_value = fields["defects"]
+    if type(defects_value) is not list:
+        raise ValueError("SP3 continuity defects must be a list")
+    defects = [
+        _validate_continuity_defect(item, f"SP3 continuity defect {index}")
+        for index, item in enumerate(defects_value)
+    ]
+    if fields["attested"] is not (not defects):
+        raise ValueError("SP3 continuity attestation disagrees with its defects")
+    pairs = _exact_int(fields["pairs_checked"], "SP3 continuity pairs checked")
+    checked = _exact_int(
+        fields["residuals_checked"], "SP3 continuity residuals checked"
+    )
+    skipped = _exact_int(
+        fields["residuals_skipped"], "SP3 continuity residuals skipped"
+    )
+    violations_value = fields["violations"]
+    if type(violations_value) is not list:
+        raise ValueError("SP3 continuity violations must be a list")
+    crossing = []
+    for index, violation in enumerate(violations_value):
+        description = f"SP3 continuity violation {index}"
+        violation_fields = _exact_fields(
+            violation,
+            {
+                "defect",
+                "from_sources",
+                "to_sources",
+                "cells",
+                "sources",
+                "crosses_contributors",
+            },
+            description,
+        )
+        defect = _validate_continuity_defect(
+            violation_fields["defect"], f"{description} defect"
+        )
+        for name in ("from_sources", "to_sources", "sources"):
+            _validate_possibly_empty_sources(
+                violation_fields[name], source_count, f"{description} {name}"
+            )
+        cells = violation_fields["cells"]
+        if type(cells) is not list:
+            raise ValueError(f"{description} cells must be a list")
+        epochs = []
+        stated = []
+        written = []
+        written_at: dict[float, list[int]] = {}
+        for cell_index, cell in enumerate(cells):
+            cell_description = f"{description} cell {cell_index}"
+            cell_fields = _exact_fields(
+                cell, {"epoch_j2000_s", "role", "selection"}, cell_description
+            )
+            epochs.append(
+                _exact_float(cell_fields["epoch_j2000_s"], f"{cell_description} epoch")
+            )
+            if cell_fields["role"] not in _CONTINUITY_ROLES:
+                raise ValueError(f"{cell_description} role is unknown")
+            selection = _validate_cell_selection(
+                cell_fields["selection"],
+                source_count,
+                policy,
+                f"{cell_description} selection",
+            )
+            stated.append((epochs[-1], cell_fields["role"]))
+            if selection is not None:
+                written.append(selection[0])
+                written_at[epochs[-1]] = list(selection[0])
+        if any(first > second for first, second in zip(epochs, epochs[1:])):
+            raise ValueError(f"{description} cells are not in time order")
+        # The cells are the records the defect rests on, in time order: the
+        # held-out sample and each node of its prediction, both ends of a
+        # speed-gated pair, or the repeated epoch.
+        if stated != _continuity_defect_cells(defect):
+            raise ValueError(f"{description} cells disagree with its defect")
+        if defect["kind"] == "speed_bound" and (
+            violation_fields["from_sources"]
+            != written_at.get(defect["from_j2000_s"], [])
+            or violation_fields["to_sources"]
+            != written_at.get(defect["to_j2000_s"], [])
+        ):
+            raise ValueError(f"{description} pair sources disagree with its cells")
+        sources = sorted({source for group in written for source in group})
+        crosses = any(first != second for first, second in zip(written, written[1:]))
+        if violation_fields["sources"] != sources:
+            raise ValueError(f"{description} sources disagree with its cells")
+        if violation_fields["crosses_contributors"] is not crosses:
+            raise ValueError(f"{description} splice flag disagrees with its cells")
+        if crosses:
+            crossing.append(violation)
+    if [item["defect"] for item in violations_value] != defects_value:
+        raise ValueError("SP3 continuity violations disagree with the defects")
+    if fields["splices"] != crossing:
+        raise ValueError("SP3 continuity splices disagree with the violations")
+    # What the requested checks allow: with no orbit class no pair is gated
+    # and no speed finding exists, and every speed finding states the one class
+    # bound; with no residual tolerance no residual is checked or skipped and
+    # no residual finding exists, and every residual finding states it.
+    speed = [defect for defect in defects if defect["kind"] == "speed_bound"]
+    residual = [defect for defect in defects if defect["kind"] == "hold_out_residual"]
+    # Each finding is on a pair or a sample its check examined.
+    if len(speed) > pairs or len(residual) > checked:
+        raise ValueError("SP3 continuity findings outnumber what was checked")
+    if requested["orbit_class"] is None:
+        if speed or pairs != 0:
+            raise ValueError("SP3 continuity speed gate ran without a request")
+    elif speed:
+        expected_bound = _core_sp3_orbit_class_speed_bound_m_s(requested["orbit_class"])
+        if any(defect["bound_m_s"] != expected_bound for defect in speed):
+            raise ValueError(
+                "SP3 continuity speed bound disagrees with the orbit class"
+            )
+    tolerance = requested["residual_tolerance_m"]
+    if tolerance is None:
+        if residual or checked != 0 or skipped != 0:
+            raise ValueError("SP3 continuity residual check ran without a request")
+    elif any(defect["tolerance_m"] != tolerance for defect in residual):
+        raise ValueError("SP3 continuity tolerance disagrees with the request")
+
+
+def _selected_source(selection: Mapping[str, object]) -> Optional[int]:
+    """The one source a validated selection's value came from, or None for a
+    combined value."""
+    return None if selection["kind"] == "combined" else selection["source"]
+
+
+def _selection_members(selection: Mapping[str, object]) -> list[int]:
+    if selection["kind"] == "single_source":
+        return [selection["source"]]
+    return list(selection["members"])
+
+
+def _validate_merge_provenance(
+    value: object,
+    requested: Optional[str],
+    source_count: int,
+    policy: Mapping[str, object],
+    cells: Sequence[Mapping[str, object]],
+    scales: set[str],
+) -> None:
+    """Present exactly when the policy asked for it, in the mode it asked for.
+
+    Under both modes each source's coverage splits the accepted cells between
+    contributed and absent. Under "full" each accepted cell has one entry, in
+    the agreement's order, naming as many position and clock members as the
+    agreement counts, and the coverage and transitions are what the core
+    accumulates from those entries: a source contributes to a cell when it is
+    a member of its position or clock selection, is selected when it alone
+    supplied the cell's position (or, for a clock-only cell, its clock), and
+    a satellite's transitions are its first cell and each change of selected
+    source or selection kind, for a reason the change admits."""
+    if value is None and requested is None:
+        return
+    if value is None or requested is None:
+        raise ValueError("SP3 provenance record disagrees with the merge policy")
+    fields = _exact_fields(
+        value, {"mode", "cells", "transitions", "coverage"}, "SP3 provenance"
+    )
+    if fields["mode"] != requested:
+        raise ValueError("SP3 provenance mode disagrees with the merge policy")
+    entries = fields["cells"]
+    if type(entries) is not list:
+        raise ValueError("SP3 provenance cells must be a list")
+    if requested == "summary" and entries:
+        raise ValueError("summary SP3 provenance carries per-cell entries")
+    if requested == "full" and len(entries) != len(cells):
+        raise ValueError("SP3 provenance cells disagree with the accepted cells")
+    contributed = [0] * source_count
+    selected = [0] * source_count
+    spans: list[list[tuple[float, float]]] = [[] for _ in range(source_count)]
+    accepted_epochs = {_epoch_key(cell) for cell in cells}
+    accepted_satellite_epochs = {
+        (cell["satellite"], _epoch_key(cell)) for cell in cells
+    }
+    # Each satellite's previous selection, and the transitions the entries
+    # imply: (satellite, epoch, from, to, admissible reasons).
+    previous: dict[str, Mapping[str, object]] = {}
+    implied: list[tuple[str, tuple[float, float], object, object, set[str]]] = []
+    for index, entry in enumerate(entries):
+        description = f"SP3 provenance cell {index}"
+        entry_fields = _exact_fields(
+            entry, {"epoch", "satellite", "position", "clock"}, description
+        )
+        split = _merge_epoch_split(
+            entry_fields["epoch"], f"{description} epoch", scales
+        )
+        _satellite_key(entry_fields["satellite"])
+        position = _validate_cell_selection(
+            entry_fields["position"], source_count, policy, f"{description} position"
+        )
+        clock = _validate_cell_selection(
+            entry_fields["clock"], source_count, policy, f"{description} clock"
+        )
+        agreement = cells[index]
+        if (
+            entry_fields["satellite"] != agreement["satellite"]
+            or split != _epoch_key(agreement)
+            or (0 if position is None else position[1]) != agreement["position_members"]
+            or (0 if clock is None else clock[1]) != agreement["clock_members"]
+        ):
+            raise ValueError(f"{description} disagrees with its agreement cell")
+        members = set()
+        for selection_value in (entry_fields["position"], entry_fields["clock"]):
+            if selection_value is not None:
+                members.update(_selection_members(selection_value))
+        for source in members:
+            contributed[source] += 1
+            spans[source].append(split)
+        current = (
+            entry_fields["position"]
+            if entry_fields["position"] is not None
+            else entry_fields["clock"]
+        )
+        if current is None:
+            raise ValueError(f"{description} names no selection")
+        to_source = _selected_source(current)
+        if to_source is not None:
+            selected[to_source] += 1
+        satellite = entry_fields["satellite"]
+        before = previous.get(satellite)
+        if before is None:
+            implied.append((satellite, split, None, to_source, {"sole_availability"}))
+        else:
+            from_source = _selected_source(before)
+            same_kind = before["kind"] == current["kind"]
+            if from_source != to_source or not same_kind:
+                current_members = _selection_members(current)
+                if from_source is None:
+                    reasons = {"consensus_change"}
+                elif from_source not in current_members:
+                    # Not offered this cell, or offered and rejected: the
+                    # candidate set that tells them apart is not recorded.
+                    reasons = {"sole_availability", "outlier_rejection"}
+                elif not same_kind:
+                    reasons = {"consensus_change"}
+                else:
+                    reasons = {"precedence"}
+                implied.append((satellite, split, from_source, to_source, reasons))
+        previous[satellite] = current
+    transitions = fields["transitions"]
+    if type(transitions) is not list:
+        raise ValueError("SP3 provenance transitions must be a list")
+    for index, transition in enumerate(transitions):
+        description = f"SP3 provenance transition {index}"
+        transition_fields = _exact_fields(
+            transition,
+            {"satellite", "epoch", "from_source", "to_source", "reason"},
+            description,
+        )
+        _satellite_key(transition_fields["satellite"])
+        split = _merge_epoch_split(
+            transition_fields["epoch"], f"{description} epoch", scales
+        )
+        _validate_optional_source_index(
+            transition_fields["from_source"], source_count, f"{description} from"
+        )
+        _validate_optional_source_index(
+            transition_fields["to_source"], source_count, f"{description} to"
+        )
+        if transition_fields["reason"] not in _TRANSITION_REASONS:
+            raise ValueError(f"{description} reason is unknown")
+        if (transition_fields["satellite"], split) not in accepted_satellite_epochs:
+            raise ValueError(f"{description} does not name an accepted cell")
+    if requested == "full":
+        if len(transitions) != len(implied):
+            raise ValueError("SP3 provenance transitions disagree with its cells")
+        for transition, (satellite, split, from_source, to_source, reasons) in zip(
+            transitions, implied
+        ):
+            if (
+                transition["satellite"] != satellite
+                or _merge_epoch_split(
+                    transition["epoch"], "SP3 provenance transition epoch", scales
+                )
+                != split
+                or transition["from_source"] != from_source
+                or transition["to_source"] != to_source
+                or transition["reason"] not in reasons
+            ):
+                raise ValueError("SP3 provenance transitions disagree with its cells")
+    coverage = fields["coverage"]
+    if type(coverage) is not list or len(coverage) != source_count:
+        raise ValueError("SP3 provenance coverage must list every source")
+    for index, entry in enumerate(coverage):
+        description = f"SP3 provenance coverage {index}"
+        entry_fields = _exact_fields(
+            entry,
+            {
+                "source",
+                "cells_contributed",
+                "cells_selected",
+                "first_epoch",
+                "last_epoch",
+                "cells_absent",
+            },
+            description,
+        )
+        source = entry_fields["source"]
+        if type(source) is not int or source != index:
+            raise ValueError(f"{description} is out of source order")
+        cells_contributed = _exact_int(
+            entry_fields["cells_contributed"], f"{description} contributed"
+        )
+        cells_selected = _exact_int(
+            entry_fields["cells_selected"], f"{description} selected"
+        )
+        cells_absent = _exact_int(entry_fields["cells_absent"], f"{description} absent")
+        if (
+            cells_contributed + cells_absent != len(cells)
+            or cells_selected > cells_contributed
+        ):
+            raise ValueError(f"{description} counts disagree with the accepted cells")
+        first = entry_fields["first_epoch"]
+        last = entry_fields["last_epoch"]
+        if cells_contributed == 0:
+            if first is not None or last is not None:
+                raise ValueError(f"{description} names a span it did not cover")
+        else:
+            first_split = _merge_epoch_split(first, f"{description} first", scales)
+            last_split = _merge_epoch_split(last, f"{description} last", scales)
+            if (
+                first_split > last_split
+                or first_split not in accepted_epochs
+                or last_split not in accepted_epochs
+            ):
+                raise ValueError(f"{description} span does not lie on accepted epochs")
+        if requested == "full":
+            expected_span = (
+                (min(spans[index]), max(spans[index])) if spans[index] else None
+            )
+            stated_span = (
+                None
+                if cells_contributed == 0
+                else (
+                    _merge_epoch_split(first, f"{description} first", scales),
+                    _merge_epoch_split(last, f"{description} last", scales),
+                )
+            )
+            if (
+                cells_contributed != contributed[index]
+                or cells_selected != selected[index]
+                or stated_span != expected_span
+            ):
+                raise ValueError(f"{description} disagrees with the provenance cells")
+
+
+def _validate_merge_audit(
+    fields: Mapping[str, object],
+    cells: Sequence[Mapping[str, object]],
+    source_count: int,
+    policy: Mapping[str, object],
+) -> list[Mapping[str, object]]:
+    """The report schema 3 fields, against the agreement and the policy.
+
+    Returns the split epochs of the merge grid the fields name (omitted epochs,
+    withheld and clock-omitted cells, provenance cells and transitions), which
+    lie on the grid the merged cells do; a dropped input epoch is off it by
+    definition and is not returned."""
+    scales: set[str] = set()
+    accepted_epochs = {_epoch_key(cell) for cell in cells}
+    orbit_keys = {_cell_key(cell) for cell in cells if cell["position_members"] > 0}
+    clock_members = {_cell_key(cell): cell["clock_members"] for cell in cells}
+    _validate_dropped_input_epochs(
+        fields["dropped_input_epochs"], source_count, policy, scales
+    )
+    omitted = fields["omitted_epochs"]
+    if type(omitted) is not list:
+        raise ValueError("SP3 omitted epochs must be a list")
+    omitted_splits = [
+        _merge_epoch_split(epoch, f"SP3 omitted epoch {index}", scales)
+        for index, epoch in enumerate(omitted)
+    ]
+    if not _strictly_ascending(omitted_splits):
+        raise ValueError("SP3 omitted epochs are not ordered and unique")
+    # An omitted epoch is one at which the merge accepted no cell.
+    if not accepted_epochs.isdisjoint(omitted_splits):
+        raise ValueError("SP3 omitted epoch holds an accepted cell")
+    _validate_arc_withheld(
+        fields["arc_withheld"], source_count, policy, orbit_keys, scales
+    )
+    _validate_clock_omissions(
+        fields["clock_omissions"], source_count, policy, clock_members, scales
+    )
+    _validate_merge_continuity(
+        fields["continuity"], policy["verify_continuity"], source_count, policy
+    )
+    _validate_merge_provenance(
+        fields["provenance"], policy["provenance"], source_count, policy, cells, scales
+    )
+    grid = list(omitted_splits)
+    for item in list(fields["arc_withheld"]) + list(fields["clock_omissions"]):
+        grid.append(_merge_epoch_split(item["epoch"], "SP3 audited epoch", scales))
+    provenance = fields["provenance"]
+    if provenance is not None:
+        for item in list(provenance["cells"]) + list(provenance["transitions"]):
+            grid.append(
+                _merge_epoch_split(item["epoch"], "SP3 provenance epoch", scales)
+            )
+    return [
+        {"jd_whole": jd_whole, "jd_fraction": jd_fraction}
+        for jd_whole, jd_fraction in grid
+    ]
 
 
 def verify_merge_report(value: Mapping[str, object]) -> bool:
@@ -4171,13 +5599,19 @@ def verify_merge_report(value: Mapping[str, object]) -> bool:
 
     Returns ``False`` for incomplete, malformed, internally inconsistent, or
     identity-mismatched reports. Observational acquisition facts are parsed but
-    never enter the stable identity.
+    never enter the stable identity. Schema 3 records, schema 2 records written
+    before the report stated what the merge did not write and its continuity
+    and provenance, and schema 1 records written before the merge retained
+    clock-only cells, are each checked by the rules their writer followed, and
+    each must carry exactly its own fields.
     """
     from sidereon import distribution
 
     try:
         report = _exact_fields(value, _MERGE_REPORT_FIELDS, "merged-SP3 report")
-        _exact_schema_version(report["schema_version"], "merged-SP3 report")
+        schema = report["schema_version"]
+        if type(schema) is not int or schema not in _MERGE_REPORT_SCHEMA_VERSIONS:
+            raise ValueError("unsupported merged-SP3 report schema version")
         contributors_value = report["contributors"]
         policy_value = report["merge_policy"]
         if type(contributors_value) is not list:
@@ -4197,7 +5631,9 @@ def verify_merge_report(value: Mapping[str, object]) -> bool:
             ):
                 raise ValueError("contributor provenance must be mappings")
             artifact = ArtifactIdentity.from_dict(artifact_value)
-            AcquisitionFacts.from_dict(facts_value)
+            facts = AcquisitionFacts.from_dict(facts_value)
+            for attempt in facts.attempts:
+                _validate_failure_type(attempt, schema)
             distribution._validate_requested_identity(artifact.requested_identity)
             if not _contributor_matches_catalog(contributor, artifact):
                 raise ValueError("contributor fields disagree with artifact identity")
@@ -4209,7 +5645,9 @@ def verify_merge_report(value: Mapping[str, object]) -> bool:
         absent_value = report["absent"]
         if type(absent_value) is not list:
             raise ValueError("absent centers must be a list")
-        absent_centers = [_validate_absent_center(item) for item in absent_value]
+        absent_centers = [
+            _validate_absent_center(item, schema) for item in absent_value
+        ]
         if len(set(absent_centers)) != len(absent_centers):
             raise ValueError("absent centers must be unique")
 
@@ -4242,6 +5680,8 @@ def verify_merge_report(value: Mapping[str, object]) -> bool:
         if merged is not True:
             raise ValueError("merged flag must be true")
         options = _merge_options_from_policy(policy_value)
+        if policy_value["schema_version"] != _MERGE_POLICY_SCHEMA_FOR_REPORT[schema]:
+            raise ValueError("merge policy schema disagrees with the report schema")
         precedence = policy_value["precedence_artifact_sha256"]
         expected_precedence = (
             [artifact.product_sha256 for artifact in artifacts]
@@ -4250,7 +5690,9 @@ def verify_merge_report(value: Mapping[str, object]) -> bool:
         )
         if precedence != expected_precedence:
             raise ValueError("precedence contributors disagree with contributor order")
-        _validate_merge_result(report["merge_report"], source_count, policy_value)
+        _validate_merge_result(
+            report["merge_report"], source_count, policy_value, schema
+        )
         identity = sp3_merge_input_identity(artifacts, options)
         return (
             type(report["input_identity_schema_version"]) is int
@@ -4272,8 +5714,9 @@ def _merge_policy_to_dict(
     canonical_frame_sets = sorted(
         sorted(set(labels)) for labels in options.asserted_frame_label_sets
     )
+    continuity = options.verify_continuity
     return {
-        "schema_version": 1,
+        "schema_version": _MERGE_POLICY_SCHEMA_FOR_REPORT[_MERGE_REPORT_SCHEMA_VERSION],
         "position_tolerance_m": (
             0.0 if options.position_tolerance_m == 0.0 else options.position_tolerance_m
         ),
@@ -4308,6 +5751,18 @@ def _merge_policy_to_dict(
             [artifact.product_sha256 for artifact in artifacts]
             if combine == "precedence"
             else []
+        ),
+        "verify_continuity": (
+            None
+            if continuity is None
+            else {
+                "orbit_class": continuity.orbit_class,
+                "residual_tolerance_m": continuity.residual_tolerance_m,
+                "gap_threshold_factor": continuity.gap_threshold_factor,
+            }
+        ),
+        "provenance": (
+            None if options.provenance is None else options.provenance.label
         ),
     }
 
@@ -4416,7 +5871,10 @@ def write_sp3(sp3: "sidereon.Sp3", path: str, *, gzip: bool = False) -> str:
     """Write an SP3 product to ``path`` atomically, the inverse of fetch.
 
     Pass ``gzip=True`` to gzip-compress the output (pair it with a ``.gz``
-    extension on ``path``). Returns the written path.
+    extension on ``path``). Returns the written path. Raises
+    :class:`sidereon.Sp3WriteError` before anything is written when the
+    product holds a value SP3 text cannot state, such as a mean-merged position
+    finer than a millimetre; ``detail`` names the value.
     """
     data = sp3.to_sp3_string().encode("ascii")
     if gzip:
@@ -4452,7 +5910,11 @@ def fetch_merged_sp3_file(
     Composes :func:`fetch_merged_sp3` with :func:`write_sp3`. Returns the written
     path by default. Pass ``return_report=True`` to receive ``(path, report)``
     and retain the exact contributor provenance and stable input identity.
-    Nothing is written if the fetch/merge step raises.
+    Nothing is written if the fetch/merge step raises, or if the merged product
+    cannot be written as SP3 text (:class:`sidereon.Sp3WriteError`). A mean or
+    median of positions that differ below the column resolution, or a clock
+    shifted onto the reference clock datum, can be finer than its SP3 column;
+    ``detail`` on the exception names the value.
     """
     merged, report = fetch_merged_sp3(
         target,

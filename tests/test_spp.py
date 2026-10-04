@@ -1,10 +1,19 @@
-"""SPP solve through the binding reproduces the crate-side reference numbers.
+"""SPP solve through the binding reproduces the core's default SPP solve.
 
 The fixture `spp_trace_L0_minimal.json` carries the exact inputs (as float64 bit
-patterns) AND the converged reference solution the crate asserts on. We feed the
-binding the same inputs and require the same answer, within the crate's own
-agreement bound (AGREEMENT_BOUND_M = 1e-6 m, the independent-solve tolerance the
-fixture documents). No truth is invented here.
+patterns). Its own `final_solution` comes from a reference that places each
+satellite at the geometric light time and applies no relativistic clock term
+to the SP3 clock; the core replays it through a range model it keeps for its
+own tests. The binding solves with the core's default model, which places each
+satellite at its transmission epoch from the pseudorange and adds the term, as
+RTKLIB does, so its answer is the core's default solve of the same inputs,
+written to `core_goldens.json` by `scripts/core_goldens`.
+
+The cross-check against the trace's independent reference lives in the core:
+its SPP trace tests replay `final_solution` through the range model the
+reference used, and check that the model with the relativistic clock term
+differs from that replay by the term alone. This file checks that the binding
+returns the core's answer.
 """
 
 import json
@@ -12,10 +21,7 @@ import os
 
 import numpy as np
 import sidereon
-from _helpers import CORE_FIXTURES, hex_to_f64
-
-# The independent-solve agreement bound the crate uses for this fixture.
-AGREEMENT_BOUND_M = 1.0e-6
+from _helpers import CORE_FIXTURES, STATUS_LABELS, core_goldens, hex_to_f64
 
 
 def _load_fixture():
@@ -24,7 +30,13 @@ def _load_fixture():
         return json.load(fh)["fixture"]
 
 
-def _load_sp3_and_config(fx):
+def _load_sp3_and_config(
+    fx,
+    *,
+    qzss_clock=sidereon.QzssClock.GPS,
+    troposphere_model=sidereon.TroposphereModel.RTKLIB,
+    apply_troposphere=False,
+):
     inp = fx["inputs"]
 
     sp3_path = os.path.join(CORE_FIXTURES, "sp3", inp["sp3_file"])
@@ -46,7 +58,7 @@ def _load_sp3_and_config(fx):
         corrections=sidereon.SppCorrections(
             # L0_minimal: geometry + clock + Sagnac only, no iono, no tropo.
             ionosphere=False,
-            troposphere=False,
+            troposphere=apply_troposphere,
         ),
         klobuchar=sidereon.SppKlobucharCoeffs(
             alpha=[hex_to_f64(x) for x in inp["klobuchar_alpha"]],
@@ -58,6 +70,8 @@ def _load_sp3_and_config(fx):
             relative_humidity=hex_to_f64(inp["met"]["relative_humidity"]),
         ),
         with_geodetic=True,
+        qzss_clock=qzss_clock,
+        troposphere_model=troposphere_model,
     )
     return sp3, config
 
@@ -68,14 +82,16 @@ def test_spp_matches_reference():
     assert sp3.epoch_count == 96
     sol = sidereon.solve_spp(sp3, config)
 
-    expected = [hex_to_f64(x) for x in fx["final_solution"]["x"]]
+    golden = core_goldens()["spp_trace_default"]
     got = sol.position
     assert isinstance(got, np.ndarray)
     assert got.dtype == np.float64
-    assert np.linalg.norm(got - np.array(expected[:3])) < AGREEMENT_BOUND_M
-
-    expected_clock_s = hex_to_f64(fx["final_solution"]["rx_clock_s"])
-    assert abs(sol.rx_clock_s - expected_clock_s) < 1.0e-9
+    assert [hex_to_f64(x) for x in golden["position_m"]] == got.tolist()
+    assert sol.rx_clock_s == hex_to_f64(golden["rx_clock_s"])
+    assert sol.used_sats == golden["used_sats"]
+    assert sol.status == STATUS_LABELS[golden["status"]]
+    assert sol.converged is golden["converged"]
+    assert sol.iterations == golden["iterations"]
 
     # Pythonic surface is populated.
     assert sol.geodetic is not None
@@ -145,3 +161,43 @@ def test_solve_spp_batch_is_bit_identical_to_single_and_serial():
 
     # Empty batch is well-defined.
     assert sidereon.solve_spp_batch(sp3, []) == []
+
+
+def test_solve_spp_batch_exact_matches_exact_single_epoch_route():
+    fixture = _load_fixture()
+    sp3, config = _load_sp3_and_config(fixture)
+    receive_epoch = sidereon.ExactEpoch.from_j2000_seconds(config.t_rx_j2000_s)
+    expected = sidereon.solve_spp_exact(sp3, config, receive_epoch)
+    [actual] = sidereon.solve_spp_batch_exact(sp3, [config], [receive_epoch])
+    assert _bits(actual.rx_clock_s) == _bits(expected.rx_clock_s)
+    assert np.array_equal(
+        actual.position.view(np.int64), expected.position.view(np.int64)
+    )
+    assert sidereon.solve_spp_batch_exact(sp3, [], []) == []
+
+
+def test_spp_models_forward_through_exact_and_batch_routes():
+    fixture = _load_fixture()
+    sp3, config = _load_sp3_and_config(
+        fixture,
+        qzss_clock=sidereon.QzssClock.SEPARATE,
+        troposphere_model=sidereon.TroposphereModel.SAASTAMOINEN_NIELL,
+        apply_troposphere=True,
+    )
+    assert config.qzss_clock == sidereon.QzssClock.SEPARATE
+    assert config.troposphere_model == sidereon.TroposphereModel.SAASTAMOINEN_NIELL
+    receive_epoch = sidereon.ExactEpoch.from_j2000_seconds(config.t_rx_j2000_s)
+    single = sidereon.solve_spp(sp3, config)
+    exact = sidereon.solve_spp_exact(sp3, config, receive_epoch)
+    [batched] = sidereon.solve_spp_batch(sp3, [config])
+    [batched_exact] = sidereon.solve_spp_batch_exact(sp3, [config], [receive_epoch])
+    for solution in (exact, batched, batched_exact):
+        assert np.array_equal(
+            solution.position.view(np.int64), single.position.view(np.int64)
+        )
+        assert _bits(solution.rx_clock_s) == _bits(single.rx_clock_s)
+
+
+def test_selection_unsettled_error_is_a_solve_error():
+    assert issubclass(sidereon.SelectionUnsettledError, sidereon.SolveError)
+    assert sidereon.SelectionUnsettledError.passes is None

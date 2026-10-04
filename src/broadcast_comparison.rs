@@ -57,9 +57,12 @@ fn epoch_inputs(t_j2000_s: f64, half_s: f64) -> PyResult<EpochInputs> {
     let (jd_whole_m, fraction_m) = split_jd(t_j2000_s - half_s);
     Ok(EpochInputs {
         broadcast_t_j2000_s: t_j2000_s,
-        precise: JulianDateSplit::new(jd_whole, fraction).map_err(invalid)?,
-        precise_plus: JulianDateSplit::new(jd_whole_p, fraction_p).map_err(invalid)?,
-        precise_minus: JulianDateSplit::new(jd_whole_m, fraction_m).map_err(invalid)?,
+        precise: JulianDateSplit::new(jd_whole, fraction)
+            .map_err(|error| crate::time_model_error::py_error(error, error.to_string()))?,
+        precise_plus: JulianDateSplit::new(jd_whole_p, fraction_p)
+            .map_err(|error| crate::time_model_error::py_error(error, error.to_string()))?,
+        precise_minus: JulianDateSplit::new(jd_whole_m, fraction_m)
+            .map_err(|error| crate::time_model_error::py_error(error, error.to_string()))?,
     })
 }
 
@@ -271,8 +274,8 @@ fn broadcast_comparison_window(
         })
         .collect::<PyResult<_>>()?;
 
-    let precise_start =
-        JulianDateSplit::new(precise_start_jd_whole, precise_start_fraction).map_err(invalid)?;
+    let precise_start = JulianDateSplit::new(precise_start_jd_whole, precise_start_fraction)
+        .map_err(|error| crate::time_model_error::py_error(error, error.to_string()))?;
     let velocity_half_s = velocity_half_s.unwrap_or_else(|| (step_s / 2.0).round());
     let window = CompareWindow {
         broadcast_window_j2000_s: (t0_j2000_s, t1_j2000_s),

@@ -4,10 +4,13 @@
 //! Marshals SP3 bytes (or a file path) into [`sidereon_core::ephemeris::Sp3`] and
 //! exposes its query surface Pythonically: the node epoch axis as J2000 seconds,
 //! batched interpolation to numpy `(n, 3)` / `(n,)` arrays, the exact per-record
-//! state, and the deterministic SP3 text writer. No modeling lives here: the
-//! interpolation is the engine's `position_at_j2000_seconds` recipe and the writer
-//! is `to_sp3_string`, so the numbers and bytes are exactly what `sidereon-core`
-//! produces. The per-query loop runs inside Rust, one FFI crossing per call.
+//! state, the retained clock-only records and header descriptors, and the SP3
+//! text writer. No modeling lives here: the interpolation is the engine's
+//! `position_at_j2000_seconds` recipe and the writer is `to_sp3_string`, so the
+//! numbers and bytes are exactly what `sidereon-core` produces, and a product
+//! the writer refuses raises `Sp3WriteError` with the core refusal as its
+//! typed `detail`. The per-query loop runs inside Rust, one FFI crossing per
+//! call.
 
 use std::path::PathBuf;
 
@@ -27,27 +30,41 @@ use sidereon_core::ephemeris::{
     observable_states_at_shared_j2000_s as core_observable_states_at_shared_j2000_s,
     parse_exact_sp3 as core_parse_exact_sp3, sample as core_sample,
     validate_exact_sp3 as core_validate_exact_sp3, ClockReferenceOffset, EphemerisSampleRow,
-    EphemerisSampleStatus, ExactSp3Coverage, ExactSp3Request, MmapPreciseEphemerisInterpolant,
-    ObservableEphemerisSource, ObservableStateBatch, ObservableStateElementStatus,
-    ObservablesError, PreciseEphemerisInterpolant, PreciseEphemerisSample, PreciseEphemerisSamples,
-    PreciseInterpolantStoreError, Sp3, OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
+    EphemerisSampleStatus, ExactSp3Coverage, ExactSp3Request, ExactSp3ValidationError,
+    MmapPreciseEphemerisInterpolant, ObservableEphemerisSource, ObservableStateBatch,
+    ObservableStateElementStatus, ObservablesError, PreciseEphemerisAccuracySample,
+    PreciseEphemerisInterpolant, PreciseEphemerisSample, PreciseEphemerisSamples,
+    PreciseInterpolantError, PreciseInterpolantStoreError,
+    PreciseSamplesError as CorePreciseSamplesError, Sp3, Sp3AccuracyCodeGroup, Sp3AccuracyValue,
+    Sp3ClockRecord, Sp3DataType, Sp3Header, Sp3PositionClockAccuracy, Sp3RawRecordAccuracy,
+    Sp3RecordAccuracy, Sp3VelocityAccuracy, Sp3Version, Sp3WriteError,
+    OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
 };
 use sidereon_core::ephemeris::{
-    check_continuity, ContinuityDefect, ContinuityOptions, EpochWindow, MergeContinuityViolation,
-    OrbitClass, Sp3InterpolationOptions, SpeedBound, StencilExtent, WindowContinuityDecision,
+    check_continuity, CellSelection, ContinuityDefect, ContinuityOptions, ContinuityOptionsError,
+    EpochWindow, MergeCombine, MergeContinuityViolation, OrbitClass, Sp3InterpolationOptions,
+    SpeedBound, StencilExtent, UnusableSampleReason, WindowContinuityDecision,
     WindowContinuityVerdict,
 };
+use sidereon_core::positioning::{ClockRelativity as CoreClockRelativity, EphemerisSource};
 use sidereon_core::DigestProvenance;
 use sidereon_core::Error as CoreError;
 use sidereon_core::GnssSatelliteId;
 
+use crate::core_error_detail::{
+    attach_core_error_detail, attach_observables_error_detail, observables_error_detail,
+};
+use crate::exact_time::PyExactEpochQuery;
 use crate::frames::PyTimeScale;
-use crate::marshal::rows3_to_array;
+use crate::marshal::{rows3_to_array, PyGnssSystem};
+use crate::products::{continuity_cell_role, PySp3Coverage};
 use crate::rinex::PyBroadcastEphemeris;
+use crate::rinex_clock::PyClockInstant;
 use crate::{
-    np_array, parse_claimed_checksum64, to_solve_err, to_sp3_err,
+    np_array, parse_claimed_checksum64, sp3_write_error_type, to_solve_err, to_sp3_err,
+    AccuracySamplesMismatchError, InvalidAccuracyValueError,
     PreciseInterpolantArtifactCorruptError, PreciseInterpolantArtifactError,
-    PreciseInterpolantArtifactTruncatedError,
+    PreciseInterpolantArtifactTruncatedError, PreciseSamplesError,
 };
 
 /// Seconds in one day, for the J2000-second <-> split-Julian-date reconstruction.
@@ -57,13 +74,516 @@ const SECONDS_PER_DAY: f64 = 86_400.0;
 ///
 /// Construct with [`load_sp3`]. Query satellite states by epoch
 /// ([`Sp3.interpolate`] for arbitrary epochs, [`Sp3.state`] for the exact parsed
-/// records), read the node epoch grid with [`Sp3.epochs_j2000_seconds`], and
-/// serialize back to SP3 text with [`Sp3.to_sp3_string`]. Also passed to the
-/// solve functions as the ephemeris source. Wraps
+/// records, [`Sp3.clock_record`] for a clock kept beside a missing orbit), read
+/// the node epoch grid with [`Sp3.epochs_j2000_seconds`] and the header with
+/// [`Sp3.header`], and serialize back to SP3 text with [`Sp3.to_sp3_string`].
+/// Also passed to the solve functions as the ephemeris source. Wraps
 /// [`sidereon_core::ephemeris::Sp3`] unchanged.
 #[pyclass(module = "sidereon._sidereon", name = "Sp3")]
 pub struct PySp3 {
     pub(crate) inner: Sp3,
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "EphemerisQueryState")]
+#[derive(Clone, Copy)]
+pub struct PyEphemerisQueryState {
+    position_m: [f64; 3],
+    clock_s: f64,
+    group_delay_s: Option<f64>,
+    degraded_reason: Option<&'static str>,
+}
+
+#[pymethods]
+impl PyEphemerisQueryState {
+    #[getter]
+    fn position_ecef_m(&self) -> [f64; 3] {
+        self.position_m
+    }
+
+    #[getter]
+    fn clock_s(&self) -> f64 {
+        self.clock_s
+    }
+
+    #[getter]
+    fn group_delay_s(&self) -> Option<f64> {
+        self.group_delay_s
+    }
+
+    #[getter]
+    fn degraded_reason(&self) -> Option<&'static str> {
+        self.degraded_reason
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "ClockRelativity")]
+#[derive(Clone, Copy)]
+pub struct PyClockRelativity {
+    inner: CoreClockRelativity,
+}
+
+#[pymethods]
+impl PyClockRelativity {
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match self.inner {
+            CoreClockRelativity::NotApplicable => "not_applicable",
+            CoreClockRelativity::Term(_) => "term",
+            CoreClockRelativity::Unavailable => "unavailable",
+        }
+    }
+
+    #[getter]
+    fn term_s(&self) -> Option<f64> {
+        self.inner.term()
+    }
+}
+
+pub(crate) fn source_state_at_epoch_query<Source: EphemerisSource + ?Sized>(
+    source: &Source,
+    satellite_id: &str,
+    epoch: &PyExactEpochQuery,
+    selection_epoch: &PyExactEpochQuery,
+) -> PyResult<Option<PyEphemerisQueryState>> {
+    let satellite = parse_sat(satellite_id)?;
+    source
+        .try_position_clock_group_delay_selected_at_epoch_query(
+            satellite,
+            &epoch.inner,
+            &selection_epoch.inner,
+        )
+        .map(|state| {
+            state.map(|state| PyEphemerisQueryState {
+                position_m: state.value.0,
+                clock_s: state.value.1,
+                group_delay_s: state.value.2,
+                degraded_reason: state.degraded.map(crate::degrade_reason_label),
+            })
+        })
+        .map_err(ephemeris_source_query_error)
+}
+
+pub(crate) fn source_transmit_clock_at_epoch_query<Source: EphemerisSource + ?Sized>(
+    source: &Source,
+    satellite_id: &str,
+    epoch: &PyExactEpochQuery,
+    selection_epoch: &PyExactEpochQuery,
+) -> PyResult<Option<(f64, Option<&'static str>)>> {
+    let satellite = parse_sat(satellite_id)?;
+    source
+        .try_transmit_epoch_clock_at_epoch_query(satellite, &epoch.inner, &selection_epoch.inner)
+        .map(|clock| {
+            clock.map(|clock| (clock.value, clock.degraded.map(crate::degrade_reason_label)))
+        })
+        .map_err(ephemeris_source_query_error)
+}
+
+pub(crate) fn source_variance_at_epoch_query<Source: EphemerisSource + ?Sized>(
+    source: &Source,
+    satellite_id: &str,
+    state_epoch: &PyExactEpochQuery,
+    selection_epoch: &PyExactEpochQuery,
+) -> PyResult<f64> {
+    let satellite = parse_sat(satellite_id)?;
+    Ok(source.ephemeris_variance_at_epoch_query(
+        satellite,
+        &state_epoch.inner,
+        &selection_epoch.inner,
+    ))
+}
+
+pub(crate) fn source_clock_relativity_at_epoch_query<Source: EphemerisSource + ?Sized>(
+    source: &Source,
+    satellite_id: &str,
+    epoch: &PyExactEpochQuery,
+    position_ecef_m: [f64; 3],
+) -> PyResult<PyClockRelativity> {
+    let satellite = parse_sat(satellite_id)?;
+    Ok(PyClockRelativity {
+        inner: source.clock_relativity_for_state_at_epoch_query(
+            satellite,
+            &epoch.inner,
+            position_ecef_m,
+        ),
+    })
+}
+
+fn ephemeris_source_query_error(error: sidereon_core::Error) -> PyErr {
+    let python_error = match &error {
+        sidereon_core::Error::Ut1OutsideCoverage(reason) => {
+            crate::ut1_outside_coverage_err("ephemeris source query", *reason)
+        }
+        _ => to_solve_err(error.clone()),
+    };
+    attach_core_error_detail(python_error, &error)
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "Sp3AccuracyValue")]
+#[derive(Clone)]
+pub struct PySp3AccuracyValue {
+    kind: String,
+    value: Option<f64>,
+}
+
+impl From<Sp3AccuracyValue> for PySp3AccuracyValue {
+    fn from(value: Sp3AccuracyValue) -> Self {
+        match value {
+            Sp3AccuracyValue::Known(number) => Self {
+                kind: "known".to_owned(),
+                value: Some(number),
+            },
+            Sp3AccuracyValue::Unknown => Self {
+                kind: "unknown".to_owned(),
+                value: None,
+            },
+            Sp3AccuracyValue::TooLarge => Self {
+                kind: "too_large".to_owned(),
+                value: None,
+            },
+            Sp3AccuracyValue::InvalidBase => Self {
+                kind: "invalid_base".to_owned(),
+                value: None,
+            },
+            Sp3AccuracyValue::Overflow => Self {
+                kind: "overflow".to_owned(),
+                value: None,
+            },
+            other => Self {
+                kind: format!("other:{other:?}"),
+                value: None,
+            },
+        }
+    }
+}
+
+impl PySp3AccuracyValue {
+    fn to_core(&self) -> PyResult<Sp3AccuracyValue> {
+        match (self.kind.as_str(), self.value) {
+            ("known", Some(value)) if value.is_finite() && value >= 0.0 => {
+                Ok(Sp3AccuracyValue::Known(value))
+            }
+            ("known", _) => Err(PyValueError::new_err(
+                "known accuracy must be finite and non-negative",
+            )),
+            ("unknown", None) => Ok(Sp3AccuracyValue::Unknown),
+            ("too_large", None) => Ok(Sp3AccuracyValue::TooLarge),
+            ("invalid_base", None) => Ok(Sp3AccuracyValue::InvalidBase),
+            ("overflow", None) => Ok(Sp3AccuracyValue::Overflow),
+            _ => Err(PyValueError::new_err("invalid accuracy outcome")),
+        }
+    }
+}
+
+#[pymethods]
+impl PySp3AccuracyValue {
+    #[staticmethod]
+    fn known(value: f64) -> PyResult<Self> {
+        if !value.is_finite() || value < 0.0 {
+            return Err(PyValueError::new_err(
+                "known accuracy must be finite and non-negative",
+            ));
+        }
+        Ok(Self {
+            kind: "known".to_owned(),
+            value: Some(value),
+        })
+    }
+
+    #[staticmethod]
+    fn unknown() -> Self {
+        Self {
+            kind: "unknown".to_owned(),
+            value: None,
+        }
+    }
+
+    #[staticmethod]
+    fn too_large() -> Self {
+        Self {
+            kind: "too_large".to_owned(),
+            value: None,
+        }
+    }
+
+    #[staticmethod]
+    fn invalid_base() -> Self {
+        Self {
+            kind: "invalid_base".to_owned(),
+            value: None,
+        }
+    }
+
+    #[staticmethod]
+    fn overflow() -> Self {
+        Self {
+            kind: "overflow".to_owned(),
+            value: None,
+        }
+    }
+
+    #[getter]
+    fn kind(&self) -> String {
+        self.kind.clone()
+    }
+
+    #[getter]
+    fn value(&self) -> Option<f64> {
+        self.value
+    }
+
+    fn variance(&self) -> Self {
+        self.to_core()
+            .map(Sp3AccuracyValue::variance)
+            .unwrap_or(Sp3AccuracyValue::Overflow)
+            .into()
+    }
+
+    fn __repr__(&self) -> String {
+        match self.value {
+            Some(value) => format!("Sp3AccuracyValue(kind={:?}, value={value})", self.kind),
+            None => format!("Sp3AccuracyValue(kind={:?})", self.kind),
+        }
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "Sp3AccuracyCodeGroup")]
+#[derive(Clone, Copy)]
+pub struct PySp3AccuracyCodeGroup {
+    inner: Sp3AccuracyCodeGroup,
+}
+
+impl From<Sp3AccuracyCodeGroup> for PySp3AccuracyCodeGroup {
+    fn from(inner: Sp3AccuracyCodeGroup) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySp3AccuracyCodeGroup {
+    #[getter]
+    fn axis_exponents(&self) -> [Option<i16>; 3] {
+        self.inner.axis_exponents
+    }
+    #[getter]
+    fn clock_exponent(&self) -> Option<i16> {
+        self.inner.clock_exponent
+    }
+    #[getter]
+    fn position_velocity_base(&self) -> Option<f64> {
+        self.inner.position_velocity_base
+    }
+    #[getter]
+    fn clock_rate_base(&self) -> Option<f64> {
+        self.inner.clock_rate_base
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "Sp3RawRecordAccuracy")]
+#[derive(Clone, Copy)]
+pub struct PySp3RawRecordAccuracy {
+    inner: Sp3RawRecordAccuracy,
+}
+
+impl From<Sp3RawRecordAccuracy> for PySp3RawRecordAccuracy {
+    fn from(inner: Sp3RawRecordAccuracy) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySp3RawRecordAccuracy {
+    #[getter]
+    fn p(&self) -> Option<PySp3AccuracyCodeGroup> {
+        self.inner.p.map(Into::into)
+    }
+    #[getter]
+    fn v(&self) -> Option<PySp3AccuracyCodeGroup> {
+        self.inner.v.map(Into::into)
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "Sp3PositionClockAccuracy")]
+#[derive(Clone, Copy)]
+pub struct PySp3PositionClockAccuracy {
+    inner: Sp3PositionClockAccuracy,
+}
+
+impl From<Sp3PositionClockAccuracy> for PySp3PositionClockAccuracy {
+    fn from(inner: Sp3PositionClockAccuracy) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySp3PositionClockAccuracy {
+    #[getter]
+    fn position_sigma_m(&self) -> [PySp3AccuracyValue; 3] {
+        self.inner.position_sigma_m.map(Into::into)
+    }
+    #[getter]
+    fn clock_sigma_m(&self) -> PySp3AccuracyValue {
+        self.inner.clock_sigma_m.into()
+    }
+    fn position_variance_m2(&self) -> [PySp3AccuracyValue; 3] {
+        self.inner.position_variance_m2().map(Into::into)
+    }
+    fn clock_variance_m2(&self) -> PySp3AccuracyValue {
+        self.inner.clock_variance_m2().into()
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "Sp3VelocityAccuracy")]
+#[derive(Clone, Copy)]
+pub struct PySp3VelocityAccuracy {
+    inner: Sp3VelocityAccuracy,
+}
+
+impl From<Sp3VelocityAccuracy> for PySp3VelocityAccuracy {
+    fn from(inner: Sp3VelocityAccuracy) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySp3VelocityAccuracy {
+    #[getter]
+    fn velocity_sigma_m_s(&self) -> [PySp3AccuracyValue; 3] {
+        self.inner.velocity_sigma_m_s.map(Into::into)
+    }
+    #[getter]
+    fn clock_rate_sigma_m_s(&self) -> PySp3AccuracyValue {
+        self.inner.clock_rate_sigma_m_s.into()
+    }
+    fn velocity_variance_m2_s2(&self) -> [PySp3AccuracyValue; 3] {
+        self.inner.velocity_variance_m2_s2().map(Into::into)
+    }
+    fn clock_rate_variance_m2_s2(&self) -> PySp3AccuracyValue {
+        self.inner.clock_rate_variance_m2_s2().into()
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "Sp3RecordAccuracy")]
+#[derive(Clone, Copy)]
+pub struct PySp3RecordAccuracy {
+    inner: Sp3RecordAccuracy,
+}
+
+impl From<Sp3RecordAccuracy> for PySp3RecordAccuracy {
+    fn from(inner: Sp3RecordAccuracy) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySp3RecordAccuracy {
+    #[getter]
+    fn p(&self) -> Option<PySp3PositionClockAccuracy> {
+        self.inner.p.map(Into::into)
+    }
+    #[getter]
+    fn v(&self) -> Option<PySp3VelocityAccuracy> {
+        self.inner.v.map(Into::into)
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "PreciseEphemerisAccuracySample")]
+#[derive(Clone, Copy)]
+pub struct PyPreciseEphemerisAccuracySample {
+    inner: PreciseEphemerisAccuracySample,
+}
+
+impl From<PreciseEphemerisAccuracySample> for PyPreciseEphemerisAccuracySample {
+    fn from(inner: PreciseEphemerisAccuracySample) -> Self {
+        Self { inner }
+    }
+}
+
+impl PyPreciseEphemerisAccuracySample {
+    fn to_core(self) -> PreciseEphemerisAccuracySample {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyPreciseEphemerisAccuracySample {
+    #[staticmethod]
+    #[pyo3(signature = (satellite, epoch_j2000_seconds, position_variance_m2, clock_variance_m2, *, time_scale=PyTimeScale::GPST))]
+    fn new(
+        py: Python<'_>,
+        satellite: &str,
+        epoch_j2000_seconds: f64,
+        position_variance_m2: Vec<Py<PySp3AccuracyValue>>,
+        clock_variance_m2: Py<PySp3AccuracyValue>,
+        time_scale: PyTimeScale,
+    ) -> PyResult<Self> {
+        if position_variance_m2.len() != 3 {
+            return Err(PyValueError::new_err(
+                "position_variance_m2 must contain three components",
+            ));
+        }
+        let mut variances = [Sp3AccuracyValue::Unknown; 3];
+        for (axis_index, variance) in position_variance_m2.iter().enumerate() {
+            variances[axis_index] = variance.borrow(py).to_core()?;
+        }
+        let inner = PreciseEphemerisAccuracySample::new(
+            parse_sat(satellite)?,
+            instant_from_j2000_seconds(epoch_j2000_seconds, time_scale.into())?,
+            variances,
+            clock_variance_m2.borrow(py).to_core()?,
+        );
+        Ok(Self { inner })
+    }
+
+    #[staticmethod]
+    fn from_instant(
+        py: Python<'_>,
+        satellite: &str,
+        epoch: &PyClockInstant,
+        position_variance_m2: Vec<Py<PySp3AccuracyValue>>,
+        clock_variance_m2: Py<PySp3AccuracyValue>,
+    ) -> PyResult<Self> {
+        if position_variance_m2.len() != 3 {
+            return Err(PyValueError::new_err(
+                "position_variance_m2 must contain three components",
+            ));
+        }
+        let mut variances = [Sp3AccuracyValue::Unknown; 3];
+        for (axis_index, variance) in position_variance_m2.iter().enumerate() {
+            variances[axis_index] = variance.borrow(py).to_core()?;
+        }
+        let inner = PreciseEphemerisAccuracySample::new(
+            parse_sat(satellite)?,
+            epoch.to_core(),
+            variances,
+            clock_variance_m2.borrow(py).to_core()?,
+        );
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn satellite(&self) -> String {
+        self.inner.sat.to_string()
+    }
+    #[getter]
+    fn epoch_j2000_seconds(&self) -> f64 {
+        instant_to_j2000_seconds(&self.inner.epoch).unwrap_or(f64::NAN)
+    }
+    #[getter]
+    fn epoch(&self) -> PyClockInstant {
+        PyClockInstant::from_core(self.inner.epoch)
+    }
+    #[getter]
+    fn time_scale(&self) -> PyTimeScale {
+        self.inner.epoch.scale.into()
+    }
+    #[getter]
+    fn position_variance_m2(&self) -> [PySp3AccuracyValue; 3] {
+        self.inner.position_variance_m2.map(Into::into)
+    }
+    #[getter]
+    fn clock_variance_m2(&self) -> PySp3AccuracyValue {
+        self.inner.clock_variance_m2.into()
+    }
 }
 
 /// Prediction status aggregated over every satellite record at one SP3 epoch.
@@ -129,13 +649,65 @@ impl PySp3 {
 
 /// Parse a satellite token (e.g. `"G01"`) into a typed id, raising `ValueError`
 /// on a malformed token (bad input, never a domain error).
-fn parse_sat(token: &str) -> PyResult<GnssSatelliteId> {
+pub(crate) fn parse_sat(token: &str) -> PyResult<GnssSatelliteId> {
     token
         .parse::<GnssSatelliteId>()
         .map_err(|e| PyValueError::new_err(format!("invalid satellite token {token:?}: {e}")))
 }
 
-fn continuity_options(
+fn precise_samples_error(py: Python<'_>, error: CorePreciseSamplesError) -> PyErr {
+    let (error_type, kind, satellite) = match &error {
+        CorePreciseSamplesError::Empty => (py.get_type::<PreciseSamplesError>(), "empty", None),
+        CorePreciseSamplesError::SingleSampleSatellite(satellite) => (
+            py.get_type::<PreciseSamplesError>(),
+            "single_sample_satellite",
+            Some(satellite.to_string()),
+        ),
+        CorePreciseSamplesError::NonMonotonicEpochs(satellite) => (
+            py.get_type::<PreciseSamplesError>(),
+            "non_monotonic_epochs",
+            Some(satellite.to_string()),
+        ),
+        CorePreciseSamplesError::MixedTimeScales => (
+            py.get_type::<PreciseSamplesError>(),
+            "mixed_time_scales",
+            None,
+        ),
+        CorePreciseSamplesError::EpochNotRepresentable(satellite) => (
+            py.get_type::<PreciseSamplesError>(),
+            "epoch_not_representable",
+            Some(satellite.to_string()),
+        ),
+        CorePreciseSamplesError::NonFiniteSample(satellite) => (
+            py.get_type::<PreciseSamplesError>(),
+            "non_finite_sample",
+            Some(satellite.to_string()),
+        ),
+        CorePreciseSamplesError::AccuracySamplesMismatch => (
+            py.get_type::<AccuracySamplesMismatchError>(),
+            "accuracy_samples_mismatch",
+            None,
+        ),
+        CorePreciseSamplesError::InvalidAccuracyValue(satellite) => (
+            py.get_type::<InvalidAccuracyValueError>(),
+            "invalid_accuracy_value",
+            Some(satellite.to_string()),
+        ),
+        _ => (py.get_type::<PreciseSamplesError>(), "unknown", None),
+    };
+    let python_error = PyErr::from_type(error_type, error.to_string());
+    let value = python_error.value(py);
+    if let Err(set_error) = value.setattr("kind", kind) {
+        return set_error;
+    }
+    if let Err(set_error) = value.setattr("satellite", satellite) {
+        return set_error;
+    }
+    python_error
+}
+
+pub(crate) fn continuity_options(
+    py: Python<'_>,
     orbit_class: Option<&str>,
     residual_tolerance_m: Option<f64>,
     gap_threshold_factor: Option<f64>,
@@ -151,7 +723,8 @@ fn continuity_options(
             )))
         }
     };
-    let mut options = ContinuityOptions::new(speed_bound, residual_tolerance_m);
+    let mut options = ContinuityOptions::new(speed_bound, residual_tolerance_m)
+        .map_err(|error| continuity_options_error(py, error))?;
     options.speed_bound = speed_bound;
     options.residual_tolerance_m = residual_tolerance_m;
     if let Some(factor) = gap_threshold_factor {
@@ -160,6 +733,17 @@ fn continuity_options(
         options = options.with_interpolation_options(interpolation);
     }
     Ok(options)
+}
+
+fn continuity_options_error(py: Python<'_>, error: ContinuityOptionsError) -> PyErr {
+    let python_error = PyValueError::new_err(error.to_string());
+    let value = python_error.value(py);
+    let _ = value.setattr("kind", "continuity_options");
+    let _ = value.setattr("field", error.field);
+    // A string retains NaN/infinity without introducing non-JSON numeric values.
+    let _ = value.setattr("value", format!("{:?}", error.value));
+    let _ = value.setattr("reason", format!("{:?}", error.reason));
+    python_error
 }
 
 fn continuity_defect_to_dict<'py>(
@@ -182,6 +766,13 @@ fn continuity_defect_to_dict<'py>(
         ContinuityDefect::SingleSampleSeries { .. } => {
             ("single_sample_series", None, None, None, None)
         }
+        ContinuityDefect::UnusableSample { epoch_j2000_s, .. } => (
+            "unusable_sample",
+            *epoch_j2000_s,
+            *epoch_j2000_s,
+            None,
+            None,
+        ),
         ContinuityDefect::SpeedBound {
             from_j2000_s,
             to_j2000_s,
@@ -215,6 +806,86 @@ fn continuity_defect_to_dict<'py>(
     entry.set_item("to_j2000_s", to_s)?;
     entry.set_item("magnitude", magnitude)?;
     entry.set_item("bound", bound)?;
+    // Every field of the variant under its core name, beside the flattened
+    // summary above, so the dict loses nothing the defect states.
+    match defect {
+        ContinuityDefect::DuplicateEpoch {
+            epoch_j2000_s,
+            occurrences,
+            ..
+        } => {
+            entry.set_item("epoch_j2000_s", *epoch_j2000_s)?;
+            entry.set_item("occurrences", *occurrences)?;
+        }
+        ContinuityDefect::SingleSampleSeries { .. } => {}
+        ContinuityDefect::UnusableSample {
+            sample_index,
+            epoch_j2000_s,
+            reason,
+            ..
+        } => {
+            entry.set_item("sample_index", *sample_index)?;
+            entry.set_item("epoch_j2000_s", *epoch_j2000_s)?;
+            entry.set_item(
+                "reason",
+                match reason {
+                    UnusableSampleReason::EpochNotPlaced => "epoch_not_placed",
+                    UnusableSampleReason::NonFinitePosition => "non_finite_position",
+                    _ => "unknown",
+                },
+            )?;
+        }
+        ContinuityDefect::SpeedBound {
+            interval_s,
+            displacement_m,
+            implied_speed_m_s,
+            bound_m_s,
+            ..
+        } => {
+            entry.set_item("interval_s", *interval_s)?;
+            entry.set_item("displacement_m", *displacement_m)?;
+            entry.set_item("implied_speed_m_s", *implied_speed_m_s)?;
+            entry.set_item("bound_m_s", *bound_m_s)?;
+        }
+        ContinuityDefect::HoldOutResidual {
+            epoch_j2000_s,
+            preceding_j2000_s,
+            residual_m,
+            tolerance_m,
+            node_epochs_j2000_s,
+            ..
+        } => {
+            entry.set_item("epoch_j2000_s", *epoch_j2000_s)?;
+            entry.set_item("preceding_j2000_s", *preceding_j2000_s)?;
+            entry.set_item("residual_m", *residual_m)?;
+            entry.set_item("tolerance_m", *tolerance_m)?;
+            entry.set_item("node_epochs_j2000_s", node_epochs_j2000_s.clone())?;
+        }
+    }
+    Ok(entry)
+}
+
+fn cell_selection_to_dict<'py>(
+    py: Python<'py>,
+    selection: &CellSelection,
+) -> PyResult<Bound<'py, PyDict>> {
+    let entry = PyDict::new(py);
+    let (kind, rule) = match selection {
+        CellSelection::SingleSource { .. } => ("single_source", None),
+        CellSelection::Precedence { .. } => ("precedence", None),
+        CellSelection::Combined { rule, .. } => (
+            "combined",
+            Some(match rule {
+                MergeCombine::Mean => "mean",
+                MergeCombine::Median => "median",
+                MergeCombine::Precedence => "precedence",
+            }),
+        ),
+    };
+    entry.set_item("kind", kind)?;
+    entry.set_item("selected_source", selection.selected_source())?;
+    entry.set_item("members", selection.members())?;
+    entry.set_item("rule", rule)?;
     Ok(entry)
 }
 
@@ -238,6 +909,21 @@ fn continuity_violation_to_dict<'py>(
     entry.set_item("from_sources", &violation.from_sources)?;
     entry.set_item("to_sources", &violation.to_sources)?;
     entry.set_item("crosses_contributors", violation.crosses_contributors)?;
+    let cells = PyList::empty(py);
+    for cell in &violation.cells {
+        let cell_entry = PyDict::new(py);
+        cell_entry.set_item("epoch_j2000_s", cell.epoch_j2000_s)?;
+        cell_entry.set_item("role", continuity_cell_role(cell.role))?;
+        match &cell.selection {
+            Some(selection) => {
+                cell_entry.set_item("selection", cell_selection_to_dict(py, selection)?)?
+            }
+            None => cell_entry.set_item("selection", py.None())?,
+        }
+        cells.append(cell_entry)?;
+    }
+    entry.set_item("cells", cells)?;
+    entry.set_item("sources", &violation.sources)?;
     Ok(entry)
 }
 
@@ -371,10 +1057,10 @@ impl PySp3 {
         residual_tolerance_m: Option<f64>,
         gap_threshold_factor: Option<f64>,
     ) -> PyResult<PyObject> {
-        let report = check_continuity(
-            &self.inner.precise_ephemeris_samples(),
-            &continuity_options(orbit_class, residual_tolerance_m, gap_threshold_factor)?,
-        );
+        let options =
+            continuity_options(py, orbit_class, residual_tolerance_m, gap_threshold_factor)?;
+        let report = check_continuity(&self.inner.precise_ephemeris_samples(), &options)
+            .map_err(|error| continuity_options_error(py, error))?;
 
         let defects = continuity_defects_to_list(py, &report.defects)?;
 
@@ -421,16 +1107,41 @@ impl PySp3 {
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let stencil = StencilExtent::for_sp3(&self.inner)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
-        let report = check_continuity(
-            &self.inner.precise_ephemeris_samples(),
-            &continuity_options(orbit_class, residual_tolerance_m, gap_threshold_factor)?,
-        );
+        let options =
+            continuity_options(py, orbit_class, residual_tolerance_m, gap_threshold_factor)?;
+        let report = check_continuity(&self.inner.precise_ephemeris_samples(), &options)
+            .map_err(|error| continuity_options_error(py, error))?;
         continuity_verdict_to_py(py, report.verdict_for_window(window, stencil))
     }
 
     #[getter]
     fn epochs_j2000_seconds<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         np_array(py, &self.inner.epochs_j2000_seconds())
+    }
+
+    /// The product's parsed epochs in file order, each scale-tagged in the
+    /// core's own representation, so two products' epochs compare exactly.
+    #[getter]
+    fn epoch_instants(&self) -> Vec<PyClockInstant> {
+        self.inner
+            .epochs
+            .iter()
+            .copied()
+            .map(PyClockInstant::from_core)
+            .collect()
+    }
+
+    /// Position and clock coverage of every satellite, with the grid the
+    /// product's epochs lie on.
+    ///
+    /// Every satellite the header declares is listed, including one with no
+    /// record, and so is every satellite with a record the header does not
+    /// declare. A clock-only record counts as a clock and not a position; a
+    /// position record with the missing-clock sentinel counts as a position
+    /// and not a clock. Coverage states which records exist, not where an
+    /// interpolation is served.
+    fn satellite_coverage(&self) -> PySp3Coverage {
+        PySp3Coverage::from(self.inner.satellite_coverage())
     }
 
     /// Per-epoch observed/predicted status and the contiguous observed-through
@@ -491,55 +1202,194 @@ impl PySp3 {
         let mut positions = Vec::with_capacity(queries.len());
         let mut clocks = Vec::with_capacity(queries.len());
         for &q in queries {
-            let state = self.inner.position_at_j2000_seconds(sat, q).map_err(|e| {
-                match e {
-                    // The satellite simply is not in the product: bad input.
-                    CoreError::UnknownSatellite(id) => {
-                        PyValueError::new_err(format!("satellite {id} is not in the product"))
-                    }
-                    // Out of coverage / too few nodes: a solve condition.
-                    other => to_solve_err(format!("interpolation at j2000 second {q}: {other}")),
-                }
-            })?;
+            let state = self
+                .inner
+                .position_at_j2000_seconds(sat, q)
+                .map_err(|error| {
+                    let python_error = match &error {
+                        // The satellite simply is not in the product: bad input.
+                        CoreError::UnknownSatellite(id) => {
+                            PyValueError::new_err(format!("satellite {id} is not in the product"))
+                        }
+                        // Out of coverage / too few nodes: a solve condition.
+                        other => {
+                            to_solve_err(format!("interpolation at j2000 second {q}: {other}"))
+                        }
+                    };
+                    attach_core_error_detail(python_error, &error)
+                })?;
             positions.push(state.position.as_array());
             clocks.push(state.clock_s.unwrap_or(f64::NAN));
         }
         Ok(PySp3Interpolation { positions, clocks })
     }
 
+    fn position_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+    ) -> PyResult<PySp3State> {
+        let sat = parse_sat(satellite)?;
+        self.inner
+            .position_at_epoch_query(sat, &epoch.inner)
+            .map(PySp3State::from_state)
+            .map_err(|error| attach_core_error_detail(to_solve_err(error.to_string()), &error))
+    }
+
+    fn selected_state_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<Option<PyEphemerisQueryState>> {
+        source_state_at_epoch_query(&self.inner, satellite, epoch, selection_epoch)
+    }
+
+    fn transmit_epoch_clock_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<Option<(f64, Option<&'static str>)>> {
+        source_transmit_clock_at_epoch_query(&self.inner, satellite, epoch, selection_epoch)
+    }
+
+    fn ephemeris_variance_at_epoch_query(
+        &self,
+        satellite: &str,
+        state_epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<f64> {
+        source_variance_at_epoch_query(&self.inner, satellite, state_epoch, selection_epoch)
+    }
+
+    fn clock_relativity_for_state_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+        position_ecef_m: [f64; 3],
+    ) -> PyResult<PyClockRelativity> {
+        source_clock_relativity_at_epoch_query(&self.inner, satellite, epoch, position_ecef_m)
+    }
+
     /// The exact parsed state of `satellite` at the record with index
     /// `epoch_index` (no interpolation).
     ///
     /// Returns an [`Sp3State`]. Raises `IndexError` if `epoch_index` is past the
-    /// last epoch and `KeyError` if the satellite has no record at that epoch.
+    /// last epoch and `KeyError` if the satellite has no state at that epoch. A
+    /// record whose orbit is the missing-orbit sentinel beside a valid clock is
+    /// not a state: read it with [`Sp3.clock_record`].
     fn state(&self, satellite: &str, epoch_index: usize) -> PyResult<PySp3State> {
         let sat = parse_sat(satellite)?;
-        let state = self.inner.state(sat, epoch_index).map_err(|e| match e {
-            CoreError::EpochOutOfRange => {
-                PyIndexError::new_err(format!("epoch index {epoch_index} out of range"))
-            }
-            CoreError::UnknownSatellite(id) => PyKeyError::new_err(format!(
-                "satellite {id} has no record at epoch {epoch_index}"
-            )),
-            other => to_solve_err(other.to_string()),
-        })?;
-        Ok(PySp3State {
-            position: state.position.as_array(),
-            clock_s: state.clock_s,
-            velocity: state.velocity.map(|v| v.as_array()),
-            clock_event: state.flags.clock_event,
-            clock_predicted: state.flags.clock_predicted,
-            maneuver: state.flags.maneuver,
-            orbit_predicted: state.flags.orbit_predicted,
-        })
+        let state = self
+            .inner
+            .state(sat, epoch_index)
+            .map_err(|e| record_lookup_error(e, epoch_index, "record"))?;
+        Ok(PySp3State::from_state(state))
     }
 
-    /// Serialize this product to standard SP3 text (the format named by its header
-    /// version, `c` or `d`). Pure and deterministic: the same product always
-    /// produces byte-identical text, and re-parsing the output round-trips the
-    /// epochs, satellites, positions, and clocks.
-    fn to_sp3_string(&self) -> String {
-        self.inner.to_sp3_string()
+    /// The retained clock-only record of `satellite` at the record with index
+    /// `epoch_index`: a record whose orbit is the missing-orbit sentinel
+    /// (`0.0 0.0 0.0`) beside a valid clock estimate.
+    ///
+    /// Returns an [`Sp3ClockRecord`]. Raises `IndexError` if `epoch_index` is
+    /// past the last epoch and `KeyError` if the satellite has no clock-only
+    /// record at that epoch. A satellite with an orbit at that epoch has a state
+    /// ([`Sp3.state`]) and no clock-only record.
+    fn clock_record(&self, satellite: &str, epoch_index: usize) -> PyResult<PySp3ClockRecord> {
+        let sat = parse_sat(satellite)?;
+        let record = self
+            .inner
+            .clock_record(sat, epoch_index)
+            .map_err(|e| record_lookup_error(e, epoch_index, "clock-only record"))?;
+        Ok(PySp3ClockRecord::from(record))
+    }
+
+    fn record_accuracy_codes(
+        &self,
+        satellite: &str,
+        epoch_index: usize,
+    ) -> PyResult<PySp3RawRecordAccuracy> {
+        self.inner
+            .record_accuracy_codes(parse_sat(satellite)?, epoch_index)
+            .map(Into::into)
+            .map_err(|error| record_lookup_error(error, epoch_index, "accuracy record"))
+    }
+
+    fn record_accuracy(
+        &self,
+        satellite: &str,
+        epoch_index: usize,
+    ) -> PyResult<PySp3RecordAccuracy> {
+        self.inner
+            .record_accuracy(parse_sat(satellite)?, epoch_index)
+            .map(Into::into)
+            .map_err(|error| record_lookup_error(error, epoch_index, "accuracy record"))
+    }
+
+    /// Every clock-only record at the epoch with index `epoch_index`, as a dict
+    /// from satellite token to [`Sp3ClockRecord`] in ascending satellite order.
+    /// An epoch with none returns an empty dict. Raises `IndexError` if
+    /// `epoch_index` is past the last epoch.
+    fn clock_records_at<'py>(
+        &self,
+        py: Python<'py>,
+        epoch_index: usize,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let records = self
+            .inner
+            .clock_records_at(epoch_index)
+            .map_err(|e| record_lookup_error(e, epoch_index, "clock-only record"))?;
+        let out = PyDict::new(py);
+        for (sat, record) in records {
+            out.set_item(sat.to_string(), PySp3ClockRecord::from(*record))?;
+        }
+        Ok(out)
+    }
+
+    /// The parsed header: format version and record type, the line-1
+    /// descriptors, the line-2 timing fields, the first `%c` line's file type
+    /// and time system, the first `%f` line's bases, and the satellite list
+    /// with its accuracy codes.
+    #[getter]
+    fn header(&self) -> PySp3Header {
+        PySp3Header {
+            inner: self.inner.header.clone(),
+        }
+    }
+
+    /// The text of every `/*` comment record that carries text, in file order,
+    /// with trailing blanks removed as the reader removes them.
+    #[getter]
+    fn comments(&self) -> Vec<String> {
+        self.inner.comments.clone()
+    }
+
+    /// Entries the parser skipped rather than stored: records and `+` header
+    /// declarations whose satellite token names no representable satellite,
+    /// and `EP`/`EV` correlation records, which the product does not model.
+    #[getter]
+    fn skipped_records(&self) -> usize {
+        self.inner.skipped_records
+    }
+
+    /// Serialize this product to standard SP3 text (the format named by its
+    /// header version). Pure and deterministic: the same product always
+    /// produces byte-identical text, and re-parsing it yields every value the
+    /// product holds, bit for bit.
+    ///
+    /// Raises `Sp3WriteError`, a subclass of `Sp3ParseError` and `ValueError`,
+    /// when a value cannot be stated in its fixed columns without changing it:
+    /// a record value finer than the `F14.6` column (the usual case for a mean
+    /// or median merge), a value that would read back as an absence sentinel,
+    /// a header base finer than its field, text wider than its columns, or an
+    /// epoch no record restates exactly. Nothing is rounded, shifted or dropped
+    /// to make the write succeed. The exception's `detail` is an
+    /// [`Sp3WriteErrorDetail`] naming the core refusal and its fields.
+    fn to_sp3_string(&self, py: Python<'_>) -> PyResult<String> {
+        self.inner
+            .to_sp3_string()
+            .map_err(|err| to_sp3_write_err(py, err))
     }
 
     /// Extract this product as the canonical precise-ephemeris samples, in SI
@@ -555,6 +1405,14 @@ impl PySp3 {
             .precise_ephemeris_samples()
             .into_iter()
             .map(PyPreciseEphemerisSample::from)
+            .collect()
+    }
+
+    fn precise_ephemeris_accuracy_samples(&self) -> Vec<PyPreciseEphemerisAccuracySample> {
+        self.inner
+            .precise_ephemeris_accuracy_samples()
+            .into_iter()
+            .map(Into::into)
             .collect()
     }
 
@@ -775,7 +1633,8 @@ impl PyObservableStateElementStatus {
 /// epoch for [`observable_states_at_shared_j2000_s`]. `positions_ecef_m` is
 /// numpy `(n, 3)` in ECEF metres. `clocks_s` is numpy `(n,)` in seconds, with
 /// NaN when the core result has no clock. Failed elements use the public missing
-/// position sentinel and carry their error text in `element_results`.
+/// position sentinel and carry their error text in `element_results`, with
+/// structured core failures available through `element_error_details`.
 #[pyclass(module = "sidereon._sidereon", name = "ObservableStateBatch")]
 #[derive(Clone)]
 pub struct PyObservableStateBatch {
@@ -832,6 +1691,23 @@ impl PyObservableStateBatch {
             .collect()
     }
 
+    /// Fresh structured details for each failed element; successful elements
+    /// contain `None`. Mutating a returned dictionary does not change this batch.
+    #[getter]
+    fn element_error_details(&self, py: Python<'_>) -> PyResult<Vec<Option<Py<PyDict>>>> {
+        self.inner
+            .element_results
+            .iter()
+            .map(|result| {
+                result
+                    .as_ref()
+                    .err()
+                    .map(|error| observables_error_detail(py, error))
+                    .transpose()
+            })
+            .collect()
+    }
+
     /// Number of batch elements.
     #[getter]
     fn element_count(&self) -> usize {
@@ -859,6 +1735,22 @@ impl PyObservableStateBatch {
             .get(index)
             .map(|result| result.as_ref().err().map(ToString::to_string))
             .ok_or_else(|| PyIndexError::new_err(format!("element index {index} out of range")))
+    }
+
+    /// Return a fresh structured detail dictionary for one failed element, or
+    /// `None` when that element succeeded.
+    fn element_error_detail(&self, py: Python<'_>, index: usize) -> PyResult<Option<Py<PyDict>>> {
+        self.inner
+            .element_results
+            .get(index)
+            .map(|result| {
+                result
+                    .as_ref()
+                    .err()
+                    .map(|error| observables_error_detail(py, error))
+                    .transpose()
+            })
+            .ok_or_else(|| PyIndexError::new_err(format!("element index {index} out of range")))?
     }
 
     fn __len__(&self) -> usize {
@@ -921,13 +1813,16 @@ impl From<ClockReferenceOffset> for PySp3ClockReferenceOffset {
 ///
 /// `position_m` is the ECEF position (metres); `clock_s` is the clock offset
 /// (seconds) or `None` for the bad-clock sentinel; `velocity_m_s` is the ECEF
-/// velocity (metres per second) or `None` for a position-only product. The four
-/// status flags are surfaced verbatim from the record.
+/// velocity (metres per second) or `None` for a position-only product;
+/// `clock_rate_s_s` is the clock rate (seconds per second) from the paired `V`
+/// record, or `None` where there is none or it holds the bad-rate sentinel. The
+/// four status flags are surfaced verbatim from the record.
 #[pyclass(module = "sidereon._sidereon", name = "Sp3State")]
 pub struct PySp3State {
     position: [f64; 3],
     clock_s: Option<f64>,
     velocity: Option<[f64; 3]>,
+    clock_rate_s_s: Option<f64>,
     clock_event: bool,
     clock_predicted: bool,
     maneuver: bool,
@@ -935,13 +1830,15 @@ pub struct PySp3State {
 }
 
 impl PySp3State {
-    /// Build from a core interpolated/parsed state, for the staleness selection
-    /// layer's `position_at_j2000_seconds` query.
+    /// Build from a core parsed or interpolated state. [`Sp3.state`], the
+    /// interpolant queries and the staleness selection layer all construct
+    /// through here, so every field reaches Python by one path.
     pub(crate) fn from_state(state: sidereon_core::ephemeris::Sp3State) -> Self {
         Self {
             position: state.position.as_array(),
             clock_s: state.clock_s,
             velocity: state.velocity.map(|v| v.as_array()),
+            clock_rate_s_s: state.clock_rate_s_s,
             clock_event: state.flags.clock_event,
             clock_predicted: state.flags.clock_predicted,
             maneuver: state.flags.maneuver,
@@ -969,6 +1866,13 @@ impl PySp3State {
     #[getter]
     fn velocity_m_s<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray1<f64>>> {
         self.velocity.map(|v| np_array(py, &v))
+    }
+
+    /// Clock rate in seconds per second from the paired `V` record, or `None`
+    /// for a position-only product or the bad-rate sentinel.
+    #[getter]
+    fn clock_rate_s_s(&self) -> Option<f64> {
+        self.clock_rate_s_s
     }
 
     /// Clock discontinuity (`E`) flagged at this epoch (clock interpolation across
@@ -1002,6 +1906,704 @@ impl PySp3State {
             self.position[0], self.position[1], self.position[2], self.clock_s
         )
     }
+}
+
+/// A clock-only SP3 record: a satellite whose orbit is the missing-orbit
+/// sentinel (`0.0 0.0 0.0`) at one epoch beside a valid clock estimate.
+///
+/// Kept apart from [`Sp3State`] so a consumer of positions never meets a
+/// fabricated geocentre, and never interpolated as an orbit node. `clock_s` is
+/// the clock in seconds and `clock_us` the same value in the file's own
+/// microseconds, exactly as read. `velocity_m_s`, `clock_rate_s_s` and
+/// `clock_rate_raw` (the rate in the file's 1e-4 microseconds per second) come
+/// from the paired `V` record and are `None` where there is none or it holds
+/// the format's absence sentinel. The four status flags are surfaced verbatim.
+#[pyclass(module = "sidereon._sidereon", name = "Sp3ClockRecord")]
+#[derive(Clone, Copy)]
+pub struct PySp3ClockRecord {
+    inner: Sp3ClockRecord,
+}
+
+impl From<Sp3ClockRecord> for PySp3ClockRecord {
+    fn from(inner: Sp3ClockRecord) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PySp3ClockRecord {
+    /// Clock offset in seconds.
+    #[getter]
+    fn clock_s(&self) -> f64 {
+        self.inner.clock_s
+    }
+
+    /// Clock offset in the file's microseconds, exactly as read.
+    #[getter]
+    fn clock_us(&self) -> f64 {
+        self.inner.clock_us
+    }
+
+    /// ECEF velocity as a numpy `(3,)` array in metres per second, or `None`.
+    #[getter]
+    fn velocity_m_s<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray1<f64>>> {
+        self.inner.velocity.map(|v| np_array(py, &v.as_array()))
+    }
+
+    /// Clock rate in seconds per second, or `None`.
+    #[getter]
+    fn clock_rate_s_s(&self) -> Option<f64> {
+        self.inner.clock_rate_s_s
+    }
+
+    /// Clock rate in the file's 1e-4 microseconds per second, exactly as read,
+    /// or `None`.
+    #[getter]
+    fn clock_rate_raw(&self) -> Option<f64> {
+        self.inner.clock_rate_raw
+    }
+
+    /// Clock discontinuity (`E`) flagged at this epoch.
+    #[getter]
+    fn clock_event(&self) -> bool {
+        self.inner.flags.clock_event
+    }
+
+    /// The clock is predicted, not fitted.
+    #[getter]
+    fn clock_predicted(&self) -> bool {
+        self.inner.flags.clock_predicted
+    }
+
+    /// The satellite was being maneuvered at this epoch.
+    #[getter]
+    fn maneuver(&self) -> bool {
+        self.inner.flags.maneuver
+    }
+
+    /// The orbit is predicted, not fitted.
+    #[getter]
+    fn orbit_predicted(&self) -> bool {
+        self.inner.flags.orbit_predicted
+    }
+
+    fn __eq__(&self, other: &PySp3ClockRecord) -> bool {
+        self.inner == other.inner
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Sp3ClockRecord(clock_s={:?}, clock_us={:?}, clock_rate_s_s={:?})",
+            self.inner.clock_s, self.inner.clock_us, self.inner.clock_rate_s_s
+        )
+    }
+}
+
+/// The parsed SP3 header, as the core holds it.
+///
+/// `version` is the format letter (`"a"` to `"d"`) and `data_type` the record
+/// type letter (`"P"` or `"V"`). `data_used` (line 1, columns 41-45) and
+/// `file_type` (first `%c` line, columns 4-5) are `None` when their columns are
+/// blank. `pos_vel_base` and `clock_rate_base` are the first `%f` line's bases,
+/// `None` when blank; an explicit zero is kept with its sign. `time_system` is
+/// the exact SP3 label (`"GPS"`, `"GLO"`, `"GAL"`, `"TAI"`, `"UTC"`, `"QZS"`,
+/// `"BDT"`, `"IRN"`) and `time_scale` the core scale the epochs are tagged
+/// with. `satellite_accuracy_codes` is index-aligned with `satellites`.
+/// `num_epochs` is the number of epoch records parsed, which the writer states
+/// on line 1; the count line 1 declared is `Sp3.declared_epoch_count`.
+#[pyclass(module = "sidereon._sidereon", name = "Sp3Header")]
+#[derive(Clone)]
+pub struct PySp3Header {
+    inner: Sp3Header,
+}
+
+#[pymethods]
+impl PySp3Header {
+    /// SP3 format version letter: `"a"`, `"b"`, `"c"` or `"d"`.
+    #[getter]
+    fn version(&self) -> &'static str {
+        match self.inner.version {
+            Sp3Version::A => "a",
+            Sp3Version::B => "b",
+            Sp3Version::C => "c",
+            Sp3Version::D => "d",
+        }
+    }
+
+    /// Record type letter: `"P"` (position) or `"V"` (position and velocity).
+    #[getter]
+    fn data_type(&self) -> &'static str {
+        match self.inner.data_type {
+            Sp3DataType::Position => "P",
+            Sp3DataType::Velocity => "V",
+        }
+    }
+
+    /// Number of epoch records parsed.
+    #[getter]
+    fn num_epochs(&self) -> u64 {
+        self.inner.num_epochs
+    }
+
+    /// Data-used descriptor from line 1 (for example `"ORBIT"`), or `None`.
+    #[getter]
+    fn data_used(&self) -> Option<String> {
+        self.inner.data_used.clone()
+    }
+
+    /// Coordinate-system label (for example `"IGS20"`).
+    #[getter]
+    fn coordinate_system(&self) -> String {
+        self.inner.coordinate_system.clone()
+    }
+
+    /// Orbit-type label (for example `"FIT"`).
+    #[getter]
+    fn orbit_type(&self) -> String {
+        self.inner.orbit_type.clone()
+    }
+
+    /// Producing agency.
+    #[getter]
+    fn agency(&self) -> String {
+        self.inner.agency.clone()
+    }
+
+    /// GNSS week of the first epoch, in the file's time system.
+    #[getter]
+    fn gnss_week(&self) -> u32 {
+        self.inner.gnss_week
+    }
+
+    /// Seconds of week of the first epoch.
+    #[getter]
+    fn seconds_of_week(&self) -> f64 {
+        self.inner.seconds_of_week
+    }
+
+    /// Nominal epoch spacing in seconds.
+    #[getter]
+    fn epoch_interval_s(&self) -> f64 {
+        self.inner.epoch_interval_s
+    }
+
+    /// Modified Julian Day of the first epoch (integer part).
+    #[getter]
+    fn mjd(&self) -> u32 {
+        self.inner.mjd
+    }
+
+    /// Fractional day of the first epoch.
+    #[getter]
+    fn mjd_fraction(&self) -> f64 {
+        self.inner.mjd_fraction
+    }
+
+    /// File-type descriptor from the first `%c` line (for example `"G"`,
+    /// `"M"`), or `None`.
+    #[getter]
+    fn file_type(&self) -> Option<String> {
+        self.inner.file_type.clone()
+    }
+
+    /// The exact SP3 time-system label from the first `%c` line.
+    #[getter]
+    fn time_system(&self) -> &'static str {
+        self.inner.time_system.label()
+    }
+
+    /// The core time scale the parsed epochs are tagged with.
+    #[getter]
+    fn time_scale(&self) -> PyTimeScale {
+        PyTimeScale::from(self.inner.time_scale)
+    }
+
+    /// Position/velocity standard-deviation base from the first `%f` line, or
+    /// `None` when blank.
+    #[getter]
+    fn pos_vel_base(&self) -> Option<f64> {
+        self.inner.pos_vel_base
+    }
+
+    /// Clock/clock-rate standard-deviation base from the first `%f` line, or
+    /// `None` when blank.
+    #[getter]
+    fn clock_rate_base(&self) -> Option<f64> {
+        self.inner.clock_rate_base
+    }
+
+    /// The satellite tokens declared in the `+` lines, in declaration order.
+    #[getter]
+    fn satellites(&self) -> Vec<String> {
+        self.inner
+            .satellites
+            .iter()
+            .map(|sat| sat.to_string())
+            .collect()
+    }
+
+    /// Accuracy exponent codes from the `++` lines, index-aligned with
+    /// `satellites`.
+    #[getter]
+    fn satellite_accuracy_codes(&self) -> Vec<u16> {
+        self.inner.satellite_accuracy_codes.clone()
+    }
+
+    fn __eq__(&self, other: &PySp3Header) -> bool {
+        self.inner == other.inner
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Sp3Header(version={:?}, data_type={:?}, agency={:?}, time_system={:?}, satellites={})",
+            self.version(),
+            self.data_type(),
+            self.inner.agency,
+            self.time_system(),
+            self.inner.satellites.len()
+        )
+    }
+}
+
+/// The typed payload an `Sp3WriteError` carries on its `detail` attribute.
+///
+/// `kind` is the core `Sp3WriteError` variant name and `details()` that
+/// variant's own fields, so a caller reads the native values rather than
+/// parsing `message`. Keys are the core field names, except that a satellite
+/// is the token under `"satellite"`, a time scale is a `TimeScale`, and the
+/// SP3 time system is its label. `EpochNotRestatable`'s `residual_s` is None
+/// where the core holds NaN, its spelling of "no statement could be read back".
+/// `field`, `epoch_index`, `satellite`, `columns` and `decimals` are
+/// conveniences that return None for a variant that names no such field.
+///
+/// A variant this build does not name - one a later core adds - still maps:
+/// `kind` is its core name and `details()` holds its complete core `Debug`
+/// rendering under `"debug"`.
+#[pyclass(module = "sidereon._sidereon", name = "Sp3WriteErrorDetail")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PySp3WriteErrorDetail {
+    inner: Sp3WriteError,
+}
+
+impl From<Sp3WriteError> for PySp3WriteErrorDetail {
+    fn from(inner: Sp3WriteError) -> Self {
+        Self { inner }
+    }
+}
+
+/// The variant name at the head of the core's derived `Debug` rendering.
+///
+/// `Sp3WriteError` is `#[non_exhaustive]`, so a core newer than this binding
+/// can hand back a variant no arm here names. Its derived `Debug` output starts
+/// with the variant name, which is the `kind` it reports.
+fn debug_variant_name(err: &Sp3WriteError) -> String {
+    format!("{err:?}")
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect()
+}
+
+#[pymethods]
+impl PySp3WriteErrorDetail {
+    /// Error kind string matching the core `Sp3WriteError` variant name.
+    #[getter]
+    fn kind(&self) -> String {
+        let name = match &self.inner {
+            Sp3WriteError::TextNotColumnSafe { .. } => "TextNotColumnSafe",
+            Sp3WriteError::TextNotColumnStable { .. } => "TextNotColumnStable",
+            Sp3WriteError::BlankDescriptor { .. } => "BlankDescriptor",
+            Sp3WriteError::EmptyComment { .. } => "EmptyComment",
+            Sp3WriteError::TextTooWide { .. } => "TextTooWide",
+            Sp3WriteError::IntegerTooWide { .. } => "IntegerTooWide",
+            Sp3WriteError::NonFinite { .. } => "NonFinite",
+            Sp3WriteError::NumberTooWide { .. } => "NumberTooWide",
+            Sp3WriteError::PrecisionNotRepresentable { .. } => "PrecisionNotRepresentable",
+            Sp3WriteError::YearNotRepresentable { .. } => "YearNotRepresentable",
+            Sp3WriteError::AccuracyNotRepresentable { .. } => "AccuracyNotRepresentable",
+            Sp3WriteError::AccuracyRecordMismatch { .. } => "AccuracyRecordMismatch",
+            Sp3WriteError::AccuracyBasisMissing { .. } => "AccuracyBasisMissing",
+            Sp3WriteError::EpochNotRestatable { .. } => "EpochNotRestatable",
+            Sp3WriteError::EpochTimeScaleMismatch { .. } => "EpochTimeScaleMismatch",
+            Sp3WriteError::HeaderTimeScaleMismatch { .. } => "HeaderTimeScaleMismatch",
+            Sp3WriteError::EpochCountMismatch { .. } => "EpochCountMismatch",
+            Sp3WriteError::AccuracyCodeCountMismatch { .. } => "AccuracyCodeCountMismatch",
+            Sp3WriteError::DuplicateSatellite { .. } => "DuplicateSatellite",
+            Sp3WriteError::SatelliteNotRepresentable { .. } => "SatelliteNotRepresentable",
+            Sp3WriteError::EpochArrayLengthMismatch { .. } => "EpochArrayLengthMismatch",
+            Sp3WriteError::UndeclaredSatelliteRecord { .. } => "UndeclaredSatelliteRecord",
+            Sp3WriteError::ConflictingRecords { .. } => "ConflictingRecords",
+            Sp3WriteError::VelocityStateInPositionProduct { .. } => {
+                "VelocityStateInPositionProduct"
+            }
+            Sp3WriteError::RecordValueNonFinite { .. } => "RecordValueNonFinite",
+            Sp3WriteError::RecordValueTooWide { .. } => "RecordValueTooWide",
+            Sp3WriteError::RecordValueNotRepresentable { .. } => "RecordValueNotRepresentable",
+            Sp3WriteError::RecordReadsAsAbsent { .. } => "RecordReadsAsAbsent",
+            Sp3WriteError::RecordFieldsDisagree { .. } => "RecordFieldsDisagree",
+            other => return debug_variant_name(other),
+        };
+        name.to_string()
+    }
+
+    /// Formatted core error message.
+    #[getter]
+    fn message(&self) -> String {
+        self.inner.to_string()
+    }
+
+    /// The field the refusal names, for the variants that name one.
+    #[getter]
+    fn field(&self) -> Option<&'static str> {
+        match &self.inner {
+            Sp3WriteError::TextNotColumnSafe { field, .. }
+            | Sp3WriteError::TextNotColumnStable { field, .. }
+            | Sp3WriteError::BlankDescriptor { field, .. }
+            | Sp3WriteError::TextTooWide { field, .. }
+            | Sp3WriteError::IntegerTooWide { field, .. }
+            | Sp3WriteError::NonFinite { field }
+            | Sp3WriteError::NumberTooWide { field, .. }
+            | Sp3WriteError::PrecisionNotRepresentable { field, .. }
+            | Sp3WriteError::EpochArrayLengthMismatch { field, .. }
+            | Sp3WriteError::VelocityStateInPositionProduct { field, .. }
+            | Sp3WriteError::RecordValueNonFinite { field, .. }
+            | Sp3WriteError::RecordValueTooWide { field, .. }
+            | Sp3WriteError::RecordValueNotRepresentable { field, .. }
+            | Sp3WriteError::RecordReadsAsAbsent { field, .. }
+            | Sp3WriteError::RecordFieldsDisagree { field, .. } => Some(*field),
+            _ => None,
+        }
+    }
+
+    /// Index into `Sp3.epochs_j2000_seconds` of the epoch the refusal names.
+    #[getter]
+    fn epoch_index(&self) -> Option<usize> {
+        match &self.inner {
+            Sp3WriteError::YearNotRepresentable { epoch_index, .. }
+            | Sp3WriteError::EpochNotRestatable { epoch_index, .. }
+            | Sp3WriteError::EpochTimeScaleMismatch { epoch_index, .. }
+            | Sp3WriteError::AccuracyNotRepresentable { epoch_index, .. }
+            | Sp3WriteError::AccuracyRecordMismatch { epoch_index, .. }
+            | Sp3WriteError::AccuracyBasisMissing { epoch_index, .. }
+            | Sp3WriteError::UndeclaredSatelliteRecord { epoch_index, .. }
+            | Sp3WriteError::ConflictingRecords { epoch_index, .. }
+            | Sp3WriteError::VelocityStateInPositionProduct { epoch_index, .. }
+            | Sp3WriteError::RecordValueNonFinite { epoch_index, .. }
+            | Sp3WriteError::RecordValueTooWide { epoch_index, .. }
+            | Sp3WriteError::RecordValueNotRepresentable { epoch_index, .. }
+            | Sp3WriteError::RecordReadsAsAbsent { epoch_index, .. }
+            | Sp3WriteError::RecordFieldsDisagree { epoch_index, .. } => Some(*epoch_index),
+            _ => None,
+        }
+    }
+
+    /// The satellite token the refusal names.
+    #[getter]
+    fn satellite(&self) -> Option<String> {
+        match &self.inner {
+            Sp3WriteError::DuplicateSatellite { sat }
+            | Sp3WriteError::SatelliteNotRepresentable { sat }
+            | Sp3WriteError::AccuracyNotRepresentable { sat, .. }
+            | Sp3WriteError::AccuracyRecordMismatch { sat, .. }
+            | Sp3WriteError::AccuracyBasisMissing { sat, .. }
+            | Sp3WriteError::UndeclaredSatelliteRecord { sat, .. }
+            | Sp3WriteError::ConflictingRecords { sat, .. }
+            | Sp3WriteError::VelocityStateInPositionProduct { sat, .. }
+            | Sp3WriteError::RecordValueNonFinite { sat, .. }
+            | Sp3WriteError::RecordValueTooWide { sat, .. }
+            | Sp3WriteError::RecordValueNotRepresentable { sat, .. }
+            | Sp3WriteError::RecordReadsAsAbsent { sat, .. }
+            | Sp3WriteError::RecordFieldsDisagree { sat, .. } => Some(sat.to_string()),
+            _ => None,
+        }
+    }
+
+    /// Columns the refused field occupies.
+    #[getter]
+    fn columns(&self) -> Option<usize> {
+        match &self.inner {
+            Sp3WriteError::TextTooWide { columns, .. }
+            | Sp3WriteError::IntegerTooWide { columns, .. }
+            | Sp3WriteError::NumberTooWide { columns, .. }
+            | Sp3WriteError::PrecisionNotRepresentable { columns, .. }
+            | Sp3WriteError::RecordValueTooWide { columns, .. }
+            | Sp3WriteError::RecordValueNotRepresentable { columns, .. } => Some(*columns),
+            _ => None,
+        }
+    }
+
+    /// Decimal places the refused `F` field carries.
+    #[getter]
+    fn decimals(&self) -> Option<usize> {
+        match &self.inner {
+            Sp3WriteError::NumberTooWide { decimals, .. }
+            | Sp3WriteError::PrecisionNotRepresentable { decimals, .. }
+            | Sp3WriteError::RecordValueTooWide { decimals, .. }
+            | Sp3WriteError::RecordValueNotRepresentable { decimals, .. } => Some(*decimals),
+            _ => None,
+        }
+    }
+
+    /// Dictionary containing every field of this refusal variant.
+    fn details<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        match &self.inner {
+            Sp3WriteError::TextNotColumnSafe { field, value }
+            | Sp3WriteError::TextNotColumnStable { field, value }
+            | Sp3WriteError::BlankDescriptor { field, value } => {
+                dict.set_item("field", *field)?;
+                dict.set_item("value", value.as_str())?;
+            }
+            Sp3WriteError::EmptyComment { index, value } => {
+                dict.set_item("index", *index)?;
+                dict.set_item("value", value.as_str())?;
+            }
+            Sp3WriteError::TextTooWide {
+                field,
+                columns,
+                value,
+            } => {
+                dict.set_item("field", *field)?;
+                dict.set_item("columns", *columns)?;
+                dict.set_item("value", value.as_str())?;
+            }
+            Sp3WriteError::IntegerTooWide {
+                field,
+                columns,
+                value,
+            } => {
+                dict.set_item("field", *field)?;
+                dict.set_item("columns", *columns)?;
+                dict.set_item("value", *value)?;
+            }
+            Sp3WriteError::NonFinite { field } => {
+                dict.set_item("field", *field)?;
+            }
+            Sp3WriteError::NumberTooWide {
+                field,
+                columns,
+                decimals,
+                value,
+            }
+            | Sp3WriteError::PrecisionNotRepresentable {
+                field,
+                columns,
+                decimals,
+                value,
+            } => {
+                dict.set_item("field", *field)?;
+                dict.set_item("columns", *columns)?;
+                dict.set_item("decimals", *decimals)?;
+                dict.set_item("value", *value)?;
+            }
+            Sp3WriteError::YearNotRepresentable { epoch_index, year } => {
+                dict.set_item("epoch_index", *epoch_index)?;
+                dict.set_item("year", *year)?;
+            }
+            Sp3WriteError::EpochNotRestatable {
+                epoch_index,
+                field_seconds,
+                residual_s,
+            } => {
+                dict.set_item("epoch_index", *epoch_index)?;
+                dict.set_item("field_seconds", *field_seconds)?;
+                dict.set_item("residual_s", (!residual_s.is_nan()).then_some(*residual_s))?;
+            }
+            Sp3WriteError::EpochTimeScaleMismatch {
+                epoch_index,
+                epoch_scale,
+                header_scale,
+            } => {
+                dict.set_item("epoch_index", *epoch_index)?;
+                dict.set_item("epoch_scale", PyTimeScale::from(*epoch_scale))?;
+                dict.set_item("header_scale", PyTimeScale::from(*header_scale))?;
+            }
+            Sp3WriteError::HeaderTimeScaleMismatch {
+                time_system,
+                time_scale,
+            } => {
+                dict.set_item("time_system", time_system.label())?;
+                dict.set_item("time_scale", PyTimeScale::from(*time_scale))?;
+            }
+            Sp3WriteError::EpochCountMismatch { declared, epochs } => {
+                dict.set_item("declared", *declared)?;
+                dict.set_item("epochs", *epochs)?;
+            }
+            Sp3WriteError::AccuracyCodeCountMismatch { satellites, codes } => {
+                dict.set_item("satellites", *satellites)?;
+                dict.set_item("codes", *codes)?;
+            }
+            Sp3WriteError::AccuracyNotRepresentable {
+                sat,
+                epoch_index,
+                component,
+                exponent,
+            } => {
+                dict.set_item("satellite", sat.to_string())?;
+                dict.set_item("epoch_index", *epoch_index)?;
+                dict.set_item("component", *component)?;
+                dict.set_item("exponent", *exponent)?;
+            }
+            Sp3WriteError::AccuracyRecordMismatch { sat, epoch_index }
+            | Sp3WriteError::AccuracyBasisMissing { sat, epoch_index } => {
+                dict.set_item("satellite", sat.to_string())?;
+                dict.set_item("epoch_index", *epoch_index)?;
+            }
+            Sp3WriteError::DuplicateSatellite { sat } => {
+                dict.set_item("satellite", sat.to_string())?;
+            }
+            Sp3WriteError::SatelliteNotRepresentable { sat } => {
+                // The satellite has no `01`..`99` token, so its system and
+                // number are given apart from the rendered text.
+                dict.set_item("satellite", sat.to_string())?;
+                dict.set_item("system", PyGnssSystem::from(sat.system))?;
+                dict.set_item("prn", sat.prn)?;
+            }
+            Sp3WriteError::EpochArrayLengthMismatch {
+                field,
+                epochs,
+                entries,
+            } => {
+                dict.set_item("field", *field)?;
+                dict.set_item("epochs", *epochs)?;
+                dict.set_item("entries", *entries)?;
+            }
+            Sp3WriteError::UndeclaredSatelliteRecord { sat, epoch_index }
+            | Sp3WriteError::ConflictingRecords { sat, epoch_index } => {
+                dict.set_item("satellite", sat.to_string())?;
+                dict.set_item("epoch_index", *epoch_index)?;
+            }
+            Sp3WriteError::VelocityStateInPositionProduct {
+                field,
+                sat,
+                epoch_index,
+            }
+            | Sp3WriteError::RecordValueNonFinite {
+                field,
+                sat,
+                epoch_index,
+            } => {
+                dict.set_item("field", *field)?;
+                dict.set_item("satellite", sat.to_string())?;
+                dict.set_item("epoch_index", *epoch_index)?;
+            }
+            Sp3WriteError::RecordValueTooWide {
+                field,
+                sat,
+                epoch_index,
+                columns,
+                decimals,
+                column_value,
+            } => {
+                dict.set_item("field", *field)?;
+                dict.set_item("satellite", sat.to_string())?;
+                dict.set_item("epoch_index", *epoch_index)?;
+                dict.set_item("columns", *columns)?;
+                dict.set_item("decimals", *decimals)?;
+                dict.set_item("column_value", *column_value)?;
+            }
+            Sp3WriteError::RecordValueNotRepresentable {
+                field,
+                sat,
+                epoch_index,
+                columns,
+                decimals,
+                stored,
+                column_value,
+            } => {
+                dict.set_item("field", *field)?;
+                dict.set_item("satellite", sat.to_string())?;
+                dict.set_item("epoch_index", *epoch_index)?;
+                dict.set_item("columns", *columns)?;
+                dict.set_item("decimals", *decimals)?;
+                dict.set_item("stored", *stored)?;
+                dict.set_item("column_value", *column_value)?;
+            }
+            Sp3WriteError::RecordReadsAsAbsent {
+                field,
+                sat,
+                epoch_index,
+                column_value,
+            } => {
+                dict.set_item("field", *field)?;
+                dict.set_item("satellite", sat.to_string())?;
+                dict.set_item("epoch_index", *epoch_index)?;
+                dict.set_item("column_value", *column_value)?;
+            }
+            Sp3WriteError::RecordFieldsDisagree {
+                field,
+                sat,
+                epoch_index,
+                stored,
+                native,
+            } => {
+                dict.set_item("field", *field)?;
+                dict.set_item("satellite", sat.to_string())?;
+                dict.set_item("epoch_index", *epoch_index)?;
+                dict.set_item("stored", *stored)?;
+                dict.set_item("native", *native)?;
+            }
+            other => {
+                dict.set_item("debug", format!("{other:?}"))?;
+            }
+        }
+        Ok(dict)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Sp3WriteErrorDetail(kind=\"{}\", message={:?})",
+            self.kind(),
+            self.message()
+        )
+    }
+
+    fn __eq__(&self, other: &PySp3WriteErrorDetail) -> bool {
+        self.inner == other.inner
+    }
+}
+
+/// Map an SP3 write refusal into `Sp3WriteError`, carrying its typed payload
+/// as `detail`.
+pub(crate) fn to_sp3_write_err(py: Python<'_>, err: Sp3WriteError) -> PyErr {
+    let ty = match sp3_write_error_type(py) {
+        Ok(ty) => ty,
+        Err(e) => return e,
+    };
+    let py_err = PyErr::from_type(ty, err.to_string());
+    let detail = match PySp3WriteErrorDetail::from(err).into_pyobject(py) {
+        Ok(detail) => detail,
+        Err(e) => return e,
+    };
+    if let Err(e) = py_err.value(py).setattr("detail", detail) {
+        return e;
+    }
+    py_err
+}
+
+/// Map a per-record lookup failure: an epoch past the end is `IndexError`, a
+/// satellite with no such record at that epoch is `KeyError`.
+fn record_lookup_error(err: CoreError, epoch_index: usize, what: &str) -> PyErr {
+    let python_error = match &err {
+        CoreError::EpochOutOfRange => {
+            PyIndexError::new_err(format!("epoch index {epoch_index} out of range"))
+        }
+        CoreError::UnknownSatellite(id) => PyKeyError::new_err(format!(
+            "satellite {id} has no {what} at epoch {epoch_index}"
+        )),
+        other => to_solve_err(other.to_string()),
+    };
+    let python_error = attach_core_error_detail(python_error, &err);
+    Python::with_gil(|py| {
+        let value = python_error.value(py);
+        if let Ok(detail) = value.getattr("detail") {
+            if let Ok(detail) = detail.downcast::<PyDict>() {
+                if let Err(error) = detail.set_item("epoch_index", epoch_index) {
+                    return error;
+                }
+            }
+        }
+        python_error
+    })
 }
 
 /// One precise-ephemeris sample: a satellite's ECEF position (and optional
@@ -1066,6 +2668,25 @@ impl PyPreciseEphemerisSample {
         Ok(Self { inner })
     }
 
+    #[staticmethod]
+    #[pyo3(signature = (satellite, epoch, position_ecef_m, clock_s=None, *, clock_event=false))]
+    fn from_instant(
+        satellite: &str,
+        epoch: &PyClockInstant,
+        position_ecef_m: [f64; 3],
+        clock_s: Option<f64>,
+        clock_event: bool,
+    ) -> PyResult<Self> {
+        let mut inner = PreciseEphemerisSample::new(
+            parse_sat(satellite)?,
+            epoch.to_core(),
+            position_ecef_m,
+            clock_s,
+        );
+        inner.clock_event = clock_event;
+        Ok(Self { inner })
+    }
+
     /// Satellite token, e.g. `"G01"`.
     #[getter]
     fn satellite(&self) -> String {
@@ -1076,6 +2697,11 @@ impl PyPreciseEphemerisSample {
     #[getter]
     fn epoch_j2000_seconds(&self) -> f64 {
         instant_to_j2000_seconds(&self.inner.epoch).unwrap_or(f64::NAN)
+    }
+
+    #[getter]
+    fn epoch(&self) -> PyClockInstant {
+        PyClockInstant::from_core(self.inner.epoch)
     }
 
     /// Time scale the epoch is expressed in.
@@ -1131,10 +2757,9 @@ impl PyPreciseEphemerisSamples {
     /// Build a source from a sequence of [`PreciseEphemerisSample`].
     ///
     /// Samples are grouped by satellite in supplied order and validated. Raises
-    /// `ValueError` if the set is empty, a satellite has a single sample, a
-    /// satellite's epochs are not strictly increasing, the samples mix time
-    /// scales, a sample is non-finite, or an epoch is not representable as J2000
-    /// seconds.
+    /// Raises `PreciseSamplesError` for core validation failures; `kind` names
+    /// the core variant and `satellite` is populated for satellite-specific
+    /// failures.
     #[staticmethod]
     #[pyo3(signature = (samples, gap_threshold_factor = None))]
     fn from_samples(
@@ -1144,12 +2769,25 @@ impl PyPreciseEphemerisSamples {
     ) -> PyResult<Self> {
         let samples = samples.iter().map(|s| s.borrow(py).to_core());
         let mut inner = PreciseEphemerisSamples::from_samples(samples)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|error| precise_samples_error(py, error))?;
         if let Some(factor) = gap_threshold_factor {
             let options = Sp3InterpolationOptions::new(factor)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             inner = inner.with_interpolation_options(options);
         }
+        Ok(Self { inner })
+    }
+
+    #[staticmethod]
+    fn from_samples_with_accuracy(
+        py: Python<'_>,
+        samples: Vec<Py<PyPreciseEphemerisSample>>,
+        accuracy: Vec<Py<PyPreciseEphemerisAccuracySample>>,
+    ) -> PyResult<Self> {
+        let samples = samples.iter().map(|sample| sample.borrow(py).to_core());
+        let accuracy = accuracy.iter().map(|item| item.borrow(py).to_core());
+        let inner = PreciseEphemerisSamples::from_samples_with_accuracy(samples, accuracy)
+            .map_err(|error| precise_samples_error(py, error))?;
         Ok(Self { inner })
     }
 
@@ -1197,7 +2835,7 @@ impl PyPreciseEphemerisSamples {
 #[pyclass(module = "sidereon._sidereon", name = "PreciseEphemerisInterpolant")]
 #[derive(Clone)]
 pub struct PyPreciseEphemerisInterpolant {
-    inner: PreciseEphemerisInterpolant,
+    pub(crate) inner: PreciseEphemerisInterpolant,
 }
 
 #[pymethods]
@@ -1224,13 +2862,34 @@ impl PyPreciseEphemerisInterpolant {
         gap_threshold_factor: Option<f64>,
     ) -> PyResult<Self> {
         let samples = samples.iter().map(|s| s.borrow(py).to_core());
-        let mut inner = PreciseEphemerisInterpolant::from_samples(samples)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let mut inner =
+            PreciseEphemerisInterpolant::from_samples(samples).map_err(|error| match error {
+                PreciseInterpolantError::Samples(sample_error) => {
+                    precise_samples_error(py, sample_error)
+                }
+            })?;
         if let Some(factor) = gap_threshold_factor {
             let options = Sp3InterpolationOptions::new(factor)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             inner = inner.with_interpolation_options(options);
         }
+        Ok(Self { inner })
+    }
+
+    #[staticmethod]
+    fn from_samples_with_accuracy(
+        py: Python<'_>,
+        samples: Vec<Py<PyPreciseEphemerisSample>>,
+        accuracy: Vec<Py<PyPreciseEphemerisAccuracySample>>,
+    ) -> PyResult<Self> {
+        let samples = samples.iter().map(|sample| sample.borrow(py).to_core());
+        let accuracy = accuracy.iter().map(|item| item.borrow(py).to_core());
+        let inner = PreciseEphemerisInterpolant::from_samples_with_accuracy(samples, accuracy)
+            .map_err(|error| match error {
+                PreciseInterpolantError::Samples(sample_error) => {
+                    precise_samples_error(py, sample_error)
+                }
+            })?;
         Ok(Self { inner })
     }
 
@@ -1291,15 +2950,63 @@ impl PyPreciseEphemerisInterpolant {
         let state = self
             .inner
             .position_at_j2000_seconds(sat, epoch_j2000_s)
-            .map_err(to_solve_err)?;
+            .map_err(|error| attach_core_error_detail(to_solve_err(error.to_string()), &error))?;
         Ok(PySp3State::from_state(state))
+    }
+
+    fn position_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+    ) -> PyResult<PySp3State> {
+        let sat = parse_sat(satellite)?;
+        self.inner
+            .position_at_epoch_query(sat, &epoch.inner)
+            .map(PySp3State::from_state)
+            .map_err(|error| attach_core_error_detail(to_solve_err(error.to_string()), &error))
+    }
+
+    fn selected_state_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<Option<PyEphemerisQueryState>> {
+        source_state_at_epoch_query(&self.inner, satellite, epoch, selection_epoch)
+    }
+
+    fn transmit_epoch_clock_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<Option<(f64, Option<&'static str>)>> {
+        source_transmit_clock_at_epoch_query(&self.inner, satellite, epoch, selection_epoch)
+    }
+
+    fn ephemeris_variance_at_epoch_query(
+        &self,
+        satellite: &str,
+        state_epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<f64> {
+        source_variance_at_epoch_query(&self.inner, satellite, state_epoch, selection_epoch)
+    }
+
+    fn clock_relativity_for_state_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+        position_ecef_m: [f64; 3],
+    ) -> PyResult<PyClockRelativity> {
+        source_clock_relativity_at_epoch_query(&self.inner, satellite, epoch, position_ecef_m)
     }
 
     /// Evaluate ECEF states for parallel satellite and epoch arrays.
     ///
     /// `satellites[i]` is evaluated at `epochs_j2000_s[i]`. The result keeps
     /// contiguous position and clock arrays plus per-element status and error
-    /// text.
+    /// text and structured details.
     fn observable_states_at_j2000_s(
         &self,
         satellites: Vec<String>,
@@ -1456,8 +3163,56 @@ impl PyPreciseInterpolantArtifact {
         let state = self
             .inner
             .position_at_j2000_seconds(sat, epoch_j2000_s)
-            .map_err(to_solve_err)?;
+            .map_err(|error| attach_core_error_detail(to_solve_err(error.to_string()), &error))?;
         Ok(PySp3State::from_state(state))
+    }
+
+    fn position_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+    ) -> PyResult<PySp3State> {
+        let sat = parse_sat(satellite)?;
+        self.inner
+            .position_at_epoch_query(sat, &epoch.inner)
+            .map(PySp3State::from_state)
+            .map_err(|error| attach_core_error_detail(to_solve_err(error.to_string()), &error))
+    }
+
+    fn selected_state_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<Option<PyEphemerisQueryState>> {
+        source_state_at_epoch_query(&self.inner, satellite, epoch, selection_epoch)
+    }
+
+    fn transmit_epoch_clock_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<Option<(f64, Option<&'static str>)>> {
+        source_transmit_clock_at_epoch_query(&self.inner, satellite, epoch, selection_epoch)
+    }
+
+    fn ephemeris_variance_at_epoch_query(
+        &self,
+        satellite: &str,
+        state_epoch: &PyExactEpochQuery,
+        selection_epoch: &PyExactEpochQuery,
+    ) -> PyResult<f64> {
+        source_variance_at_epoch_query(&self.inner, satellite, state_epoch, selection_epoch)
+    }
+
+    fn clock_relativity_for_state_at_epoch_query(
+        &self,
+        satellite: &str,
+        epoch: &PyExactEpochQuery,
+        position_ecef_m: [f64; 3],
+    ) -> PyResult<PyClockRelativity> {
+        source_clock_relativity_at_epoch_query(&self.inner, satellite, epoch, position_ecef_m)
     }
 
     /// Evaluate ECEF states for parallel satellite and epoch arrays.
@@ -1608,6 +3363,244 @@ fn exact_sp3_error(error: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(error.to_string())
 }
 
+fn set_exact_float(detail: &Bound<'_, PyDict>, key: &str, value: f64) {
+    if value.is_finite() {
+        let _ = detail.set_item(key, value);
+    } else {
+        let _ = detail.set_item(key, format!("{value:?}"));
+    }
+}
+
+fn exact_validation_detail<'py>(
+    py: Python<'py>,
+    error: &ExactSp3ValidationError,
+) -> (&'static str, Bound<'py, PyDict>) {
+    use ExactSp3ValidationError as E;
+
+    let detail = PyDict::new(py);
+    macro_rules! put {
+        ($key:literal, $value:expr) => {
+            let _ = detail.set_item($key, $value);
+        };
+    }
+    let kind = match error {
+        E::Parse(value) => {
+            put!("error", value.to_string());
+            put!("debug", format!("{value:?}"));
+            "parse"
+        }
+        E::Catalog(value) => {
+            put!("error", value.to_string());
+            put!("debug", format!("{value:?}"));
+            "catalog"
+        }
+        E::WrongProductFamily { actual } => {
+            put!("actual", actual.code());
+            "wrong_product_family"
+        }
+        E::InvalidIssue { issue } => {
+            put!("issue", issue);
+            "invalid_issue"
+        }
+        E::UnsupportedSpanToken { token } => {
+            put!("token", token);
+            "unsupported_span_token"
+        }
+        E::UnsupportedSampleToken { token } => {
+            put!("token", token);
+            "unsupported_sample_token"
+        }
+        E::NonCanonicalSpanToken { token, canonical } => {
+            put!("token", token);
+            put!("canonical", canonical);
+            "non_canonical_span_token"
+        }
+        E::NonCanonicalSampleToken { token, canonical } => {
+            put!("token", token);
+            put!("canonical", canonical);
+            "non_canonical_sample_token"
+        }
+        E::InvalidExpectedAgency { agency } => {
+            put!("agency", agency);
+            "invalid_expected_agency"
+        }
+        E::AgencyMismatch { expected, actual } => {
+            put!("expected", expected);
+            put!("actual", actual);
+            "agency_mismatch"
+        }
+        E::MissingEof => "missing_eof",
+        E::MalformedEofRecord {
+            line_number,
+            record_length,
+        } => {
+            put!("line_number", line_number.to_string());
+            put!("record_length", record_length.to_string());
+            "malformed_eof_record"
+        }
+        E::TrailingContentAfterEof => "trailing_content_after_eof",
+        E::MandatoryHeaderRecordCount {
+            record,
+            expected,
+            actual,
+        } => {
+            put!("record", record);
+            put!("expected", expected.to_string());
+            put!("actual", actual.to_string());
+            "mandatory_header_record_count"
+        }
+        E::MissingDeclaredSatelliteCount => "missing_declared_satellite_count",
+        E::DeclaredSatelliteCountMismatch { declared, tokens } => {
+            put!("declared", declared.to_string());
+            put!("tokens", tokens.to_string());
+            "declared_satellite_count_mismatch"
+        }
+        E::DuplicateDeclaredSatellite {
+            token,
+            first_index,
+            duplicate_index,
+        } => {
+            put!("token", token);
+            put!("first_index", first_index.to_string());
+            put!("duplicate_index", duplicate_index.to_string());
+            "duplicate_declared_satellite"
+        }
+        E::NoDeclaredSatellites => "no_declared_satellites",
+        E::SatelliteRecordSequenceMismatch {
+            record,
+            epoch_index,
+            expected,
+            actual,
+        } => {
+            put!("record", record);
+            put!("epoch_index", epoch_index.to_string());
+            put!("expected", expected);
+            put!("actual", actual);
+            "satellite_record_sequence_mismatch"
+        }
+        E::BodyRecordInterleavingMismatch {
+            epoch_index,
+            expected,
+            actual,
+        } => {
+            put!("epoch_index", epoch_index.to_string());
+            put!("expected", expected);
+            put!("actual", actual);
+            "body_record_interleaving_mismatch"
+        }
+        E::NonFiniteHeaderCadence => "non_finite_header_cadence",
+        E::NonPositiveHeaderCadence { actual_s } => {
+            put!("actual_s", actual_s.to_string());
+            "non_positive_header_cadence"
+        }
+        E::UnsupportedHeaderCadence { actual_s } => {
+            put!("actual_s", actual_s.to_string());
+            "unsupported_header_cadence"
+        }
+        E::CadenceMismatch {
+            requested_s,
+            header_s,
+        } => {
+            put!("requested_s", requested_s.to_string());
+            put!("header_s", header_s.to_string());
+            "cadence_mismatch"
+        }
+        E::DeclaredEpochCountMismatch { declared, parsed } => {
+            put!("declared", declared.to_string());
+            put!("parsed", parsed.to_string());
+            "declared_epoch_count_mismatch"
+        }
+        E::MissingDeclaredStart => "missing_declared_start",
+        E::DeclaredStartMismatch {
+            requested_j2000_s,
+            declared_j2000_s,
+            requested_tick,
+            declared_tick,
+        } => {
+            set_exact_float(&detail, "requested_j2000_s", *requested_j2000_s);
+            set_exact_float(&detail, "declared_j2000_s", *declared_j2000_s);
+            put!("requested_tick", requested_tick.to_string());
+            put!("declared_tick", declared_tick.map(|tick| tick.to_string()));
+            "declared_start_mismatch"
+        }
+        E::RequestBeforeGpsEpoch => "request_before_gps_epoch",
+        E::NonFiniteHeaderStartMetadata { field } => {
+            put!("field", field);
+            "non_finite_header_start_metadata"
+        }
+        E::InvalidHeaderStartMetadata { field, actual } => {
+            put!("field", field);
+            put!("actual", actual.to_string());
+            "invalid_header_start_metadata"
+        }
+        E::HeaderStartMetadataMismatch {
+            field,
+            requested,
+            actual,
+        } => {
+            put!("field", field);
+            put!("requested", requested.to_string());
+            put!("actual", actual.to_string());
+            "header_start_metadata_mismatch"
+        }
+        E::EmptyEpochGrid => "empty_epoch_grid",
+        E::FirstEpochMismatch {
+            requested_j2000_s,
+            actual_j2000_s,
+        } => {
+            put!("requested_j2000_s", requested_j2000_s.to_string());
+            put!("actual_j2000_s", actual_j2000_s.to_string());
+            "first_epoch_mismatch"
+        }
+        E::IrregularEpochGrid {
+            epoch_index,
+            requested_s,
+            actual_s,
+        } => {
+            put!("epoch_index", epoch_index.to_string());
+            put!("requested_s", requested_s.to_string());
+            put!("actual_s", actual_s.to_string());
+            "irregular_epoch_grid"
+        }
+        E::SpanNotMultipleOfCadence { span_s, cadence_s } => {
+            put!("span_s", span_s.to_string());
+            put!("cadence_s", cadence_s.to_string());
+            "span_not_multiple_of_cadence"
+        }
+        E::SpanMismatch {
+            parsed,
+            half_open,
+            inclusive,
+        } => {
+            put!("parsed", parsed.to_string());
+            put!("half_open", half_open.to_string());
+            put!("inclusive", inclusive.to_string());
+            "span_mismatch"
+        }
+        E::FormatVersionMismatch { requested, actual } => {
+            put!("requested", requested);
+            put!("actual", actual);
+            "format_version_mismatch"
+        }
+        other => {
+            put!("error", other.to_string());
+            put!("debug", format!("{other:?}"));
+            "unknown"
+        }
+    };
+    put!("kind", kind);
+    (kind, detail)
+}
+
+fn exact_validation_error(py: Python<'_>, error: ExactSp3ValidationError) -> PyErr {
+    let python_error = PyValueError::new_err(error.to_string());
+    let object = python_error.value(py);
+    let (kind, detail) = exact_validation_detail(py, &error);
+    let _ = object.setattr("detail", detail);
+    let _ = object.setattr("kind", kind);
+    python_error
+}
+
 #[allow(clippy::too_many_arguments)]
 fn exact_sp3_request(
     year: i32,
@@ -1704,6 +3697,7 @@ fn _validate_exact_sp3_request(
 #[pyo3(signature = (content, year, month, day, issue, span, sample, expected_agency=None, identity_json=None))]
 #[allow(clippy::too_many_arguments)]
 fn _parse_exact_sp3(
+    py: Python<'_>,
     content: &[u8],
     year: i32,
     month: u8,
@@ -1724,7 +3718,8 @@ fn _parse_exact_sp3(
         expected_agency,
         identity_json,
     )?;
-    let (sp3, coverage) = core_parse_exact_sp3(content, &request).map_err(exact_sp3_error)?;
+    let (sp3, coverage) = core_parse_exact_sp3(content, &request)
+        .map_err(|error| exact_validation_error(py, error))?;
     Ok((PySp3 { inner: sp3 }, exact_sp3_coverage(coverage)))
 }
 
@@ -1732,6 +3727,7 @@ fn _parse_exact_sp3(
 #[pyo3(signature = (sp3, year, month, day, issue, span, sample, expected_agency=None, identity_json=None))]
 #[allow(clippy::too_many_arguments)]
 fn _validate_exact_sp3(
+    py: Python<'_>,
     sp3: &PySp3,
     year: i32,
     month: u8,
@@ -1754,7 +3750,7 @@ fn _validate_exact_sp3(
     )?;
     core_validate_exact_sp3(&sp3.inner, &request)
         .map(exact_sp3_coverage)
-        .map_err(exact_sp3_error)
+        .map_err(|error| exact_validation_error(py, error))
 }
 
 /// Build deterministic precise-interpolant artifact bytes from an SP3 product.
@@ -1773,12 +3769,13 @@ pub(crate) fn parse_satellites(tokens: &[String]) -> PyResult<Vec<GnssSatelliteI
 }
 
 pub(crate) fn observable_state_batch_error(err: ObservablesError) -> PyErr {
-    match err {
+    let python_error = match &err {
         ObservablesError::InvalidInput { .. } | ObservablesError::Media(_) => {
             PyValueError::new_err(err.to_string())
         }
-        ObservablesError::NoEphemeris | ObservablesError::Ephemeris(_) => to_solve_err(err),
-    }
+        ObservablesError::NoEphemeris | ObservablesError::Ephemeris(_) => to_solve_err(err.clone()),
+    };
+    attach_observables_error_detail(python_error, &err)
 }
 
 pub(crate) fn with_observable_source<R>(
@@ -1896,7 +3893,9 @@ fn ephemeris_sample(
             "source must be Sp3, PreciseEphemerisSamples, PreciseEphemerisInterpolant, PreciseInterpolantArtifact, or BroadcastEphemeris",
         ));
     }
-    .map_err(to_solve_err)?;
+    .map_err(|error| {
+        attach_observables_error_detail(to_solve_err(error.to_string()), &error)
+    })?;
 
     Ok(rows.into_iter().map(PyEphemerisSampleRow::from).collect())
 }
@@ -1939,6 +3938,15 @@ fn instant_to_j2000_seconds(epoch: &Instant) -> Option<f64> {
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySp3>()?;
+    m.add_class::<PyEphemerisQueryState>()?;
+    m.add_class::<PyClockRelativity>()?;
+    m.add_class::<PySp3AccuracyValue>()?;
+    m.add_class::<PySp3AccuracyCodeGroup>()?;
+    m.add_class::<PySp3RawRecordAccuracy>()?;
+    m.add_class::<PySp3PositionClockAccuracy>()?;
+    m.add_class::<PySp3VelocityAccuracy>()?;
+    m.add_class::<PySp3RecordAccuracy>()?;
+    m.add_class::<PyPreciseEphemerisAccuracySample>()?;
     m.add_class::<PySp3EpochPrediction>()?;
     m.add_class::<PySp3PredictionSummary>()?;
     m.add_class::<PySp3Interpolation>()?;
@@ -1948,6 +3956,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyObservableStateBatch>()?;
     m.add_class::<PySp3ClockReferenceOffset>()?;
     m.add_class::<PySp3State>()?;
+    m.add_class::<PySp3ClockRecord>()?;
+    m.add_class::<PySp3Header>()?;
+    m.add_class::<PySp3WriteErrorDetail>()?;
     m.add_class::<PyPreciseEphemerisSample>()?;
     m.add_class::<PyPreciseEphemerisSamples>()?;
     m.add_class::<PyPreciseEphemerisInterpolant>()?;
@@ -1971,4 +3982,829 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sp3_clock_reference_offset, m)?)?;
     m.add_function(wrap_pyfunction!(align_sp3_clock_reference, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod exact_sp3_validation_error_mapping_tests {
+    use super::*;
+    use serde_json::json;
+    use sidereon_core::data::{DataCatalogError, ProductType};
+
+    #[test]
+    fn every_current_exact_sp3_refusal_keeps_its_complete_public_payload() {
+        use ExactSp3ValidationError as E;
+
+        let cases = vec![
+            (
+                E::Parse(CoreError::Parse("bad product".to_string())),
+                json!({"kind":"parse","error":"parse error: bad product","debug":"Parse(\"bad product\")"}),
+            ),
+            (
+                E::Catalog(DataCatalogError::UnknownCenter("bad".to_string())),
+                json!({"kind":"catalog","error":"unknown analysis center \"bad\"","debug":"UnknownCenter(\"bad\")"}),
+            ),
+            (
+                E::WrongProductFamily {
+                    actual: ProductType::Clk,
+                },
+                json!({"kind":"wrong_product_family","actual":"clk"}),
+            ),
+            (
+                E::InvalidIssue {
+                    issue: "2460".to_string(),
+                },
+                json!({"kind":"invalid_issue","issue":"2460"}),
+            ),
+            (
+                E::UnsupportedSpanToken {
+                    token: "02Q".to_string(),
+                },
+                json!({"kind":"unsupported_span_token","token":"02Q"}),
+            ),
+            (
+                E::UnsupportedSampleToken {
+                    token: "00S".to_string(),
+                },
+                json!({"kind":"unsupported_sample_token","token":"00S"}),
+            ),
+            (
+                E::NonCanonicalSpanToken {
+                    token: "24H".to_string(),
+                    canonical: "01D".to_string(),
+                },
+                json!({"kind":"non_canonical_span_token","token":"24H","canonical":"01D"}),
+            ),
+            (
+                E::NonCanonicalSampleToken {
+                    token: "300S".to_string(),
+                    canonical: "05M".to_string(),
+                },
+                json!({"kind":"non_canonical_sample_token","token":"300S","canonical":"05M"}),
+            ),
+            (
+                E::InvalidExpectedAgency {
+                    agency: "ABCDE".to_string(),
+                },
+                json!({"kind":"invalid_expected_agency","agency":"ABCDE"}),
+            ),
+            (
+                E::AgencyMismatch {
+                    expected: "IGS0".to_string(),
+                    actual: "COD0".to_string(),
+                },
+                json!({"kind":"agency_mismatch","expected":"IGS0","actual":"COD0"}),
+            ),
+            (E::MissingEof, json!({"kind":"missing_eof"})),
+            (
+                E::MalformedEofRecord {
+                    line_number: 42,
+                    record_length: 79,
+                },
+                json!({"kind":"malformed_eof_record","line_number":"42","record_length":"79"}),
+            ),
+            (
+                E::TrailingContentAfterEof,
+                json!({"kind":"trailing_content_after_eof"}),
+            ),
+            (
+                E::MandatoryHeaderRecordCount {
+                    record: "++",
+                    expected: 5,
+                    actual: 4,
+                },
+                json!({"kind":"mandatory_header_record_count","record":"++","expected":"5","actual":"4"}),
+            ),
+            (
+                E::MissingDeclaredSatelliteCount,
+                json!({"kind":"missing_declared_satellite_count"}),
+            ),
+            (
+                E::DeclaredSatelliteCountMismatch {
+                    declared: 3,
+                    tokens: 2,
+                },
+                json!({"kind":"declared_satellite_count_mismatch","declared":"3","tokens":"2"}),
+            ),
+            (
+                E::DuplicateDeclaredSatellite {
+                    token: "G01".to_string(),
+                    first_index: 1,
+                    duplicate_index: 4,
+                },
+                json!({"kind":"duplicate_declared_satellite","token":"G01","first_index":"1","duplicate_index":"4"}),
+            ),
+            (
+                E::NoDeclaredSatellites,
+                json!({"kind":"no_declared_satellites"}),
+            ),
+            (
+                E::SatelliteRecordSequenceMismatch {
+                    record: "P",
+                    epoch_index: 7,
+                    expected: vec!["G01".to_string(), "G02".to_string()],
+                    actual: vec!["G02".to_string()],
+                },
+                json!({"kind":"satellite_record_sequence_mismatch","record":"P","epoch_index":"7","expected":["G01","G02"],"actual":["G02"]}),
+            ),
+            (
+                E::BodyRecordInterleavingMismatch {
+                    epoch_index: 8,
+                    expected: vec!["PG01".to_string(), "VG01".to_string()],
+                    actual: vec!["VG01".to_string(), "PG01".to_string()],
+                },
+                json!({"kind":"body_record_interleaving_mismatch","epoch_index":"8","expected":["PG01","VG01"],"actual":["VG01","PG01"]}),
+            ),
+            (
+                E::NonFiniteHeaderCadence,
+                json!({"kind":"non_finite_header_cadence"}),
+            ),
+            (
+                E::NonPositiveHeaderCadence { actual_s: -1.5 },
+                json!({"kind":"non_positive_header_cadence","actual_s":"-1.5"}),
+            ),
+            (
+                E::UnsupportedHeaderCadence { actual_s: 99_999.5 },
+                json!({"kind":"unsupported_header_cadence","actual_s":"99999.5"}),
+            ),
+            (
+                E::CadenceMismatch {
+                    requested_s: 300.0,
+                    header_s: 900.0,
+                },
+                json!({"kind":"cadence_mismatch","requested_s":"300","header_s":"900"}),
+            ),
+            (
+                E::DeclaredEpochCountMismatch {
+                    declared: u64::MAX,
+                    parsed: 288,
+                },
+                json!({"kind":"declared_epoch_count_mismatch","declared":u64::MAX.to_string(),"parsed":"288"}),
+            ),
+            (
+                E::MissingDeclaredStart,
+                json!({"kind":"missing_declared_start"}),
+            ),
+            (
+                E::DeclaredStartMismatch {
+                    requested_j2000_s: 1.25,
+                    declared_j2000_s: f64::NAN,
+                    requested_tick: i128::MAX,
+                    declared_tick: None,
+                },
+                json!({
+                    "kind":"declared_start_mismatch",
+                    "requested_j2000_s":1.25,
+                    "declared_j2000_s":"NaN",
+                    "requested_tick":i128::MAX.to_string(),
+                    "declared_tick":null
+                }),
+            ),
+            (
+                E::RequestBeforeGpsEpoch,
+                json!({"kind":"request_before_gps_epoch"}),
+            ),
+            (
+                E::NonFiniteHeaderStartMetadata { field: "mjd" },
+                json!({"kind":"non_finite_header_start_metadata","field":"mjd"}),
+            ),
+            (
+                E::InvalidHeaderStartMetadata {
+                    field: "seconds_of_week",
+                    actual: -1.5,
+                },
+                json!({"kind":"invalid_header_start_metadata","field":"seconds_of_week","actual":"-1.5"}),
+            ),
+            (
+                E::HeaderStartMetadataMismatch {
+                    field: "gps_week",
+                    requested: 2200.0,
+                    actual: 2201.0,
+                },
+                json!({"kind":"header_start_metadata_mismatch","field":"gps_week","requested":"2200","actual":"2201"}),
+            ),
+            (E::EmptyEpochGrid, json!({"kind":"empty_epoch_grid"})),
+            (
+                E::FirstEpochMismatch {
+                    requested_j2000_s: 1.25,
+                    actual_j2000_s: 2.5,
+                },
+                json!({"kind":"first_epoch_mismatch","requested_j2000_s":"1.25","actual_j2000_s":"2.5"}),
+            ),
+            (
+                E::IrregularEpochGrid {
+                    epoch_index: 100,
+                    requested_s: 300.0,
+                    actual_s: 301.0,
+                },
+                json!({"kind":"irregular_epoch_grid","epoch_index":"100","requested_s":"300","actual_s":"301"}),
+            ),
+            (
+                E::SpanNotMultipleOfCadence {
+                    span_s: 86_401,
+                    cadence_s: 300,
+                },
+                json!({"kind":"span_not_multiple_of_cadence","span_s":"86401","cadence_s":"300"}),
+            ),
+            (
+                E::SpanMismatch {
+                    parsed: 287,
+                    half_open: 288,
+                    inclusive: 289,
+                },
+                json!({"kind":"span_mismatch","parsed":"287","half_open":"288","inclusive":"289"}),
+            ),
+            (
+                E::FormatVersionMismatch {
+                    requested: "d".to_string(),
+                    actual: "c".to_string(),
+                },
+                json!({"kind":"format_version_mismatch","requested":"d","actual":"c"}),
+            ),
+        ];
+
+        assert_eq!(cases.len(), 37);
+        Python::with_gil(|py| {
+            for (error, expected) in cases {
+                let (kind, detail) = exact_validation_detail(py, &error);
+                let actual: serde_json::Value =
+                    pythonize::depythonize(&detail).expect("detail is JSON-compatible");
+                assert_eq!(actual, expected, "{kind}: {error:?}");
+                assert_eq!(actual["kind"], kind);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod sp3_write_error_detail_tests {
+    use super::*;
+
+    enum ExpectedValue {
+        Text(&'static str),
+        Usize(usize),
+        U64(u64),
+        I64(i64),
+        F64(f64),
+        OptionalF64(Option<f64>),
+        OptionalI16(Option<i16>),
+        TimeScale(PyTimeScale),
+        GnssSystem(PyGnssSystem),
+    }
+
+    struct Case {
+        error: Sp3WriteError,
+        kind: &'static str,
+        fields: Vec<(&'static str, ExpectedValue)>,
+    }
+
+    fn expected_text(fields: &[(&str, ExpectedValue)], key: &str) -> Option<&'static str> {
+        fields
+            .iter()
+            .find_map(|(name, value)| match (name == &key, value) {
+                (true, ExpectedValue::Text(value)) => Some(*value),
+                _ => None,
+            })
+    }
+
+    fn expected_usize(fields: &[(&str, ExpectedValue)], key: &str) -> Option<usize> {
+        fields
+            .iter()
+            .find_map(|(name, value)| match (name == &key, value) {
+                (true, ExpectedValue::Usize(value)) => Some(*value),
+                _ => None,
+            })
+    }
+
+    fn assert_case(case: Case) {
+        let detail = PySp3WriteErrorDetail::from(case.error.clone());
+        assert_eq!(detail.kind(), case.kind);
+        assert_eq!(detail.message(), case.error.to_string());
+        assert_eq!(detail.field(), expected_text(&case.fields, "field"));
+        assert_eq!(
+            detail.epoch_index(),
+            expected_usize(&case.fields, "epoch_index")
+        );
+        assert_eq!(
+            detail.satellite().as_deref(),
+            expected_text(&case.fields, "satellite")
+        );
+        assert_eq!(detail.columns(), expected_usize(&case.fields, "columns"));
+        assert_eq!(detail.decimals(), expected_usize(&case.fields, "decimals"));
+        assert!(detail.__repr__().contains(case.kind));
+
+        Python::with_gil(|py| {
+            let actual = detail.details(py).expect("detail dictionary");
+            assert_eq!(actual.len(), case.fields.len());
+            for (key, expected) in case.fields {
+                let value = actual
+                    .get_item(key)
+                    .expect("dictionary lookup")
+                    .unwrap_or_else(|| panic!("missing {key} for {}", case.kind));
+                match expected {
+                    ExpectedValue::Text(expected) => {
+                        assert_eq!(value.extract::<String>().unwrap(), expected)
+                    }
+                    ExpectedValue::Usize(expected) => {
+                        assert_eq!(value.extract::<usize>().unwrap(), expected)
+                    }
+                    ExpectedValue::U64(expected) => {
+                        assert_eq!(value.extract::<u64>().unwrap(), expected)
+                    }
+                    ExpectedValue::I64(expected) => {
+                        assert_eq!(value.extract::<i64>().unwrap(), expected)
+                    }
+                    ExpectedValue::F64(expected) => assert_eq!(
+                        value.extract::<f64>().unwrap().to_bits(),
+                        expected.to_bits()
+                    ),
+                    ExpectedValue::OptionalF64(expected) => match expected {
+                        Some(expected) => assert_eq!(
+                            value.extract::<f64>().unwrap().to_bits(),
+                            expected.to_bits()
+                        ),
+                        None => assert!(value.is_none()),
+                    },
+                    ExpectedValue::OptionalI16(expected) => match expected {
+                        Some(expected) => assert_eq!(value.extract::<i16>().unwrap(), expected),
+                        None => assert!(value.is_none()),
+                    },
+                    ExpectedValue::TimeScale(expected) => {
+                        let actual = value.extract::<PyRef<'_, PyTimeScale>>().unwrap();
+                        assert!(*actual == expected);
+                    }
+                    ExpectedValue::GnssSystem(expected) => {
+                        let actual = value.extract::<PyRef<'_, PyGnssSystem>>().unwrap();
+                        assert_eq!(*actual, expected);
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn every_sp3_write_refusal_keeps_its_complete_public_payload() {
+        use sidereon_core::astro::time::TimeScale;
+        use sidereon_core::ephemeris::Sp3TimeSystem;
+
+        let satellite = "G07".parse::<GnssSatelliteId>().unwrap();
+        let unrepresentable = GnssSatelliteId {
+            system: sidereon_core::GnssSystem::Gps,
+            prn: 100,
+        };
+        let cases = vec![
+            Case {
+                error: Sp3WriteError::TextNotColumnSafe {
+                    field: "agency",
+                    value: "A\nB".into(),
+                },
+                kind: "TextNotColumnSafe",
+                fields: vec![
+                    ("field", ExpectedValue::Text("agency")),
+                    ("value", ExpectedValue::Text("A\nB")),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::TextNotColumnStable {
+                    field: "orbit type",
+                    value: " FIT ".into(),
+                },
+                kind: "TextNotColumnStable",
+                fields: vec![
+                    ("field", ExpectedValue::Text("orbit type")),
+                    ("value", ExpectedValue::Text(" FIT ")),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::BlankDescriptor {
+                    field: "data used",
+                    value: "".into(),
+                },
+                kind: "BlankDescriptor",
+                fields: vec![
+                    ("field", ExpectedValue::Text("data used")),
+                    ("value", ExpectedValue::Text("")),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::EmptyComment {
+                    index: 3,
+                    value: "".into(),
+                },
+                kind: "EmptyComment",
+                fields: vec![
+                    ("index", ExpectedValue::Usize(3)),
+                    ("value", ExpectedValue::Text("")),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::TextTooWide {
+                    field: "agency",
+                    columns: 4,
+                    value: "ABCDE".into(),
+                },
+                kind: "TextTooWide",
+                fields: vec![
+                    ("field", ExpectedValue::Text("agency")),
+                    ("columns", ExpectedValue::Usize(4)),
+                    ("value", ExpectedValue::Text("ABCDE")),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::IntegerTooWide {
+                    field: "epoch count",
+                    columns: 7,
+                    value: 9_007_199_254_740_993,
+                },
+                kind: "IntegerTooWide",
+                fields: vec![
+                    ("field", ExpectedValue::Text("epoch count")),
+                    ("columns", ExpectedValue::Usize(7)),
+                    ("value", ExpectedValue::U64(9_007_199_254_740_993)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::NonFinite { field: "interval" },
+                kind: "NonFinite",
+                fields: vec![("field", ExpectedValue::Text("interval"))],
+            },
+            Case {
+                error: Sp3WriteError::NumberTooWide {
+                    field: "clock base",
+                    columns: 10,
+                    decimals: 7,
+                    value: 12_345.25,
+                },
+                kind: "NumberTooWide",
+                fields: vec![
+                    ("field", ExpectedValue::Text("clock base")),
+                    ("columns", ExpectedValue::Usize(10)),
+                    ("decimals", ExpectedValue::Usize(7)),
+                    ("value", ExpectedValue::F64(12_345.25)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::PrecisionNotRepresentable {
+                    field: "position base",
+                    columns: 10,
+                    decimals: 7,
+                    value: 1.25000001,
+                },
+                kind: "PrecisionNotRepresentable",
+                fields: vec![
+                    ("field", ExpectedValue::Text("position base")),
+                    ("columns", ExpectedValue::Usize(10)),
+                    ("decimals", ExpectedValue::Usize(7)),
+                    ("value", ExpectedValue::F64(1.25000001)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::AccuracyNotRepresentable {
+                    sat: satellite,
+                    epoch_index: 5,
+                    component: "position",
+                    exponent: Some(-12),
+                },
+                kind: "AccuracyNotRepresentable",
+                fields: vec![
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(5)),
+                    ("component", ExpectedValue::Text("position")),
+                    ("exponent", ExpectedValue::OptionalI16(Some(-12))),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::AccuracyRecordMismatch {
+                    sat: satellite,
+                    epoch_index: 6,
+                },
+                kind: "AccuracyRecordMismatch",
+                fields: vec![
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(6)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::AccuracyBasisMissing {
+                    sat: satellite,
+                    epoch_index: 8,
+                },
+                kind: "AccuracyBasisMissing",
+                fields: vec![
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(8)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::YearNotRepresentable {
+                    epoch_index: 9,
+                    year: -12_345,
+                },
+                kind: "YearNotRepresentable",
+                fields: vec![
+                    ("epoch_index", ExpectedValue::Usize(9)),
+                    ("year", ExpectedValue::I64(-12_345)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::EpochNotRestatable {
+                    epoch_index: 10,
+                    field_seconds: 59.125,
+                    residual_s: 0.000_000_01,
+                },
+                kind: "EpochNotRestatable",
+                fields: vec![
+                    ("epoch_index", ExpectedValue::Usize(10)),
+                    ("field_seconds", ExpectedValue::F64(59.125)),
+                    ("residual_s", ExpectedValue::OptionalF64(Some(0.000_000_01))),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::EpochTimeScaleMismatch {
+                    epoch_index: 11,
+                    epoch_scale: TimeScale::Gpst,
+                    header_scale: TimeScale::Utc,
+                },
+                kind: "EpochTimeScaleMismatch",
+                fields: vec![
+                    ("epoch_index", ExpectedValue::Usize(11)),
+                    ("epoch_scale", ExpectedValue::TimeScale(PyTimeScale::GPST)),
+                    ("header_scale", ExpectedValue::TimeScale(PyTimeScale::UTC)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::HeaderTimeScaleMismatch {
+                    time_system: Sp3TimeSystem::Galileo,
+                    time_scale: TimeScale::Gpst,
+                },
+                kind: "HeaderTimeScaleMismatch",
+                fields: vec![
+                    ("time_system", ExpectedValue::Text("GAL")),
+                    ("time_scale", ExpectedValue::TimeScale(PyTimeScale::GPST)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::EpochCountMismatch {
+                    declared: 9_007_199_254_740_993,
+                    epochs: 12,
+                },
+                kind: "EpochCountMismatch",
+                fields: vec![
+                    ("declared", ExpectedValue::U64(9_007_199_254_740_993)),
+                    ("epochs", ExpectedValue::Usize(12)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::AccuracyCodeCountMismatch {
+                    satellites: 13,
+                    codes: 12,
+                },
+                kind: "AccuracyCodeCountMismatch",
+                fields: vec![
+                    ("satellites", ExpectedValue::Usize(13)),
+                    ("codes", ExpectedValue::Usize(12)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::DuplicateSatellite { sat: satellite },
+                kind: "DuplicateSatellite",
+                fields: vec![("satellite", ExpectedValue::Text("G07"))],
+            },
+            Case {
+                error: Sp3WriteError::SatelliteNotRepresentable {
+                    sat: unrepresentable,
+                },
+                kind: "SatelliteNotRepresentable",
+                fields: vec![
+                    ("satellite", ExpectedValue::Text("G100")),
+                    ("system", ExpectedValue::GnssSystem(PyGnssSystem::GPS)),
+                    ("prn", ExpectedValue::Usize(100)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::EpochArrayLengthMismatch {
+                    field: "clocks",
+                    epochs: 14,
+                    entries: 13,
+                },
+                kind: "EpochArrayLengthMismatch",
+                fields: vec![
+                    ("field", ExpectedValue::Text("clocks")),
+                    ("epochs", ExpectedValue::Usize(14)),
+                    ("entries", ExpectedValue::Usize(13)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::UndeclaredSatelliteRecord {
+                    sat: satellite,
+                    epoch_index: 15,
+                },
+                kind: "UndeclaredSatelliteRecord",
+                fields: vec![
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(15)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::ConflictingRecords {
+                    sat: satellite,
+                    epoch_index: 16,
+                },
+                kind: "ConflictingRecords",
+                fields: vec![
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(16)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::VelocityStateInPositionProduct {
+                    field: "velocity x",
+                    sat: satellite,
+                    epoch_index: 17,
+                },
+                kind: "VelocityStateInPositionProduct",
+                fields: vec![
+                    ("field", ExpectedValue::Text("velocity x")),
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(17)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::RecordValueNonFinite {
+                    field: "clock",
+                    sat: satellite,
+                    epoch_index: 18,
+                },
+                kind: "RecordValueNonFinite",
+                fields: vec![
+                    ("field", ExpectedValue::Text("clock")),
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(18)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::RecordValueTooWide {
+                    field: "position x",
+                    sat: satellite,
+                    epoch_index: 19,
+                    columns: 14,
+                    decimals: 6,
+                    column_value: 123_456_789.25,
+                },
+                kind: "RecordValueTooWide",
+                fields: vec![
+                    ("field", ExpectedValue::Text("position x")),
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(19)),
+                    ("columns", ExpectedValue::Usize(14)),
+                    ("decimals", ExpectedValue::Usize(6)),
+                    ("column_value", ExpectedValue::F64(123_456_789.25)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::RecordValueNotRepresentable {
+                    field: "clock",
+                    sat: satellite,
+                    epoch_index: 20,
+                    columns: 14,
+                    decimals: 6,
+                    stored: 0.000_001_25,
+                    column_value: 1.250_000_01,
+                },
+                kind: "RecordValueNotRepresentable",
+                fields: vec![
+                    ("field", ExpectedValue::Text("clock")),
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(20)),
+                    ("columns", ExpectedValue::Usize(14)),
+                    ("decimals", ExpectedValue::Usize(6)),
+                    ("stored", ExpectedValue::F64(0.000_001_25)),
+                    ("column_value", ExpectedValue::F64(1.250_000_01)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::RecordReadsAsAbsent {
+                    field: "clock",
+                    sat: satellite,
+                    epoch_index: 21,
+                    column_value: 999_999.999_999,
+                },
+                kind: "RecordReadsAsAbsent",
+                fields: vec![
+                    ("field", ExpectedValue::Text("clock")),
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(21)),
+                    ("column_value", ExpectedValue::F64(999_999.999_999)),
+                ],
+            },
+            Case {
+                error: Sp3WriteError::RecordFieldsDisagree {
+                    field: "velocity y",
+                    sat: satellite,
+                    epoch_index: 22,
+                    stored: Some(-0.0),
+                    native: None,
+                },
+                kind: "RecordFieldsDisagree",
+                fields: vec![
+                    ("field", ExpectedValue::Text("velocity y")),
+                    ("satellite", ExpectedValue::Text("G07")),
+                    ("epoch_index", ExpectedValue::Usize(22)),
+                    ("stored", ExpectedValue::OptionalF64(Some(-0.0))),
+                    ("native", ExpectedValue::OptionalF64(None)),
+                ],
+            },
+        ];
+        assert_eq!(cases.len(), 29);
+        for case in cases {
+            assert_case(case);
+        }
+        assert_case(Case {
+            error: Sp3WriteError::AccuracyNotRepresentable {
+                sat: satellite,
+                epoch_index: 23,
+                component: "clock",
+                exponent: None,
+            },
+            kind: "AccuracyNotRepresentable",
+            fields: vec![
+                ("satellite", ExpectedValue::Text("G07")),
+                ("epoch_index", ExpectedValue::Usize(23)),
+                ("component", ExpectedValue::Text("clock")),
+                ("exponent", ExpectedValue::OptionalI16(None)),
+            ],
+        });
+        assert_case(Case {
+            error: Sp3WriteError::EpochNotRestatable {
+                epoch_index: 24,
+                field_seconds: 0.0,
+                residual_s: f64::NAN,
+            },
+            kind: "EpochNotRestatable",
+            fields: vec![
+                ("epoch_index", ExpectedValue::Usize(24)),
+                ("field_seconds", ExpectedValue::F64(0.0)),
+                ("residual_s", ExpectedValue::OptionalF64(None)),
+            ],
+        });
+    }
+}
+
+#[cfg(test)]
+mod precise_samples_error_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_accuracy_from_valid_samples_keeps_typed_satellite_payload() {
+        let satellite = "G07".parse::<GnssSatelliteId>().unwrap();
+        let epochs = [
+            instant_from_j2000_seconds(0.0, sidereon_core::astro::time::TimeScale::Gpst).unwrap(),
+            instant_from_j2000_seconds(1.0, sidereon_core::astro::time::TimeScale::Gpst).unwrap(),
+        ];
+        let samples = epochs
+            .map(|epoch| PreciseEphemerisSample::new(satellite, epoch, [1.0, 2.0, 3.0], None));
+        let invalid_accuracy = samples.map(|sample| {
+            PreciseEphemerisAccuracySample::new(
+                sample.sat,
+                sample.epoch,
+                [
+                    Sp3AccuracyValue::Known(f64::NAN),
+                    Sp3AccuracyValue::Unknown,
+                    Sp3AccuracyValue::Unknown,
+                ],
+                Sp3AccuracyValue::Unknown,
+            )
+        });
+        let valid_accuracy = samples.map(|sample| {
+            PreciseEphemerisAccuracySample::new(
+                sample.sat,
+                sample.epoch,
+                [Sp3AccuracyValue::Known(1.0); 3],
+                Sp3AccuracyValue::Known(1.0),
+            )
+        });
+
+        assert!(
+            PreciseEphemerisSamples::from_samples_with_accuracy(samples, valid_accuracy).is_ok()
+        );
+
+        let error = PreciseEphemerisSamples::from_samples_with_accuracy(samples, invalid_accuracy)
+            .unwrap_err();
+        Python::with_gil(|py| {
+            let python_error = precise_samples_error(py, error);
+            assert!(python_error.is_instance_of::<InvalidAccuracyValueError>(py));
+            let value = python_error.value(py);
+            assert_eq!(
+                value.getattr("kind").unwrap().extract::<String>().unwrap(),
+                "invalid_accuracy_value"
+            );
+            assert_eq!(
+                value
+                    .getattr("satellite")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "G07"
+            );
+        });
+    }
 }

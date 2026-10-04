@@ -10,7 +10,6 @@
 use std::collections::BTreeMap;
 
 use numpy::PyArray1;
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
@@ -19,20 +18,15 @@ use sidereon_core::dgnss::{
 };
 
 use crate::spp::PySppConfig;
-use crate::{np_array, PySp3, SolveError};
+use crate::{np_array, PySp3};
 
 /// Result of applying base corrections to rover observations: the corrected
 /// `(token, pseudorange_m)` pairs in rover order, and the tokens dropped for want
 /// of a matching correction.
 type AppliedCorrections = (Vec<(String, f64)>, Vec<String>);
 
-fn to_py_err(err: DgnssError) -> PyErr {
-    match err {
-        DgnssError::InvalidInput { field, reason } => {
-            PyValueError::new_err(format!("invalid DGNSS input {field}: {reason}"))
-        }
-        DgnssError::Spp(spp) => SolveError::new_err(spp.to_string()),
-    }
+fn to_py_err(py: Python<'_>, err: DgnssError) -> PyErr {
+    crate::solve_error_detail::dgnss_error(py, err)
 }
 
 fn to_code_observations(observations: &[(String, f64)]) -> Vec<CodeObservation> {
@@ -52,6 +46,7 @@ fn to_code_observations(observations: &[(String, f64)]) -> Vec<CodeObservation> 
 /// corrected). Raises `ValueError` on malformed input.
 #[pyfunction]
 fn dgnss_pseudorange_corrections(
+    py: Python<'_>,
     sp3: &PySp3,
     base_position_m: [f64; 3],
     base_observations: Vec<(String, f64)>,
@@ -63,7 +58,7 @@ fn dgnss_pseudorange_corrections(
         &to_code_observations(&base_observations),
         t_rx_j2000_s,
     )
-    .map_err(to_py_err)
+    .map_err(|err| to_py_err(py, err))
 }
 
 /// Apply base pseudorange corrections to rover observations by satellite token.
@@ -75,11 +70,12 @@ fn dgnss_pseudorange_corrections(
 /// correction. Raises `ValueError` on malformed input.
 #[pyfunction]
 fn dgnss_apply_corrections(
+    py: Python<'_>,
     rover_observations: Vec<(String, f64)>,
     corrections: BTreeMap<String, f64>,
 ) -> PyResult<AppliedCorrections> {
     let applied = apply_corrections(&to_code_observations(&rover_observations), &corrections)
-        .map_err(to_py_err)?;
+        .map_err(|err| to_py_err(py, err))?;
     let corrected = applied
         .corrected
         .into_iter()
@@ -135,6 +131,21 @@ impl PyDgnssSolution {
         self.inner.solution.residuals_m.clone()
     }
 
+    /// The pseudorange error variance of each used satellite, square metres,
+    /// index-aligned to `used_sats`: the RTKLIB `rescode` variance the solve
+    /// weighted the satellite by, taken at the selection the solution reports.
+    #[getter]
+    fn pseudorange_variances_m2(&self) -> Vec<f64> {
+        self.inner.solution.pseudorange_variances_m2.clone()
+    }
+
+    /// The weight each used satellite carried in the reported solve, inverse
+    /// square metres, index-aligned to `used_sats`.
+    #[getter]
+    fn weights(&self) -> Vec<f64> {
+        self.inner.solution.weights.clone()
+    }
+
     /// Rover-minus-base ECEF baseline vector as a numpy array `[dx, dy, dz]` (metres).
     #[getter]
     fn baseline_vector_m<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -175,6 +186,7 @@ impl PyDgnssSolution {
 /// `SolveError` if the corrected solve fails.
 #[pyfunction]
 fn dgnss_solve(
+    py: Python<'_>,
     sp3: &PySp3,
     base_position_m: [f64; 3],
     base_observations: Vec<(String, f64)>,
@@ -189,7 +201,7 @@ fn dgnss_solve(
         config.to_inputs(),
         config.with_geodetic_flag(),
     )
-    .map_err(to_py_err)?;
+    .map_err(|err| to_py_err(py, err))?;
     Ok(PyDgnssSolution { inner })
 }
 

@@ -12,7 +12,7 @@ use numpy::ndarray::Array2;
 use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyDict, PyModule};
 
 use sidereon_core::atmosphere::troposphere::Met;
 use sidereon_core::positioning::SurfaceMet;
@@ -24,16 +24,694 @@ use sidereon_core::precise_positioning::defaults::{
 use sidereon_core::precise_positioning::{
     solve_ppp_auto_init_fixed as core_solve_ppp_auto_init_fixed,
     solve_ppp_auto_init_float as core_solve_ppp_auto_init_float, FixedAmbiguityOptions,
-    FixedSolution, FixedSolveConfig, FloatEpoch, FloatObservation, FloatSolution, FloatSolveConfig,
-    FloatSolveOptions, FloatState, IntegerStatus as PppIntegerStatus, MeasurementWeights,
-    PppAutoInitOptions, PppInitialGuess, RangeCorrections, TemporalCorrelationSummary,
-    TropoMapping, TroposphereOptions, VmfSiteSample, VmfSiteSeries,
+    FixedSolution, FixedSolveConfig, FloatEpoch, FloatObservation, FloatObservationSignals,
+    FloatResidual, FloatSolution, FloatSolveConfig, FloatSolveOptions, FloatState, FloatStatus,
+    IntegerStatus as PppIntegerStatus, MeasurementWeights, PcvSample, PppAutoInitOptions,
+    PppCorrectionLookup, PppInitialGuess, RangeCorrections, ReceiverAntennaFrequency,
+    ReceiverAntennaOptions, SatelliteClockCorrections, SsrBiasExclusion, SsrIfCombinationStatus,
+    SsrObsApplicationReport, SsrObsSignalReport, SsrTransmitTimeFailure,
+    TemporalCorrelationSummary, TropoMapping, TroposphereOptions, UnplacedObservation,
+    UnplacedObservationReason, VmfSiteSample, VmfSiteSeries,
 };
+use sidereon_core::ssr::{
+    SignalCode, SsrCodeBiasQueryResult, SsrPhaseBiasQueryResult, SsrSolution,
+};
+
+use crate::marshal::{debug_variant_snake, mat3_to_array, option_py_or_default};
+use crate::ppp_corrections::{PyPppCorrections, PyPppCorrectionsOptions};
+use crate::sbas_ssr::{PySsrCorrectionSize, PySsrSolution};
 use sidereon_core::GnssSatelliteId;
 
-use crate::marshal::{mat3_to_array, option_py_or_default};
+fn parse_sat(token: &str) -> PyResult<GnssSatelliteId> {
+    GnssSatelliteId::from_str(token)
+        .map_err(|_| PyValueError::new_err(format!("invalid satellite token: {token}")))
+}
+
+/// A PPP observation left out before the solve because no transmission epoch
+/// can be placed from it.
+#[pyclass(module = "sidereon._sidereon", name = "PppUnplacedObservation")]
+#[derive(Clone)]
+pub struct PppUnplacedObservationRow {
+    inner: UnplacedObservation,
+}
+
+#[pymethods]
+impl PppUnplacedObservationRow {
+    /// Input epoch index of the observation.
+    #[getter]
+    fn epoch_index(&self) -> usize {
+        self.inner.epoch_index
+    }
+
+    /// Satellite token of the observation.
+    #[getter]
+    fn satellite_id(&self) -> &str {
+        &self.inner.satellite_id
+    }
+
+    /// Ambiguity id of the observation.
+    #[getter]
+    fn ambiguity_id(&self) -> &str {
+        &self.inner.ambiguity_id
+    }
+
+    /// Why no transmission epoch is placed: `code_not_positive` for a zero
+    /// or negative code, which RTKLIB reads as no pseudorange.
+    #[getter]
+    fn reason(&self) -> String {
+        match self.inner.reason {
+            UnplacedObservationReason::CodeNotPositive => "code_not_positive".to_string(),
+            UnplacedObservationReason::SsrCorrectionExceedsLimit(_) => {
+                "ssr_correction_exceeds_limit".to_string()
+            }
+            other => debug_variant_snake(&other),
+        }
+    }
+
+    #[getter]
+    fn correction_size(&self) -> Option<PySsrCorrectionSize> {
+        match self.inner.reason {
+            UnplacedObservationReason::SsrCorrectionExceedsLimit(size) => Some(size.into()),
+            _ => None,
+        }
+    }
+
+    /// Why no transmission epoch is placed, in words.
+    #[getter]
+    fn message(&self) -> String {
+        let reason = match self.inner.reason {
+            UnplacedObservationReason::CodeNotPositive => {
+                "the code is zero or negative, which places no transmission epoch".to_string()
+            }
+            UnplacedObservationReason::SsrCorrectionExceedsLimit(size) => format!(
+                "the SSR correction exceeds its application limit (orbit {} m, clock {} m)",
+                size.orbit_m, size.clock_m
+            ),
+            other => format!("{other:?}"),
+        };
+        format!(
+            "epoch {} observation {} ({}) left out: {reason}",
+            self.inner.epoch_index, self.inner.ambiguity_id, self.inner.satellite_id
+        )
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PppUnplacedObservation(epoch_index={}, satellite_id={:?}, ambiguity_id={:?}, reason={:?})",
+            self.inner.epoch_index,
+            self.inner.satellite_id,
+            self.inner.ambiguity_id,
+            self.reason()
+        )
+    }
+}
+
+fn unplaced_rows(rows: &[UnplacedObservation]) -> Vec<PppUnplacedObservationRow> {
+    rows.iter()
+        .cloned()
+        .map(|inner| PppUnplacedObservationRow { inner })
+        .collect()
+}
+
+/// The four tracking codes of a PPP observation as
+/// `(code1, code2, phase1, phase2)`.
+type SignalCodes = (String, String, String, String);
+
+/// Termination status of a PPP float or fixed solve.
+#[pyclass(module = "sidereon._sidereon", name = "PppFloatStatus", eq, eq_int)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyPppFloatStatus {
+    /// Every active state update met its configured tolerance.
+    STATE_TOLERANCE,
+    /// The solve reached `max_iterations` first.
+    MAX_ITERATIONS,
+}
+
+impl From<FloatStatus> for PyPppFloatStatus {
+    fn from(status: FloatStatus) -> Self {
+        match status {
+            FloatStatus::StateTolerance => Self::STATE_TOLERANCE,
+            FloatStatus::MaxIterations => Self::MAX_ITERATIONS,
+        }
+    }
+}
+
+#[pymethods]
+impl PyPppFloatStatus {
+    /// Snake-case label: `state_tolerance` or `max_iterations`.
+    #[getter]
+    fn label(&self) -> &'static str {
+        match self {
+            Self::STATE_TOLERANCE => "state_tolerance",
+            Self::MAX_ITERATIONS => "max_iterations",
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PppFloatStatus.{}", self.label().to_ascii_uppercase())
+    }
+}
+
+/// One residual row of a PPP float or fixed solution.
+#[pyclass(module = "sidereon._sidereon", name = "PppFloatResidual", eq)]
+#[derive(Clone, PartialEq)]
+pub struct PyPppFloatResidual {
+    inner: FloatResidual,
+}
+
+#[pymethods]
+impl PyPppFloatResidual {
+    /// Input epoch index of the row.
+    #[getter]
+    fn epoch_index(&self) -> usize {
+        self.inner.epoch_index
+    }
+
+    /// Satellite token of the observation.
+    #[getter]
+    fn satellite_id(&self) -> &str {
+        &self.inner.satellite_id
+    }
+
+    /// Ambiguity id of the observation.
+    #[getter]
+    fn ambiguity_id(&self) -> &str {
+        &self.inner.ambiguity_id
+    }
+
+    /// Code prefit residual, metres.
+    #[getter]
+    fn code_m(&self) -> f64 {
+        self.inner.code_m
+    }
+
+    /// Phase prefit residual, metres.
+    #[getter]
+    fn phase_m(&self) -> f64 {
+        self.inner.phase_m
+    }
+
+    /// Code inverse-sigma row weight, including elevation scaling.
+    #[getter]
+    fn code_weight(&self) -> f64 {
+        self.inner.code_weight
+    }
+
+    /// Phase inverse-sigma row weight, including elevation scaling.
+    #[getter]
+    fn phase_weight(&self) -> f64 {
+        self.inner.phase_weight
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PppFloatResidual(epoch_index={}, ambiguity_id={:?}, code_m={:.6}, phase_m={:.6})",
+            self.inner.epoch_index, self.inner.ambiguity_id, self.inner.code_m, self.inner.phase_m
+        )
+    }
+}
+
+fn residual_rows(rows: &[FloatResidual]) -> Vec<PyPppFloatResidual> {
+    rows.iter()
+        .cloned()
+        .map(|inner| PyPppFloatResidual { inner })
+        .collect()
+}
+
+/// Why the SSR/HAS biases recorded for an observation do not hold at its
+/// transmission time.
+#[pyclass(module = "sidereon._sidereon", name = "PppSsrTransmitTimeFailure")]
+#[derive(Clone)]
+pub struct PyPppSsrTransmitTimeFailure {
+    inner: SsrTransmitTimeFailure,
+}
+
+#[pymethods]
+impl PyPppSsrTransmitTimeFailure {
+    /// `source_without_ssr_corrections`, `transmit_time_unavailable`,
+    /// `orbit_clock_solution`, `bias_record` or `source`.
+    #[getter]
+    fn kind(&self) -> String {
+        debug_variant_snake(&self.inner)
+    }
+
+    /// Transmission time, seconds since J2000, where the failure states one.
+    #[getter]
+    fn transmit_time_j2000_s(&self) -> Option<f64> {
+        match &self.inner {
+            SsrTransmitTimeFailure::OrbitClockSolution {
+                transmit_time_j2000_s,
+                ..
+            }
+            | SsrTransmitTimeFailure::BiasRecord {
+                transmit_time_j2000_s,
+                ..
+            }
+            | SsrTransmitTimeFailure::Source {
+                transmit_time_j2000_s,
+                ..
+            } => Some(*transmit_time_j2000_s),
+            _ => None,
+        }
+    }
+
+    /// The orbit and clock solution the source applies at the transmission
+    /// time, for `orbit_clock_solution`; `None` there when it applies none.
+    #[getter]
+    fn applied_solution(&self) -> Option<PySsrSolution> {
+        match &self.inner {
+            SsrTransmitTimeFailure::OrbitClockSolution { applied, .. } => {
+                applied.map(PySsrSolution::from)
+            }
+            _ => None,
+        }
+    }
+
+    /// Signal of the record, for `bias_record`.
+    #[getter]
+    fn signal(&self) -> Option<String> {
+        match &self.inner {
+            SsrTransmitTimeFailure::BiasRecord { signal, .. } => Some(signal.to_string()),
+            _ => None,
+        }
+    }
+
+    /// Status of the query for that signal at the transmission time, for
+    /// `bias_record`.
+    #[getter]
+    fn status(&self) -> Option<String> {
+        match &self.inner {
+            SsrTransmitTimeFailure::BiasRecord { status, .. } => Some(debug_variant_snake(status)),
+            _ => None,
+        }
+    }
+
+    /// The source's error message, for `source`.
+    #[getter]
+    fn error(&self) -> Option<String> {
+        match &self.inner {
+            SsrTransmitTimeFailure::Source { error, .. } => Some(error.to_string()),
+            _ => None,
+        }
+    }
+
+    /// The core value in full, as its `Debug` text.
+    #[getter]
+    fn detail(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PppSsrTransmitTimeFailure(kind={:?})", self.kind())
+    }
+}
+
+/// The query of one signal's SSR/HAS bias for an observation.
+#[pyclass(module = "sidereon._sidereon", name = "PppSsrSignalReport")]
+#[derive(Clone)]
+pub struct PyPppSsrSignalReport {
+    epoch_index: usize,
+    satellite_id: String,
+    ambiguity_id: String,
+    signal: String,
+    query_signal: String,
+    source_signal: Option<String>,
+    status: String,
+    bias_m: Option<f64>,
+    bias_cycles: Option<f64>,
+    solution: Option<SsrSolution>,
+    iod_ssr: Option<u8>,
+    ref_epoch_j2000_s: Option<f64>,
+    query: String,
+}
+
+impl PyPppSsrSignalReport {
+    fn code(report: &SsrObsSignalReport<SsrCodeBiasQueryResult>) -> Self {
+        let q = &report.query_result;
+        Self {
+            epoch_index: report.epoch_index,
+            satellite_id: report.sat.to_string(),
+            ambiguity_id: report.ambiguity_id.clone(),
+            signal: report.signal.to_string(),
+            query_signal: q.signal.to_string(),
+            source_signal: q.source_signal.as_ref().map(ToString::to_string),
+            status: debug_variant_snake(&q.status),
+            bias_m: q.bias_m,
+            bias_cycles: None,
+            solution: q.solution,
+            iod_ssr: q.iod_ssr,
+            ref_epoch_j2000_s: q.ref_epoch_j2000_s,
+            query: format!("{q:?}"),
+        }
+    }
+
+    fn phase(report: &SsrObsSignalReport<SsrPhaseBiasQueryResult>) -> Self {
+        let q = &report.query_result;
+        Self {
+            epoch_index: report.epoch_index,
+            satellite_id: report.sat.to_string(),
+            ambiguity_id: report.ambiguity_id.clone(),
+            signal: report.signal.to_string(),
+            query_signal: q.signal.to_string(),
+            source_signal: q.source_signal.as_ref().map(ToString::to_string),
+            status: debug_variant_snake(&q.status),
+            bias_m: q.bias_m,
+            bias_cycles: q.bias_cycles,
+            solution: q.solution,
+            iod_ssr: q.iod_ssr,
+            ref_epoch_j2000_s: q.ref_epoch_j2000_s,
+            query: format!("{q:?}"),
+        }
+    }
+}
+
+#[pymethods]
+impl PyPppSsrSignalReport {
+    /// Input epoch index of the observation.
+    #[getter]
+    fn epoch_index(&self) -> usize {
+        self.epoch_index
+    }
+
+    /// Satellite token of the observation.
+    #[getter]
+    fn satellite_id(&self) -> &str {
+        &self.satellite_id
+    }
+
+    /// Ambiguity id of the observation.
+    #[getter]
+    fn ambiguity_id(&self) -> &str {
+        &self.ambiguity_id
+    }
+
+    /// The physical signal requested.
+    #[getter]
+    fn signal(&self) -> &str {
+        &self.signal
+    }
+
+    /// The signal key the store was queried with.
+    #[getter]
+    fn query_signal(&self) -> &str {
+        &self.query_signal
+    }
+
+    /// The raw signal of the record, where the store keeps one.
+    #[getter]
+    fn source_signal(&self) -> Option<&str> {
+        self.source_signal.as_deref()
+    }
+
+    /// Query status in snake case, such as `available`, `missing` or
+    /// `expired`.
+    #[getter]
+    fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// Bias in metres, when the query resolved one.
+    #[getter]
+    fn bias_m(&self) -> Option<f64> {
+        self.bias_m
+    }
+
+    /// Phase bias in cycles, for a phase query that resolved one.
+    #[getter]
+    fn bias_cycles(&self) -> Option<f64> {
+        self.bias_cycles
+    }
+
+    /// Solution of the record.
+    #[getter]
+    fn solution(&self) -> Option<PySsrSolution> {
+        self.solution.map(PySsrSolution::from)
+    }
+
+    /// IOD SSR of the record.
+    #[getter]
+    fn iod_ssr(&self) -> Option<u8> {
+        self.iod_ssr
+    }
+
+    /// Reference epoch of the record, seconds since J2000.
+    #[getter]
+    fn ref_epoch_j2000_s(&self) -> Option<f64> {
+        self.ref_epoch_j2000_s
+    }
+
+    /// The core query result in full, as its `Debug` text, including the
+    /// lifetime, resolution details and phase continuity state.
+    #[getter]
+    fn query(&self) -> &str {
+        &self.query
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PppSsrSignalReport(ambiguity_id={:?}, signal={:?}, status={:?})",
+            self.ambiguity_id, self.signal, self.status
+        )
+    }
+}
+
+fn combination_status_ut1_reason(status: &SsrIfCombinationStatus) -> Option<&'static str> {
+    match status {
+        SsrIfCombinationStatus::Ut1OutsideCoverage(reason) => {
+            Some(crate::degrade_reason_label(*reason))
+        }
+        _ => None,
+    }
+}
+
+/// How SSR/HAS biases were applied to one observation.
+#[pyclass(module = "sidereon._sidereon", name = "PppSsrObservationApplication")]
+#[derive(Clone)]
+pub struct PyPppSsrObservationApplication {
+    inner: SsrObsApplicationReport,
+}
+
+#[pymethods]
+impl PyPppSsrObservationApplication {
+    /// Input epoch index of the observation.
+    #[getter]
+    fn epoch_index(&self) -> usize {
+        self.inner.epoch_index
+    }
+
+    /// Satellite token of the observation.
+    #[getter]
+    fn satellite_id(&self) -> &str {
+        &self.inner.satellite_id
+    }
+
+    /// Ambiguity id of the observation.
+    #[getter]
+    fn ambiguity_id(&self) -> &str {
+        &self.inner.ambiguity_id
+    }
+
+    /// Transmission time, seconds since J2000, when it could be predicted.
+    #[getter]
+    fn transmit_time_j2000_s(&self) -> Option<f64> {
+        self.inner.transmit_time_j2000_s
+    }
+
+    /// Solution of the orbit and clock corrections the source applies there.
+    #[getter]
+    fn applied_orbit_clock_solution(&self) -> Option<PySsrSolution> {
+        self.inner
+            .applied_orbit_clock_solution
+            .map(PySsrSolution::from)
+    }
+
+    /// Tracking codes of the observation as `(code1, code2, phase1, phase2)`.
+    #[getter]
+    fn observation_signals(&self) -> Option<SignalCodes> {
+        self.inner.observation_signals.as_ref().map(|signals| {
+            (
+                signals.code1.to_string(),
+                signals.code2.to_string(),
+                signals.phase1.to_string(),
+                signals.phase2.to_string(),
+            )
+        })
+    }
+
+    /// Code combination status in snake case, such as `applied` or
+    /// `signal_unavailable`.
+    #[getter]
+    fn code_status(&self) -> String {
+        debug_variant_snake(&self.inner.code_status)
+    }
+
+    /// UT1 degrade reason when `code_status` is `ut1_outside_coverage`.
+    #[getter]
+    fn code_status_ut1_reason(&self) -> Option<&'static str> {
+        combination_status_ut1_reason(&self.inner.code_status)
+    }
+
+    /// Applied ionosphere-free code bias, metres.
+    #[getter]
+    fn applied_code_if_m(&self) -> Option<f64> {
+        self.inner.applied_code_if_m
+    }
+
+    #[getter]
+    fn code1_report(&self) -> Option<PyPppSsrSignalReport> {
+        self.inner
+            .code1_report
+            .as_ref()
+            .map(PyPppSsrSignalReport::code)
+    }
+
+    #[getter]
+    fn code2_report(&self) -> Option<PyPppSsrSignalReport> {
+        self.inner
+            .code2_report
+            .as_ref()
+            .map(PyPppSsrSignalReport::code)
+    }
+
+    /// Phase combination status in snake case.
+    #[getter]
+    fn phase_status(&self) -> String {
+        debug_variant_snake(&self.inner.phase_status)
+    }
+
+    /// UT1 degrade reason when `phase_status` is `ut1_outside_coverage`.
+    #[getter]
+    fn phase_status_ut1_reason(&self) -> Option<&'static str> {
+        combination_status_ut1_reason(&self.inner.phase_status)
+    }
+
+    /// Applied ionosphere-free phase bias, metres.
+    #[getter]
+    fn applied_phase_if_m(&self) -> Option<f64> {
+        self.inner.applied_phase_if_m
+    }
+
+    #[getter]
+    fn phase1_report(&self) -> Option<PyPppSsrSignalReport> {
+        self.inner
+            .phase1_report
+            .as_ref()
+            .map(PyPppSsrSignalReport::phase)
+    }
+
+    #[getter]
+    fn phase2_report(&self) -> Option<PyPppSsrSignalReport> {
+        self.inner
+            .phase2_report
+            .as_ref()
+            .map(PyPppSsrSignalReport::phase)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PppSsrObservationApplication(ambiguity_id={:?}, code_status={:?}, phase_status={:?})",
+            self.inner.ambiguity_id,
+            self.code_status(),
+            self.phase_status()
+        )
+    }
+}
+
+/// An observation left out of a PPP solve because an SSR/HAS bias its
+/// corrections require was not resolved.
+#[pyclass(module = "sidereon._sidereon", name = "PppSsrBiasExclusion")]
+#[derive(Clone)]
+pub struct PyPppSsrBiasExclusion {
+    inner: SsrBiasExclusion,
+}
+
+#[pymethods]
+impl PyPppSsrBiasExclusion {
+    /// Input epoch index of the observation.
+    #[getter]
+    fn epoch_index(&self) -> usize {
+        self.inner.epoch_index
+    }
+
+    /// Satellite token of the observation.
+    #[getter]
+    fn satellite_id(&self) -> &str {
+        &self.inner.satellite_id
+    }
+
+    /// Ambiguity id of the observation.
+    #[getter]
+    fn ambiguity_id(&self) -> &str {
+        &self.inner.ambiguity_id
+    }
+
+    /// A required SSR code bias is absent.
+    #[getter]
+    fn code_bias_missing(&self) -> bool {
+        self.inner.code_bias_missing
+    }
+
+    /// A required SSR phase bias is absent.
+    #[getter]
+    fn phase_bias_missing(&self) -> bool {
+        self.inner.phase_bias_missing
+    }
+
+    /// Why the recorded biases do not hold at the transmission time.
+    #[getter]
+    fn transmit_time_failure(&self) -> Option<PyPppSsrTransmitTimeFailure> {
+        self.inner
+            .transmit_time_failure
+            .clone()
+            .map(|inner| PyPppSsrTransmitTimeFailure { inner })
+    }
+
+    /// The bias application row for the observation.
+    #[getter]
+    fn application(&self) -> Option<PyPppSsrObservationApplication> {
+        self.inner
+            .application
+            .clone()
+            .map(|inner| PyPppSsrObservationApplication { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PppSsrBiasExclusion(epoch_index={}, ambiguity_id={:?}, code_bias_missing={}, phase_bias_missing={})",
+            self.inner.epoch_index,
+            self.inner.ambiguity_id,
+            self.inner.code_bias_missing,
+            self.inner.phase_bias_missing
+        )
+    }
+}
+
+fn exclusion_rows(rows: &[SsrBiasExclusion]) -> Vec<PyPppSsrBiasExclusion> {
+    rows.iter()
+        .cloned()
+        .map(|inner| PyPppSsrBiasExclusion { inner })
+        .collect()
+}
+
+fn parse_signal_code(field: &str, code: &str) -> PyResult<SignalCode> {
+    SignalCode::parse(code).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "{field} {code:?} is not a RINEX 3 band and attribute (\"1C\") or observation code (\"C1C\")"
+        ))
+    })
+}
+
+fn signals_from_codes(codes: SignalCodes) -> PyResult<FloatObservationSignals> {
+    Ok(FloatObservationSignals {
+        code1: parse_signal_code("signals code1", &codes.0)?,
+        code2: parse_signal_code("signals code2", &codes.1)?,
+        phase1: parse_signal_code("signals phase1", &codes.2)?,
+        phase2: parse_signal_code("signals phase2", &codes.3)?,
+    })
+}
 use crate::rtk::PyIntegerStatus;
-use crate::{np_array, to_solve_err, PySp3};
+use crate::{np_array, PySp3};
 
 impl From<PppIntegerStatus> for PyIntegerStatus {
     fn from(status: PppIntegerStatus) -> Self {
@@ -142,7 +820,9 @@ impl PyPppObservation {
         freq1_hz=0.0,
         freq2_hz=0.0,
         glonass_channel=None,
+        signals=None,
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         satellite_id: String,
         ambiguity_id: String,
@@ -151,6 +831,7 @@ impl PyPppObservation {
         freq1_hz: f64,
         freq2_hz: f64,
         glonass_channel: Option<i8>,
+        signals: Option<SignalCodes>,
     ) -> PyResult<Self> {
         let sat = GnssSatelliteId::from_str(&satellite_id).map_err(|_| {
             PyValueError::new_err(format!("invalid satellite token: {satellite_id}"))
@@ -165,6 +846,7 @@ impl PyPppObservation {
                 freq1_hz,
                 freq2_hz,
                 glonass_channel,
+                signals: signals.map(signals_from_codes).transpose()?,
             },
         })
     }
@@ -202,6 +884,22 @@ impl PyPppObservation {
     #[getter]
     fn glonass_channel(&self) -> Option<i8> {
         self.inner.glonass_channel
+    }
+
+    /// The tracking codes of the two pseudoranges and two carrier phases as
+    /// `(code1, code2, phase1, phase2)` in RINEX 3 band-and-attribute form
+    /// (`"1C"`), or `None` when the observation does not state them. An SSR
+    /// bias applies only to an observation of the bias's exact signal.
+    #[getter]
+    fn signals(&self) -> Option<SignalCodes> {
+        self.inner.signals.map(|signals| {
+            (
+                signals.code1.to_string(),
+                signals.code2.to_string(),
+                signals.phase1.to_string(),
+                signals.phase2.to_string(),
+            )
+        })
     }
 
     fn __repr__(&self) -> String {
@@ -624,6 +1322,583 @@ impl Default for PyPppFloatOptions {
     }
 }
 
+/// One ANTEX PCV sample.
+#[pyclass(module = "sidereon._sidereon", name = "PppPcvSample")]
+#[derive(Clone)]
+pub struct PyPppPcvSample {
+    pub(crate) inner: PcvSample,
+}
+
+#[pymethods]
+impl PyPppPcvSample {
+    #[new]
+    #[pyo3(signature = (zenith_deg, value_m, azimuth_deg=None))]
+    fn new(zenith_deg: f64, value_m: f64, azimuth_deg: Option<f64>) -> Self {
+        Self {
+            inner: PcvSample {
+                azimuth_deg,
+                zenith_deg,
+                value_m,
+            },
+        }
+    }
+
+    /// Zenith angle in degrees.
+    #[getter]
+    fn zenith_deg(&self) -> f64 {
+        self.inner.zenith_deg
+    }
+
+    /// Receiver PCV correction in meters.
+    #[getter]
+    fn value_m(&self) -> f64 {
+        self.inner.value_m
+    }
+
+    /// Azimuth angle in degrees, or None for a no-azimuth sample.
+    #[getter]
+    fn azimuth_deg(&self) -> Option<f64> {
+        self.inner.azimuth_deg
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PppPcvSample(zenith_deg={:?}, value_m={:?}, azimuth_deg={:?})",
+            self.inner.zenith_deg, self.inner.value_m, self.inner.azimuth_deg
+        )
+    }
+}
+
+/// Receiver antenna calibration at one frequency.
+#[pyclass(module = "sidereon._sidereon", name = "PppReceiverAntennaFrequency")]
+#[derive(Clone)]
+pub struct PyPppReceiverAntennaFrequency {
+    pub(crate) inner: ReceiverAntennaFrequency,
+}
+
+#[pymethods]
+impl PyPppReceiverAntennaFrequency {
+    #[new]
+    #[pyo3(signature = (label, pco_m, pcv_samples))]
+    fn new(label: String, pco_m: [f64; 3], pcv_samples: Vec<PyPppPcvSample>) -> Self {
+        Self {
+            inner: ReceiverAntennaFrequency {
+                label,
+                pco_m,
+                pcv_samples: pcv_samples.into_iter().map(|s| s.inner).collect(),
+            },
+        }
+    }
+
+    /// Frequency label searched by the configured signal selectors.
+    #[getter]
+    fn label(&self) -> String {
+        self.inner.label.clone()
+    }
+
+    /// Receiver phase-center offset in local north/east/up meters.
+    #[getter]
+    fn pco_m(&self) -> [f64; 3] {
+        self.inner.pco_m
+    }
+
+    /// ANTEX PCV samples.
+    #[getter]
+    fn pcv_samples(&self) -> Vec<PyPppPcvSample> {
+        self.inner
+            .pcv_samples
+            .iter()
+            .copied()
+            .map(|inner| PyPppPcvSample { inner })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PppReceiverAntennaFrequency(label={:?}, pco_m={:?}, pcv_samples={})",
+            self.inner.label,
+            self.inner.pco_m,
+            self.inner.pcv_samples.len()
+        )
+    }
+}
+
+/// Receiver antenna correction options.
+#[pyclass(module = "sidereon._sidereon", name = "PppReceiverAntennaOptions")]
+#[derive(Clone)]
+pub struct PyPppReceiverAntennaOptions {
+    pub(crate) inner: ReceiverAntennaOptions,
+}
+
+#[pymethods]
+impl PyPppReceiverAntennaOptions {
+    #[new]
+    #[pyo3(signature = (freq1_label, freq1_hz, freq2_label, freq2_hz, frequencies))]
+    fn new(
+        freq1_label: String,
+        freq1_hz: f64,
+        freq2_label: String,
+        freq2_hz: f64,
+        frequencies: Vec<PyPppReceiverAntennaFrequency>,
+    ) -> Self {
+        let core_frequencies = frequencies.into_iter().map(|f| f.inner).collect();
+        let inner = ReceiverAntennaOptions::new(
+            freq1_label,
+            freq1_hz,
+            freq2_label,
+            freq2_hz,
+            core_frequencies,
+        );
+        Self { inner }
+    }
+
+    /// Label selecting the first receiver-frequency calibration record.
+    #[getter]
+    fn freq1_label(&self) -> String {
+        self.inner.freq1_label.clone()
+    }
+
+    /// First carrier frequency in hertz.
+    #[getter]
+    fn freq1_hz(&self) -> f64 {
+        self.inner.freq1_hz
+    }
+
+    /// Label selecting the second receiver-frequency calibration record.
+    #[getter]
+    fn freq2_label(&self) -> String {
+        self.inner.freq2_label.clone()
+    }
+
+    /// Second carrier frequency in hertz.
+    #[getter]
+    fn freq2_hz(&self) -> f64 {
+        self.inner.freq2_hz
+    }
+
+    /// Frequency calibration records.
+    #[getter]
+    fn frequencies(&self) -> Vec<PyPppReceiverAntennaFrequency> {
+        self.inner
+            .frequencies
+            .iter()
+            .cloned()
+            .map(|inner| PyPppReceiverAntennaFrequency { inner })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PppReceiverAntennaOptions(freq1_label={:?}, freq1_hz={:?}, freq2_label={:?}, freq2_hz={:?}, frequencies={})",
+            self.inner.freq1_label,
+            self.inner.freq1_hz,
+            self.inner.freq2_label,
+            self.inner.freq2_hz,
+            self.inner.frequencies.len()
+        )
+    }
+}
+
+/// Fine satellite clock series, keyed by satellite token.
+#[pyclass(module = "sidereon._sidereon", name = "PppSatelliteClockCorrections")]
+#[derive(Clone)]
+pub struct PyPppSatelliteClockCorrections {
+    pub(crate) inner: SatelliteClockCorrections,
+}
+
+#[pymethods]
+impl PyPppSatelliteClockCorrections {
+    #[new]
+    #[pyo3(signature = (series))]
+    fn new(series: &Bound<'_, PyDict>) -> PyResult<Self> {
+        let mut core_series = BTreeMap::new();
+        for (key, val) in series.iter() {
+            let token: String = key.extract()?;
+            let sat = parse_sat(&token)?;
+            let records: Vec<(f64, f64)> = val.extract()?;
+            core_series.insert(sat, records);
+        }
+        Ok(Self {
+            inner: SatelliteClockCorrections {
+                series: core_series,
+            },
+        })
+    }
+
+    /// Per-satellite clock records as (GPS seconds, clock bias seconds).
+    #[getter]
+    fn series<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for (sat, records) in &self.inner.series {
+            dict.set_item(sat.to_string(), records.clone())?;
+        }
+        Ok(dict)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PppSatelliteClockCorrections(satellites={})",
+            self.inner.series.len()
+        )
+    }
+}
+
+/// Indexed static PPP correction lookup tables.
+#[pyclass(module = "sidereon._sidereon", name = "PppCorrectionLookup")]
+#[derive(Clone)]
+pub struct PyPppCorrectionLookup {
+    pub(crate) inner: PppCorrectionLookup,
+}
+
+#[pymethods]
+impl PyPppCorrectionLookup {
+    /// Create PPP correction lookup tables.
+    #[new]
+    #[pyo3(signature = (
+        tide=None,
+        pole_tide=None,
+        ocean_loading=None,
+        windup_m=None,
+        sat_pcv_m=None,
+        code_bias_m=None,
+        sat_pco_ecef=None,
+        ssr_code_bias_m=None,
+        phase_bias_m=None,
+        tide_enabled=false,
+        pole_tide_enabled=false,
+        ocean_loading_enabled=false,
+        windup_enabled=false,
+        satellite_antenna_enabled=false,
+        code_bias_enabled=false,
+        ssr_code_bias_enabled=false,
+        phase_bias_enabled=false,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        tide: Option<BTreeMap<usize, [f64; 3]>>,
+        pole_tide: Option<BTreeMap<usize, [f64; 3]>>,
+        ocean_loading: Option<BTreeMap<usize, [f64; 3]>>,
+        windup_m: Option<BTreeMap<(String, usize), f64>>,
+        sat_pcv_m: Option<BTreeMap<(String, usize), f64>>,
+        code_bias_m: Option<BTreeMap<(String, usize), f64>>,
+        sat_pco_ecef: Option<BTreeMap<(String, usize), [f64; 3]>>,
+        ssr_code_bias_m: Option<BTreeMap<(String, usize, String), f64>>,
+        phase_bias_m: Option<BTreeMap<(String, usize, String), f64>>,
+        tide_enabled: bool,
+        pole_tide_enabled: bool,
+        ocean_loading_enabled: bool,
+        windup_enabled: bool,
+        satellite_antenna_enabled: bool,
+        code_bias_enabled: bool,
+        ssr_code_bias_enabled: bool,
+        phase_bias_enabled: bool,
+    ) -> PyResult<Self> {
+        let mut core_windup_m = BTreeMap::new();
+        if let Some(map) = windup_m {
+            for ((sat_str, epoch), val) in map {
+                let sat = parse_sat(&sat_str)?;
+                core_windup_m.insert((sat, epoch), val);
+            }
+        }
+        let mut core_sat_pcv_m = BTreeMap::new();
+        if let Some(map) = sat_pcv_m {
+            for ((sat_str, epoch), val) in map {
+                let sat = parse_sat(&sat_str)?;
+                core_sat_pcv_m.insert((sat, epoch), val);
+            }
+        }
+        let mut core_code_bias_m = BTreeMap::new();
+        if let Some(map) = code_bias_m {
+            for ((sat_str, epoch), val) in map {
+                let sat = parse_sat(&sat_str)?;
+                core_code_bias_m.insert((sat, epoch), val);
+            }
+        }
+        let mut core_sat_pco_ecef = BTreeMap::new();
+        if let Some(map) = sat_pco_ecef {
+            for ((sat_str, epoch), val) in map {
+                let sat = parse_sat(&sat_str)?;
+                core_sat_pco_ecef.insert((sat, epoch), val);
+            }
+        }
+        let mut core_ssr_code_bias_m = BTreeMap::new();
+        if let Some(map) = ssr_code_bias_m {
+            for ((sat_str, epoch, amb), val) in map {
+                let sat = parse_sat(&sat_str)?;
+                core_ssr_code_bias_m.insert((sat, epoch, amb), val);
+            }
+        }
+        let mut core_phase_bias_m = BTreeMap::new();
+        if let Some(map) = phase_bias_m {
+            for ((sat_str, epoch, amb), val) in map {
+                let sat = parse_sat(&sat_str)?;
+                core_phase_bias_m.insert((sat, epoch, amb), val);
+            }
+        }
+        Ok(Self {
+            inner: PppCorrectionLookup {
+                tide: tide.unwrap_or_default(),
+                pole_tide: pole_tide.unwrap_or_default(),
+                ocean_loading: ocean_loading.unwrap_or_default(),
+                windup_m: core_windup_m,
+                sat_pco_ecef: core_sat_pco_ecef,
+                sat_pcv_m: core_sat_pcv_m,
+                code_bias_m: core_code_bias_m,
+                ssr_code_bias_m: core_ssr_code_bias_m,
+                phase_bias_m: core_phase_bias_m,
+                ssr_code_bias_records: BTreeMap::new(),
+                phase_bias_records: BTreeMap::new(),
+                tide_enabled,
+                pole_tide_enabled,
+                ocean_loading_enabled,
+                windup_enabled,
+                satellite_antenna_enabled,
+                code_bias_enabled,
+                ssr_code_bias_enabled,
+                phase_bias_enabled,
+                ssr_bias_report: None,
+            },
+        })
+    }
+
+    /// Convert precomputed correction tables into an indexed lookup.
+    #[staticmethod]
+    fn from_corrections(corrections: &PyPppCorrections, options: &PyPppCorrectionsOptions) -> Self {
+        Self {
+            inner: PppCorrectionLookup::from_options(corrections.inner.clone(), &options.inner),
+        }
+    }
+
+    /// ECEF solid-earth tide vectors keyed by epoch index.
+    #[getter]
+    fn tide<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for (&epoch, &[x, y, z]) in &self.inner.tide {
+            dict.set_item(epoch, (x, y, z))?;
+        }
+        Ok(dict)
+    }
+
+    /// ECEF pole-tide vectors keyed by epoch index.
+    #[getter]
+    fn pole_tide<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for (&epoch, &[x, y, z]) in &self.inner.pole_tide {
+            dict.set_item(epoch, (x, y, z))?;
+        }
+        Ok(dict)
+    }
+
+    /// ECEF ocean-loading vectors keyed by epoch index.
+    #[getter]
+    fn ocean_loading<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for (&epoch, &[x, y, z]) in &self.inner.ocean_loading {
+            dict.set_item(epoch, (x, y, z))?;
+        }
+        Ok(dict)
+    }
+
+    /// Ionosphere-free phase wind-up meters keyed by (satellite, epoch index).
+    #[getter]
+    fn windup_m<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for ((sat, epoch), &val) in &self.inner.windup_m {
+            dict.set_item((sat.to_string(), *epoch), val)?;
+        }
+        Ok(dict)
+    }
+
+    /// Ionosphere-free satellite PCV meters keyed by (satellite, epoch index).
+    #[getter]
+    fn sat_pcv_m<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for ((sat, epoch), &val) in &self.inner.sat_pcv_m {
+            dict.set_item((sat.to_string(), *epoch), val)?;
+        }
+        Ok(dict)
+    }
+
+    /// Clock-datum code-bias meters keyed by (satellite, epoch index).
+    #[getter]
+    fn code_bias_m<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for ((sat, epoch), &val) in &self.inner.code_bias_m {
+            dict.set_item((sat.to_string(), *epoch), val)?;
+        }
+        Ok(dict)
+    }
+
+    /// Ionosphere-free satellite PCO vectors in ECEF meters keyed by (satellite, epoch index).
+    #[getter]
+    fn sat_pco_ecef<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for ((sat, epoch), &[x, y, z]) in &self.inner.sat_pco_ecef {
+            dict.set_item((sat.to_string(), *epoch), (x, y, z))?;
+        }
+        Ok(dict)
+    }
+
+    /// SSR ionosphere-free code bias meters keyed by (satellite, epoch index, ambiguity id).
+    #[getter]
+    fn ssr_code_bias_m<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for ((sat, epoch, amb), &val) in &self.inner.ssr_code_bias_m {
+            dict.set_item((sat.to_string(), *epoch, amb.clone()), val)?;
+        }
+        Ok(dict)
+    }
+
+    /// SSR ionosphere-free phase bias meters keyed by (satellite, epoch index, ambiguity id).
+    #[getter]
+    fn phase_bias_m<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for ((sat, epoch, amb), &val) in &self.inner.phase_bias_m {
+            dict.set_item((sat.to_string(), *epoch, amb.clone()), val)?;
+        }
+        Ok(dict)
+    }
+
+    /// Solid-earth tide requirement flag.
+    #[getter]
+    fn tide_enabled(&self) -> bool {
+        self.inner.tide_enabled
+    }
+
+    /// Pole-tide requirement flag.
+    #[getter]
+    fn pole_tide_enabled(&self) -> bool {
+        self.inner.pole_tide_enabled
+    }
+
+    /// Ocean-loading requirement flag.
+    #[getter]
+    fn ocean_loading_enabled(&self) -> bool {
+        self.inner.ocean_loading_enabled
+    }
+
+    /// Phase wind-up requirement flag.
+    #[getter]
+    fn windup_enabled(&self) -> bool {
+        self.inner.windup_enabled
+    }
+
+    /// Satellite antenna requirement flag.
+    #[getter]
+    fn satellite_antenna_enabled(&self) -> bool {
+        self.inner.satellite_antenna_enabled
+    }
+
+    /// Code-bias requirement flag.
+    #[getter]
+    fn code_bias_enabled(&self) -> bool {
+        self.inner.code_bias_enabled
+    }
+
+    /// SSR code-bias requirement flag.
+    #[getter]
+    fn ssr_code_bias_enabled(&self) -> bool {
+        self.inner.ssr_code_bias_enabled
+    }
+
+    /// SSR phase-bias requirement flag.
+    #[getter]
+    fn phase_bias_enabled(&self) -> bool {
+        self.inner.phase_bias_enabled
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PppCorrectionLookup(tide={}, windup_m={}, sat_pco_ecef={}, sat_pcv_m={}, code_bias_m={})",
+            self.inner.tide.len(),
+            self.inner.windup_m.len(),
+            self.inner.sat_pco_ecef.len(),
+            self.inner.sat_pcv_m.len(),
+            self.inner.code_bias_m.len(),
+        )
+    }
+}
+
+/// Range-correction options and precomputed correction tables.
+#[pyclass(module = "sidereon._sidereon", name = "PppRangeCorrections")]
+#[derive(Clone)]
+pub struct PyPppRangeCorrections {
+    pub(crate) inner: RangeCorrections,
+}
+
+#[pymethods]
+impl PyPppRangeCorrections {
+    /// Create range corrections.
+    #[new]
+    #[pyo3(signature = (receiver_antenna=None, sat_clock_relativity=false, satellite_clock=None, ppp=None))]
+    fn new(
+        receiver_antenna: Option<PyPppReceiverAntennaOptions>,
+        sat_clock_relativity: bool,
+        satellite_clock: Option<PyPppSatelliteClockCorrections>,
+        ppp: Option<PyPppCorrectionLookup>,
+    ) -> Self {
+        Self {
+            inner: RangeCorrections {
+                receiver_antenna: receiver_antenna.map(|a| a.inner),
+                sat_clock_relativity,
+                satellite_clock: satellite_clock.map(|c| c.inner),
+                ppp: ppp.map(|p| p.inner).unwrap_or_default(),
+            },
+        }
+    }
+
+    /// Create an explicit all-off correction set.
+    #[staticmethod]
+    fn disabled() -> Self {
+        Self {
+            inner: RangeCorrections::disabled(),
+        }
+    }
+
+    /// Optional receiver antenna calibration.
+    #[getter]
+    fn receiver_antenna(&self) -> Option<PyPppReceiverAntennaOptions> {
+        self.inner
+            .receiver_antenna
+            .as_ref()
+            .cloned()
+            .map(|inner| PyPppReceiverAntennaOptions { inner })
+    }
+
+    /// Enables relativistic satellite range correction.
+    #[getter]
+    fn sat_clock_relativity(&self) -> bool {
+        self.inner.sat_clock_relativity
+    }
+
+    /// Optional external satellite clock corrections.
+    #[getter]
+    fn satellite_clock(&self) -> Option<PyPppSatelliteClockCorrections> {
+        self.inner
+            .satellite_clock
+            .as_ref()
+            .cloned()
+            .map(|inner| PyPppSatelliteClockCorrections { inner })
+    }
+
+    /// Precomputed PPP correction tables.
+    #[getter]
+    fn ppp(&self) -> PyPppCorrectionLookup {
+        PyPppCorrectionLookup {
+            inner: self.inner.ppp.clone(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PppRangeCorrections(receiver_antenna={}, sat_clock_relativity={}, satellite_clock={})",
+            self.inner.receiver_antenna.is_some(),
+            self.inner.sat_clock_relativity,
+            self.inner.satellite_clock.is_some()
+        )
+    }
+}
+
 /// Complete typed configuration for a PPP float solve.
 #[pyclass(module = "sidereon._sidereon", name = "PppFloatConfig")]
 pub struct PyPppFloatConfig {
@@ -641,7 +1916,9 @@ impl PyPppFloatConfig {
         residual_screen=false,
         elevation_cutoff_deg=None,
         estimate_residual_ionosphere=false,
+        corrections=None,
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         weights: Option<Py<PyPppMeasurementWeights>>,
@@ -650,6 +1927,7 @@ impl PyPppFloatConfig {
         residual_screen: bool,
         elevation_cutoff_deg: Option<f64>,
         estimate_residual_ionosphere: bool,
+        corrections: Option<Py<PyPppRangeCorrections>>,
     ) -> Self {
         let weights = option_py_or_default(
             py,
@@ -669,7 +1947,12 @@ impl PyPppFloatConfig {
             |value| value.inner,
             || PyPppFloatOptions::default().inner,
         );
-        let corrections = RangeCorrections::disabled();
+        let corrections = option_py_or_default(
+            py,
+            corrections.as_ref(),
+            |value| value.inner.clone(),
+            RangeCorrections::disabled,
+        );
         let mut inner = FloatSolveConfig::new(
             weights,
             tropo,
@@ -702,6 +1985,38 @@ impl PyPppFloatConfig {
     #[getter]
     fn estimate_residual_ionosphere(&self) -> bool {
         self.inner.estimate_residual_ionosphere
+    }
+
+    /// Code and phase weights of the solve.
+    #[getter]
+    fn weights(&self) -> PyPppMeasurementWeights {
+        PyPppMeasurementWeights {
+            inner: self.inner.weights,
+        }
+    }
+
+    /// Troposphere model and estimation options of the solve.
+    #[getter]
+    fn tropo(&self) -> PyPppTroposphereOptions {
+        PyPppTroposphereOptions {
+            inner: self.inner.tropo,
+        }
+    }
+
+    /// Iteration cap and state tolerances of the solve.
+    #[getter]
+    fn options(&self) -> PyPppFloatOptions {
+        PyPppFloatOptions {
+            inner: self.inner.opts,
+        }
+    }
+
+    /// Range corrections applied during the float solve.
+    #[getter]
+    fn corrections(&self) -> PyPppRangeCorrections {
+        PyPppRangeCorrections {
+            inner: self.inner.corrections.clone(),
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -776,7 +2091,9 @@ impl PyPppFixedConfig {
         options=None,
         elevation_cutoff_deg=None,
         estimate_residual_ionosphere=false,
+        corrections=None,
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         ambiguity: &PyPppFixedAmbiguityOptions,
@@ -785,6 +2102,7 @@ impl PyPppFixedConfig {
         options: Option<Py<PyPppFloatOptions>>,
         elevation_cutoff_deg: Option<f64>,
         estimate_residual_ionosphere: bool,
+        corrections: Option<Py<PyPppRangeCorrections>>,
     ) -> Self {
         let weights = option_py_or_default(
             py,
@@ -804,7 +2122,12 @@ impl PyPppFixedConfig {
             |value| value.inner,
             || PyPppFloatOptions::default().inner,
         );
-        let corrections = RangeCorrections::disabled();
+        let corrections = option_py_or_default(
+            py,
+            corrections.as_ref(),
+            |value| value.inner.clone(),
+            RangeCorrections::disabled,
+        );
         let mut inner = FixedSolveConfig::new(
             weights,
             tropo,
@@ -832,6 +2155,46 @@ impl PyPppFixedConfig {
     #[getter]
     fn estimate_residual_ionosphere(&self) -> bool {
         self.inner.estimate_residual_ionosphere
+    }
+
+    /// Code and phase weights of the solve.
+    #[getter]
+    fn weights(&self) -> PyPppMeasurementWeights {
+        PyPppMeasurementWeights {
+            inner: self.inner.weights,
+        }
+    }
+
+    /// Troposphere model and estimation options of the solve.
+    #[getter]
+    fn tropo(&self) -> PyPppTroposphereOptions {
+        PyPppTroposphereOptions {
+            inner: self.inner.tropo,
+        }
+    }
+
+    /// Iteration cap and state tolerances of the solve.
+    #[getter]
+    fn options(&self) -> PyPppFloatOptions {
+        PyPppFloatOptions {
+            inner: self.inner.opts,
+        }
+    }
+
+    /// Integer ambiguity resolution options of the solve.
+    #[getter]
+    fn ambiguity(&self) -> PyPppFixedAmbiguityOptions {
+        PyPppFixedAmbiguityOptions {
+            inner: self.inner.ambiguity.clone(),
+        }
+    }
+
+    /// Range corrections applied during the fixed solve.
+    #[getter]
+    fn corrections(&self) -> PyPppRangeCorrections {
+        PyPppRangeCorrections {
+            inner: self.inner.corrections.clone(),
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -914,6 +2277,70 @@ pub struct PyPppFloatSolution {
 
 #[pymethods]
 impl PyPppFloatSolution {
+    /// Receiver clock of each solved epoch, metres, in `solved_epoch_indices`
+    /// order.
+    #[getter]
+    fn epoch_clocks_m(&self) -> Vec<f64> {
+        self.inner.epoch_clocks_m.clone()
+    }
+
+    /// The input epoch index of each solved epoch. An epoch left with no
+    /// observations, by the caller, the elevation cutoff or the residual
+    /// screen, is not solved.
+    #[getter]
+    fn solved_epoch_indices(&self) -> Vec<usize> {
+        self.inner.solved_epoch_indices.clone()
+    }
+
+    /// Observations left out before the solve because no transmission epoch
+    /// can be placed from them, each as a `PppUnplacedObservation`.
+    #[getter]
+    fn unplaced_observations(&self) -> Vec<PppUnplacedObservationRow> {
+        unplaced_rows(&self.inner.unplaced_observations)
+    }
+
+    /// Observations the residual screen removed, as `(input epoch index,
+    /// ambiguity id)`.
+    #[getter]
+    fn residual_screen_removals(&self) -> Vec<(usize, String)> {
+        self.inner.residual_screen_removals.clone()
+    }
+
+    /// Whether the residual screen ran.
+    #[getter]
+    fn residual_screen(&self) -> bool {
+        self.inner.residual_screen
+    }
+
+    /// Residual rows in epoch and observation order, each a
+    /// `PppFloatResidual`.
+    #[getter]
+    fn residuals_m(&self) -> Vec<PyPppFloatResidual> {
+        residual_rows(&self.inner.residuals_m)
+    }
+
+    /// Whether the solve met its state tolerances or reached its iteration
+    /// cap.
+    #[getter]
+    fn status(&self) -> PyPppFloatStatus {
+        self.inner.status.into()
+    }
+
+    /// Observations left out because an SSR/HAS bias the corrections require
+    /// was not resolved, each a `PppSsrBiasExclusion`.
+    #[getter]
+    fn ssr_bias_exclusions(&self) -> Vec<PyPppSsrBiasExclusion> {
+        exclusion_rows(&self.inner.ssr_bias_exclusions)
+    }
+
+    /// The iteration and convergence options the solve ran with.
+    #[getter]
+    fn solve_options(&self) -> PyPppFloatOptions {
+        PyPppFloatOptions {
+            inner: self.inner.solve_options,
+        }
+    }
+
     /// ECEF position as a numpy array `[x_m, y_m, z_m]`.
     #[getter]
     fn position<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -1085,6 +2512,49 @@ pub struct PyPppFixedSolution {
 
 #[pymethods]
 impl PyPppFixedSolution {
+    /// Receiver clock of each solved epoch, metres, in `solved_epoch_indices`
+    /// order.
+    #[getter]
+    fn epoch_clocks_m(&self) -> Vec<f64> {
+        self.inner.epoch_clocks_m.clone()
+    }
+
+    /// The input epoch index of each solved epoch. An epoch left with no
+    /// observations, by the caller, the elevation cutoff or the residual
+    /// screen, is not solved.
+    #[getter]
+    fn solved_epoch_indices(&self) -> Vec<usize> {
+        self.inner.solved_epoch_indices.clone()
+    }
+
+    /// Observations left out before the solve because no transmission epoch
+    /// can be placed from them, each as a `PppUnplacedObservation`.
+    #[getter]
+    fn unplaced_observations(&self) -> Vec<PppUnplacedObservationRow> {
+        unplaced_rows(&self.inner.unplaced_observations)
+    }
+
+    /// Residual rows in epoch and observation order, each a
+    /// `PppFloatResidual`.
+    #[getter]
+    fn residuals_m(&self) -> Vec<PyPppFloatResidual> {
+        residual_rows(&self.inner.residuals_m)
+    }
+
+    /// Whether the solve met its state tolerances or reached its iteration
+    /// cap.
+    #[getter]
+    fn status(&self) -> PyPppFloatStatus {
+        self.inner.status.into()
+    }
+
+    /// Observations left out because an SSR/HAS bias the corrections require
+    /// was not resolved, each a `PppSsrBiasExclusion`.
+    #[getter]
+    fn ssr_bias_exclusions(&self) -> Vec<PyPppSsrBiasExclusion> {
+        exclusion_rows(&self.inner.ssr_bias_exclusions)
+    }
+
     /// ECEF position as a numpy array `[x_m, y_m, z_m]`.
     #[getter]
     fn position<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -1369,13 +2839,13 @@ fn solve_ppp_float(
         .iter()
         .map(|epoch| epoch.borrow(py).to_core())
         .collect();
-    let inner = sidereon::solve_ppp_float(
+    let inner = sidereon_core::precise_positioning::solve_float_epochs(
         &sp3.inner,
         &epochs,
         initial_state.inner.clone(),
         config.inner.clone(),
     )
-    .map_err(to_solve_err)?;
+    .map_err(|error| crate::solve_error_detail::ppp_float_error(py, error))?;
     Ok(PyPppFloatSolution { inner })
 }
 
@@ -1392,13 +2862,13 @@ fn solve_ppp_fixed(
         .iter()
         .map(|epoch| epoch.borrow(py).to_core())
         .collect();
-    let inner = sidereon::solve_ppp_fixed(
+    let inner = sidereon_core::precise_positioning::solve_fixed_from_float(
         &sp3.inner,
         &epochs,
         float_solution.inner.clone(),
         config.inner.clone(),
     )
-    .map_err(to_solve_err)?;
+    .map_err(|error| crate::solve_error_detail::ppp_fixed_error(py, error))?;
     Ok(PyPppFixedSolution { inner })
 }
 
@@ -1430,7 +2900,7 @@ fn solve_ppp_auto_init_float(
         || PyPppAutoInitOptions::default().inner,
     );
     let inner = core_solve_ppp_auto_init_float(&sp3.inner, &epochs, options, config.inner.clone())
-        .map_err(to_solve_err)?;
+        .map_err(|error| crate::solve_error_detail::ppp_auto_init_error(py, error))?;
     Ok(PyPppFloatSolution { inner })
 }
 
@@ -1468,12 +2938,19 @@ fn solve_ppp_auto_init_fixed(
         float_config.inner.clone(),
         fixed_config.inner.clone(),
     )
-    .map_err(to_solve_err)?;
+    .map_err(|error| crate::solve_error_detail::ppp_auto_init_error(py, error))?;
     Ok(PyPppFixedSolution { inner })
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPppFloatSolution>()?;
+    m.add_class::<PppUnplacedObservationRow>()?;
+    m.add_class::<PyPppFloatStatus>()?;
+    m.add_class::<PyPppFloatResidual>()?;
+    m.add_class::<PyPppSsrTransmitTimeFailure>()?;
+    m.add_class::<PyPppSsrSignalReport>()?;
+    m.add_class::<PyPppSsrObservationApplication>()?;
+    m.add_class::<PyPppSsrBiasExclusion>()?;
     m.add_class::<PyPppTemporalCorrelationSummary>()?;
     m.add_function(wrap_pyfunction!(solve_ppp_float, m)?)?;
     m.add_class::<PyPppCivilDateTime>()?;
@@ -1483,6 +2960,12 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPppMeasurementWeights>()?;
     m.add_class::<PyPppTroposphereOptions>()?;
     m.add_class::<PyPppFloatOptions>()?;
+    m.add_class::<PyPppPcvSample>()?;
+    m.add_class::<PyPppReceiverAntennaFrequency>()?;
+    m.add_class::<PyPppReceiverAntennaOptions>()?;
+    m.add_class::<PyPppSatelliteClockCorrections>()?;
+    m.add_class::<PyPppCorrectionLookup>()?;
+    m.add_class::<PyPppRangeCorrections>()?;
     m.add_class::<PyPppFloatConfig>()?;
     m.add_class::<PyPppFixedAmbiguityOptions>()?;
     m.add_class::<PyPppFixedConfig>()?;

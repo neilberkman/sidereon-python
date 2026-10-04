@@ -9,7 +9,9 @@ from typing import Union
 from . import Sp3
 from .distribution import ProductIdentity
 
-class ExactSp3ValidationError(ValueError): ...
+class ExactSp3ValidationError(ValueError):
+    kind: str | None
+    detail: dict[str, object] | None
 
 class ExactSp3Coverage(enum.Enum):
     HALF_OPEN = "half_open"

@@ -394,6 +394,7 @@ def test_earthdata_redirect_cookie_client_and_bearer_are_secret_safe(tmp_path):
         (403, None, distribution.AuthorizationDenied),
         (404, None, distribution.ProductNotPublished),
         (410, None, distribution.RetiredEndpoint),
+        (418, None, distribution.HttpStatusFailure),
     ],
 )
 def test_http_statuses_remain_distinct(tmp_path, status, auth, error_type):
@@ -411,6 +412,30 @@ def test_http_statuses_remain_distinct(tmp_path, status, auth, error_type):
     assert "bad-secret" not in str(caught.value)
     assert caught.value.status == status
     assert "?" not in caught.value.url
+    if error_type is distribution.HttpStatusFailure:
+        # Any other status has its own failure code, and is still a transport
+        # failure of kind http_<status>.
+        assert caught.value.code == "http_status"
+        assert isinstance(caught.value, distribution.TransportFailure)
+        assert caught.value.kind == f"http_{status}"
+
+
+def test_a_status_outside_the_http_range_is_a_transport_failure(tmp_path):
+    # RFC 9110 section 15: an HTTP status is 100-599. A server answering 600
+    # has sent no HTTP status, so none is recorded; the kind keeps the value.
+    def handler(request):
+        return httpx.Response(600, request=request)
+
+    with (
+        _client(handler) as client,
+        pytest.raises(distribution.TransportFailure) as caught,
+    ):
+        distribution.acquire(
+            _sp3_request(), cache_dir=tmp_path, http_client=client, retries=1
+        )
+    assert not isinstance(caught.value, distribution.HttpStatusFailure)
+    assert caught.value.kind == "http_600"
+    assert caught.value.status is None
 
 
 def test_timeout_malformed_url_and_retired_endpoint_are_not_not_published(

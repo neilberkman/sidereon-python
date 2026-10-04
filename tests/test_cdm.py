@@ -148,6 +148,14 @@ def _rebuild_object(obj):
         earth_tides=obj.earth_tides,
         intrack_thrust=obj.intrack_thrust,
         velocity_covariance_rtn=obj.velocity_covariance_rtn,
+        metadata_comments=obj.metadata_comments,
+        od_parameters=obj.od_parameters,
+        additional_parameters=obj.additional_parameters,
+        state_comments=obj.state_comments,
+        covariance_comments=obj.covariance_comments,
+        drag_covariance_rtn=obj.drag_covariance_rtn,
+        srp_covariance_rtn=obj.srp_covariance_rtn,
+        thrust_covariance_rtn=obj.thrust_covariance_rtn,
     )
 
 
@@ -167,6 +175,19 @@ def test_constructed_cdm_value_encodes_like_parsed_kvn():
         collision_probability=parsed.collision_probability,
         collision_probability_method=parsed.collision_probability_method,
         hard_body_radius_m=parsed.hard_body_radius_m,
+        ccsds_cdm_vers=parsed.ccsds_cdm_vers,
+        comments=parsed.comments,
+        message_for=parsed.message_for,
+        relative_comments=parsed.relative_comments,
+        relative_position_rtn_m=parsed.relative_position_rtn_m,
+        relative_velocity_rtn_m_s=parsed.relative_velocity_rtn_m_s,
+        start_screen_period=parsed.start_screen_period,
+        stop_screen_period=parsed.stop_screen_period,
+        screen_volume_frame=parsed.screen_volume_frame,
+        screen_volume_shape=parsed.screen_volume_shape,
+        screen_volume_m=parsed.screen_volume_m,
+        screen_entry_time=parsed.screen_entry_time,
+        screen_exit_time=parsed.screen_exit_time,
     )
     assert cdm == parsed
     assert cdm.to_kvn_string() == FX["encoded_kvn"]
@@ -256,6 +277,88 @@ def test_full_metadata_and_velocity_covariance_round_trip():
     )
 
 
+def test_public_kvn_and_xml_routes_retain_all_object_fields_and_covariance_rows():
+    parsed = sidereon.parse_cdm_kvn(_load(KVN_PATH))
+    velocity = np.arange(1.0, 16.0, dtype=np.float64) / 8.0
+    drag = np.arange(1.0, 8.0, dtype=np.float64) / 8.0
+    srp = np.arange(1.0, 9.0, dtype=np.float64) / 8.0
+    thrust = np.arange(1.0, 10.0, dtype=np.float64) / 8.0
+    od = sidereon.CdmOdParameters(
+        comments=["OD details"],
+        time_lastob_start="2010-03-11T00:00:00",
+        time_lastob_end="2010-03-12T00:00:00",
+        recommended_od_span_d=3.25,
+        actual_od_span_d=2.5,
+        obs_available=701,
+        obs_used=699,
+        tracks_available=81,
+        tracks_used=80,
+        residuals_accepted_pct=98.75,
+        weighted_rms=0.125,
+    )
+    additional = sidereon.CdmAdditionalParameters(
+        comments=["physical properties"],
+        area_pc_m2=2.125,
+        area_drg_m2=3.25,
+        area_srp_m2=4.5,
+        mass_kg=5.75,
+        cd_area_over_mass_m2_kg=0.125,
+        cr_area_over_mass_m2_kg=0.25,
+        thrust_acceleration_m_s2=0.375,
+        sedr_w_kg=0.5,
+    )
+    obj = sidereon.CdmObject(
+        np.array([1.0, 2.0, 3.0]),
+        np.array([0.125, 0.25, 0.375]),
+        np.array([1.0, 0.125, 2.0, 0.25, 0.375, 3.0]),
+        object_designator="2024-001A",
+        catalog_name="TEST-SATCAT",
+        object_name="ALPHA",
+        international_designator="2024-001A",
+        object_type="PAYLOAD",
+        operator_contact_position="FLIGHT DIRECTOR",
+        operator_organization="SIDEREON OPS",
+        operator_phone="+1-555-0199",
+        operator_email="ops@example.test",
+        ephemeris_name="EPHEM-1",
+        covariance_method="CALCULATED",
+        maneuverable="YES",
+        orbit_center="EARTH",
+        ref_frame="EME2000",
+        gravity_model="EGM-96: 36D 36O",
+        atmospheric_model="JACCHIA 70 DCA",
+        n_body_perturbations="MOON, SUN",
+        solar_rad_pressure="YES",
+        earth_tides="NO",
+        intrack_thrust="NO",
+        velocity_covariance_rtn=velocity,
+        metadata_comments=["metadata details"],
+        od_parameters=od,
+        additional_parameters=additional,
+        state_comments=["state details"],
+        covariance_comments=["covariance details"],
+        drag_covariance_rtn=drag,
+        srp_covariance_rtn=srp,
+        thrust_covariance_rtn=thrust,
+    )
+    cdm = sidereon.Cdm(obj, parsed.object2)
+
+    for encode, parse in (
+        (sidereon.Cdm.to_kvn_string, sidereon.parse_cdm_kvn),
+        (sidereon.Cdm.to_xml_string, sidereon.parse_cdm_xml),
+    ):
+        reparsed = parse(encode(cdm))
+        actual = reparsed.object1
+        assert actual == obj
+        assert reparsed.object2 == parsed.object2
+        assert np.array_equal(actual.velocity_covariance_rtn, velocity)
+        assert np.array_equal(actual.drag_covariance_rtn, drag)
+        assert np.array_equal(actual.srp_covariance_rtn, srp)
+        assert np.array_equal(actual.thrust_covariance_rtn, thrust)
+        assert actual.od_parameters == od
+        assert actual.additional_parameters == additional
+
+
 def test_velocity_covariance_shape_is_validated():
     with pytest.raises(ValueError):
         sidereon.CdmObject(
@@ -275,3 +378,45 @@ def test_cdm_parse_and_shape_errors_are_typed():
         sidereon.CdmObject(np.zeros(2), np.zeros(3), np.zeros(6))
     with pytest.raises(ValueError):
         sidereon.CdmObject(np.zeros(3), np.zeros(3), np.zeros(5))
+
+
+def test_cdm_retains_every_item_the_message_states():
+    cdm = sidereon.parse_cdm_kvn(_load(KVN_PATH))
+    assert cdm.ccsds_cdm_vers == "1.0"
+    assert cdm.message_for == "SATELLITE A"
+    assert cdm.relative_comments == ["Relative Metadata/Data"]
+    assert cdm.relative_position_rtn_m == (27.4, -70.2, 711.8)
+    assert cdm.relative_velocity_rtn_m_s == (-7.2, -14692.0, -1437.2)
+    assert cdm.screen_volume_frame == "RTN"
+    assert cdm.screen_volume_shape == "ELLIPSOID"
+    assert cdm.screen_volume_m == (200.0, 1000.0, 1000.0)
+    assert cdm.screen_entry_time == "2010-03-13T22:37:52.222"
+    od = cdm.object1.od_parameters
+    assert od.obs_available == 592
+    assert od.obs_used == 579
+    assert od.tracks_used == 119
+    assert od.recommended_od_span_d == 7.88
+    extra = cdm.object1.additional_parameters
+    assert extra.mass_kg == 251.6
+    assert extra.area_pc_m2 == 5.2
+    assert cdm.object2.additional_parameters.mass_kg is None
+    assert cdm.object1.drag_covariance_rtn is None
+
+
+def test_cdm_covariance_rows_validate_only_on_request():
+    identity = sidereon.CdmObject(
+        np.array([1.0, 2.0, 3.0]),
+        np.array([0.1, 0.2, 0.3]),
+        np.array([1.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
+    )
+    np.testing.assert_array_equal(identity.to_covariance_rtn(), np.eye(3))
+    # A drag row with no velocity rows before it has no place in the matrix.
+    gapped = sidereon.CdmObject(
+        np.array([1.0, 2.0, 3.0]),
+        np.array([0.1, 0.2, 0.3]),
+        np.array([1.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
+        drag_covariance_rtn=np.zeros(7),
+    )
+    assert gapped.drag_covariance_rtn.shape == (7,)
+    with pytest.raises(sidereon.CdmParseError):
+        gapped.to_covariance_rtn()

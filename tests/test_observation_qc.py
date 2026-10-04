@@ -69,23 +69,29 @@ def test_observation_qc_matches_real_oracle_summary():
     assert first_signal.value_observations == 3
     assert first_signal.ssi.counts == [0, 0, 0, 2, 1, 0, 0, 0, 0, 0]
 
+    # GLONASS satellite-epochs carrying G3 values enter the dual-frequency
+    # statistics: a code with no carrier frequency is left out on its own
+    # rather than dropping the satellite-epoch.
     slips = report.cycle_slips
-    assert slips.observations == 4135
-    assert slips.total_slips == 27
-    assert slips.observations_per_slip == pytest.approx(4135.0 / 27.0)
+    assert slips.observations == 4271
+    assert slips.total_slips == 29
+    assert slips.observations_per_slip == pytest.approx(4271.0 / 29.0)
     gps_slips = _row_for_system(slips.by_system, sidereon.GnssSystem.GPS)
     assert gps_slips.observations == 1282
     assert gps_slips.slips == 4
     assert gps_slips.observations_per_slip == pytest.approx(1282.0 / 4.0)
     glonass_slips = _row_for_system(slips.by_system, sidereon.GnssSystem.GLONASS)
-    assert glonass_slips.observations == 784
-    assert glonass_slips.slips == 10
+    assert glonass_slips.observations == 920
+    assert glonass_slips.slips == 12
     galileo_slips = _row_for_system(slips.by_system, sidereon.GnssSystem.GALILEO)
     assert galileo_slips.observations == 1023
     assert galileo_slips.slips == 9
     beidou_slips = _row_for_system(slips.by_system, sidereon.GnssSystem.BEIDOU)
     assert beidou_slips.observations == 1046
     assert beidou_slips.slips == 4
+    # SBAS forms no dual-frequency observation.
+    assert len(slips.by_system) == 4
+    assert sidereon.GnssSystem.SBAS not in {row.system for row in slips.by_system}
 
     gps_mp = _row_for_system(report.multipath.systems, sidereon.GnssSystem.GPS)
     assert gps_mp.mp1.n == 1282
@@ -114,8 +120,19 @@ def test_observation_qc_matches_real_oracle_summary():
     assert "SLIPS" in rendered
     assert '<td class="text">GPS</td>' in report.render_html()
 
+    # The JSON form carries the same tally as the typed report above.
     encoded = json.loads(report.to_json())
-    assert encoded["cycle_slips"]["total_slips"] == 27
+    assert encoded["cycle_slips"]["observations"] == 4271
+    assert encoded["cycle_slips"]["total_slips"] == 29
+    assert {
+        row["system"]: (row["observations"], row["slips"])
+        for row in encoded["cycle_slips"]["by_system"]
+    } == {
+        "Gps": (1282, 4),
+        "Glonass": (920, 12),
+        "Galileo": (1023, 9),
+        "BeiDou": (1046, 4),
+    }
     assert encoded["multipath"]["systems"]
 
 
@@ -162,6 +179,8 @@ def test_unavailable_zero_source_interval_is_linted_inferred_and_repaired(zero):
     unavailable = [finding for finding in lint.findings if finding.code == "OBS-H19"]
     assert len(unavailable) == 1
     assert unavailable[0].kind == "ObsIntervalUnavailable"
+    assert unavailable[0].details() == {}
+    assert unavailable[0].at.field == "INTERVAL"
     assert unavailable[0].severity == sidereon.RinexLintSeverity.INFO
     assert unavailable[0].is_repairable
 

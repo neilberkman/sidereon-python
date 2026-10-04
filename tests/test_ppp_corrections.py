@@ -1,18 +1,19 @@
 """Standalone PPP correction precompute through the binding.
 
 `ppp_corrections` is a pure wrapper over `sidereon_core::ppp_corrections`. The
-bar is bit-exact against the core's own reference fixture test
-(`ppp_corrections_match_elixir_reference_fixture`): the same SP3 arc, satellite,
-epoch, receiver, and antenna options must reproduce the same solid-earth tide,
-carrier-phase wind-up, and satellite-antenna PCO/PCV corrections to the bit.
+bar is bit-exact against the core: `scripts/core_goldens` runs the core's
+`build` on the same SP3 arc, satellite, epoch, receiver, and antenna options,
+and the binding must reproduce its solid-earth tide, carrier-phase wind-up, and
+satellite-antenna PCO/PCV corrections to the bit.
 """
 
 import os
 import struct
 
+import numpy as np
 import pytest
 import sidereon
-from _helpers import CORE_FIXTURES
+from _helpers import CORE_FIXTURES, core_goldens
 
 SP3_FILE = "GRG0MGXFIN_20201760000_01D_15M_ORB.SP3"
 SAT = "G21"
@@ -23,11 +24,12 @@ RECEIVER_M = [3512900.0, 780500.0, 5248700.0]
 F_L1_HZ = 1575.42e6
 F_L2_HZ = 1227.60e6
 
-# Frozen IEEE-754 bits from the core reference test.
-TIDE_BITS = (0x3FB8BC98E788ED00, 0x3FAA54D8C1097507, 0x3FB03498C46B3B50)
-WINDUP_BITS = 0xBF808DE79DBD2C16
-SAT_PCO_BITS = (0xBFE58ED947570048, 0x3FDEDBB280CEB1BE, 0xBFFE3BCA6A354E4A)
-SAT_PCV_BITS = 0x3F77617E95BD232C
+# IEEE-754 bits of the core's own corrections for this setup.
+_GOLDEN = core_goldens()["ppp_corrections"]
+TIDE_BITS = tuple(int(bits, 16) for bits in _GOLDEN["tide"])
+WINDUP_BITS = int(_GOLDEN["windup_m"], 16)
+SAT_PCO_BITS = tuple(int(bits, 16) for bits in _GOLDEN["sat_pco_ecef"])
+SAT_PCV_BITS = int(_GOLDEN["sat_pcv_m"], 16)
 
 
 def _bits(u64):
@@ -124,3 +126,79 @@ def test_ppp_corrections_rejects_degenerate_receiver():
         sidereon.ppp_corrections(
             _sp3(), [_epoch()], [0.0, 0.0, 0.0], solid_earth_tide=True
         )
+
+
+def test_ppp_corrections_tide_constants_and_ut1_validity_metadata():
+    precise = _sp3()
+    current_epoch = _epoch()
+    default_constants = sidereon.ppp_corrections(
+        precise, [current_epoch], RECEIVER_M, solid_earth_tide=True
+    )
+    explicit_conventions = sidereon.ppp_corrections_with_validity_and_tide_constants(
+        precise,
+        [current_epoch],
+        RECEIVER_M,
+        solid_earth_tide=True,
+        tide_constants=sidereon.StationTideConstants.CONVENTIONS,
+    )
+    assert explicit_conventions.tide == default_constants.tide
+    assert not explicit_conventions.ut1_degraded
+    assert explicit_conventions.degradation_reason is None
+
+    routine_constants = sidereon.ppp_corrections_with_validity_and_tide_constants(
+        precise,
+        [current_epoch],
+        RECEIVER_M,
+        solid_earth_tide=True,
+        tide_constants=sidereon.StationTideConstants.IERS_ROUTINE,
+    )
+    assert len(routine_constants.tide) == 1
+    assert all(np.isfinite(component) for component in routine_constants.tide[0][1])
+
+    outside_epoch = sidereon.PppCorrectionEpoch(
+        2500,
+        1,
+        1,
+        0,
+        0,
+        0.0,
+        T_RX_J2000_S,
+        [],
+    )
+    with pytest.raises(sidereon.PppCorrectionsError) as refusal:
+        sidereon.ppp_corrections_with_validity_and_tide_constants(
+            precise, [outside_epoch], RECEIVER_M, solid_earth_tide=True
+        )
+    assert refusal.value.kind == "epoch"
+    assert refusal.value.epoch_index == 0
+    assert refusal.value.details["reason"] == "after_coverage"
+
+    permissive = sidereon.ppp_corrections_with_validity_and_tide_constants(
+        precise,
+        [outside_epoch],
+        RECEIVER_M,
+        solid_earth_tide=True,
+        validity=sidereon.ValidityMode.PERMISSIVE,
+    )
+    assert permissive.ut1_degraded
+    assert permissive.degradation_reason == "after_coverage"
+
+
+def test_ppp_bias_refusal_retains_nested_core_error_fields():
+    bias_path = os.path.join(
+        CORE_FIXTURES,
+        "bias",
+        "COD0OPSFIN_20261330000_01D_01D_OSB.BIA",
+    )
+    bias_set = sidereon.load_bias_sinex(bias_path)
+    code_bias = sidereon.PppCodeBiasOptions(
+        bias_set,
+        [(sidereon.GnssSystem.GPS, "C1C", "C2W")],
+        clock_reference=[],
+    )
+    with pytest.raises(sidereon.PppCorrectionsError) as refusal:
+        sidereon.ppp_corrections_with_validity_and_tide_constants(
+            _sp3(), [_epoch()], RECEIVER_M, code_bias=code_bias
+        )
+    assert refusal.value.kind == "bias"
+    assert refusal.value.details["source_kind"] == "missing_clock_reference"

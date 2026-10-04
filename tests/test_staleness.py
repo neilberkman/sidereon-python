@@ -102,20 +102,49 @@ def test_select_sp3_nearest_prior_reports_staleness(sp3):
 def test_select_sp3_beyond_cap_raises(sp3):
     axis = sp3.epochs_j2000_seconds
     requested = float(axis[-1]) + 10 * DAY_S  # past the default 3-day cap.
-    with pytest.raises(sidereon.SelectionError):
+    with pytest.raises(sidereon.SelectionError) as exc:
         sidereon.select_sp3([sp3], requested)
+    detail = exc.value.detail
+    assert detail["family"] == "SelectionError"
+    assert detail["kind"] == "beyond_staleness_cap"
+    assert detail["requested_epoch_j2000_s"] == requested
+    assert detail["source_epoch_j2000_s"] == float(axis[-1])
+    assert detail["staleness_s"] == requested - float(axis[-1])
+    assert (
+        detail["max_staleness_s"]
+        == sidereon.StalenessPolicy.default_policy().max_staleness_s
+    )
+    assert exc.value.selection_detail == detail
 
 
 def test_select_sp3_no_prior_raises(sp3):
     axis = sp3.epochs_j2000_seconds
     requested = float(axis[0]) - 10 * DAY_S  # only later products exist.
-    with pytest.raises(sidereon.SelectionError):
+    with pytest.raises(sidereon.SelectionError) as exc:
         sidereon.select_sp3([sp3], requested, sidereon.StalenessPolicy.days(30.0))
+    assert exc.value.detail["kind"] == "no_prior_product"
+    assert exc.value.detail["requested_epoch_j2000_s"] == requested
 
 
 def test_select_sp3_empty_set_raises():
-    with pytest.raises(sidereon.SelectionError):
+    with pytest.raises(sidereon.SelectionError) as exc:
         sidereon.select_sp3([], 0.0)
+    assert exc.value.detail == {
+        "family": "SelectionError",
+        "kind": "empty_product_set",
+        "message": "product set is empty",
+    }
+
+
+def test_select_sp3_invalid_policy_retains_typed_detail(sp3):
+    policy = sidereon.StalenessPolicy(float("nan"))
+    with pytest.raises(sidereon.SelectionError) as exc:
+        sidereon.select_sp3([sp3], float(sp3.epochs_j2000_seconds[0]), policy)
+    detail = exc.value.selection_detail
+    assert detail["family"] == "SelectionError"
+    assert detail["kind"] == "invalid_policy"
+    assert detail["message"] == str(exc.value)
+    assert np.isnan(detail["max_staleness_s"])
 
 
 # --- IONEX selection --------------------------------------------------------
@@ -161,8 +190,11 @@ def test_select_ionex_diurnal_shift_is_persistent_and_bit_exact(ionex):
 def test_select_ionex_beyond_cap_raises(ionex):
     base = int(ionex.map_epochs_j2000_s[0])
     requested = base + 5 * DAY_S  # past the default 3-day cap.
-    with pytest.raises(sidereon.SelectionError):
+    with pytest.raises(sidereon.SelectionError) as exc:
         sidereon.select_ionex([ionex], requested)
+    assert exc.value.detail["family"] == "SelectionError"
+    assert exc.value.detail["kind"] == "beyond_staleness_cap"
+    assert exc.value.detail["requested_epoch_j2000_s"] == requested
 
 
 def test_select_ionex_over_range_smoke(ionex):

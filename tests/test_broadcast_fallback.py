@@ -18,6 +18,7 @@ Fixtures are the crate's own goldens, reused verbatim.
 """
 
 import os
+import re
 import struct
 
 import numpy as np
@@ -56,7 +57,7 @@ def _civil_to_j2000_s(t):
     return (jd_whole - 2451545.0) * 86400.0 + day_seconds
 
 
-def _first_epoch_config():
+def _first_epoch_config(observation_limit=None):
     obs = sidereon.load_rinex_obs(OBS)
     epoch = obs.epochs[0]
     t = epoch.epoch
@@ -71,7 +72,12 @@ def _first_epoch_config():
         if not sat.startswith("G") or code != "C1C" or not np.isfinite(value):
             continue
         observations.append(sidereon.SppObservation(sat, float(value)))
-    assert len(observations) >= 5, f"need a redundant GPS set, got {len(observations)}"
+        if observation_limit is not None and len(observations) >= observation_limit:
+            break
+    required_observations = observation_limit or 5
+    assert len(observations) >= required_observations, (
+        f"need {required_observations} GPS observations, got {len(observations)}"
+    )
 
     approx = obs.header.approx_position_m
     initial_guess = [float(approx[0]), float(approx[1]), float(approx[2]), 0.0]
@@ -106,10 +112,10 @@ def test_solve_broadcast_converges(store, config):
 
 def test_broadcast_fde_runs_real_broadcast_spp_path(store, config):
     result = sidereon.qc_fde_broadcast(
-        store, config, p_fa=0.01, max_iterations=2, max_pdop=20.0
+        store, config, p_fa=0.01, max_exclusions=2, max_pdop=20.0
     )
     alias = sidereon.fde_broadcast(
-        store, config, p_fa=0.01, max_iterations=2, max_pdop=20.0
+        store, config, p_fa=0.01, max_exclusions=2, max_pdop=20.0
     )
 
     assert result.excluded == []
@@ -150,6 +156,14 @@ def test_fallback_to_broadcast_when_no_precise_is_bit_identical(store, config):
     # The typed selection reason is surfaced, never silently dropped.
     assert sourced.selection_error is not None
     assert "empty" in sourced.selection_error.lower()
+    detail = sourced.broadcast_reason_detail
+    assert detail is not None
+    assert detail["family"] == "BroadcastReason"
+    assert detail["kind"] == "precise_unavailable"
+    assert detail["message"] == sourced.selection_error
+    assert detail["selection_error"]["family"] == "SelectionError"
+    assert detail["selection_error"]["kind"] == "empty_product_set"
+    assert detail["selection_error"]["message"] == sourced.selection_error
 
     # The broadcast fix is bit-for-bit the broadcast-only solve.
     assert _bits(sourced.solution.rx_clock_s) == _bits(broadcast.rx_clock_s)
@@ -169,6 +183,13 @@ def test_fallback_drops_to_broadcast_when_precise_does_not_cover_epoch(store, co
     # The only product is later than the epoch: no prior to degrade to.
     assert sourced.selection_error is not None
     assert "before" in sourced.selection_error.lower()
+    detail = sourced.broadcast_reason_detail
+    assert detail is not None
+    assert detail["kind"] == "precise_unavailable"
+    assert detail["message"] == sourced.selection_error
+    assert detail["selection_error"]["kind"] == "no_prior_product"
+    assert detail["selection_error"]["message"] == sourced.selection_error
+    assert detail["selection_error"]["requested_epoch_j2000_s"] == config.t_rx_j2000_s
     assert np.array_equal(
         sourced.solution.position.view(np.int64), broadcast.position.view(np.int64)
     )
@@ -192,6 +213,53 @@ def test_fallback_uses_degraded_precise_when_stale_product_serves_epoch(store, c
     assert 0.0 < meta.staleness_s < sidereon.StalenessPolicy.days(3.0).max_staleness_s
 
 
+def test_degraded_precise_spp_failure_keeps_full_reason_and_falls_back(store, config):
+    with open(PRIOR_DAY_SP3, "rb") as fh:
+        prior = sidereon.load_sp3(fh.read())
+
+    # Keep the real parsed prior-day orbit and epochs, but rename its GPS records
+    # to a constellation absent from this GPS-only observation set. Selection
+    # still chooses the within-cap prior product; the precise SPP path then gets
+    # its real TooFewSatellites refusal and core falls back to broadcast.
+    systems = {satellite[0] for satellite in prior.satellites}
+    replacement = next(system for system in "RECIJ" if system not in systems)
+    renamed_text = re.sub(r"G(\d{2})", rf"{replacement}\1", prior.to_sp3_string())
+    unusable_prior = sidereon.load_sp3(renamed_text.encode("ascii"))
+    assert all(not satellite.startswith("G") for satellite in unusable_prior.satellites)
+
+    broadcast = sidereon.solve_broadcast(store, config)
+    sourced = sidereon.solve_with_fallback(
+        [unusable_prior], store, config, sidereon.StalenessPolicy.days(3.0)
+    )
+    assert sourced.source == sidereon.FixSource.BROADCAST
+    assert (
+        sourced.broadcast_reason == sidereon.BroadcastReason.PRECISE_DEGRADED_UNUSABLE
+    )
+    assert sourced.selection_error is None
+    meta = sourced.attempted_staleness
+    assert meta is not None
+    assert meta.kind == sidereon.DegradationKind.NEAREST_PRIOR
+    assert meta.requested_epoch_j2000_s == config.t_rx_j2000_s
+    detail = sourced.broadcast_reason_detail
+    assert detail is not None
+    assert detail["family"] == "BroadcastReason"
+    assert detail["kind"] == "precise_degraded_unusable"
+    assert detail["error"]["family"] == "SppError"
+    assert detail["error"]["kind"] == "too_few_satellites"
+    assert detail["message"] == detail["error"]["message"]
+    assert detail["error"]["used"] == 0
+    assert detail["error"]["required"] == 4
+    assert (
+        detail["staleness"]["requested_epoch_j2000_s"] == meta.requested_epoch_j2000_s
+    )
+    assert detail["staleness"]["source_epoch_j2000_s"] == meta.source_epoch_j2000_s
+    assert detail["staleness"]["staleness_s"] == meta.staleness_s
+    assert detail["staleness"]["staleness_days"] == meta.staleness_days
+    assert np.array_equal(
+        sourced.solution.position.view(np.int64), broadcast.position.view(np.int64)
+    )
+
+
 def test_fallback_surfaces_typed_error_when_broadcast_cannot_solve(store):
     # No observations and no precise product: the broadcast fallback solve has
     # nothing to fix on and raises the typed FallbackError.
@@ -204,5 +272,65 @@ def test_fallback_surfaces_typed_error_when_broadcast_cannot_solve(store):
         corrections=sidereon.SppCorrections(ionosphere=False, troposphere=False),
         with_geodetic=False,
     )
-    with pytest.raises(sidereon.FallbackError):
+    with pytest.raises(sidereon.FallbackError) as exc:
         sidereon.solve_with_fallback([], store, empty)
+    detail = exc.value.detail
+    assert detail["family"] == "FallbackError"
+    assert detail["kind"] == "broadcast"
+    assert detail["message"] == str(exc.value)
+    assert detail["cause"]["family"] == "SppError"
+    assert detail["cause"]["kind"] == "too_few_satellites"
+    assert detail["cause"]["used"] == 0
+    assert detail["cause"]["required"] == 4
+
+
+def test_direct_broadcast_failure_keeps_full_spp_cause(store):
+    empty = sidereon.SppConfig(
+        observations=[],
+        t_rx_j2000_s=646228800.0,
+        t_rx_second_of_day_s=0.0,
+        day_of_year=177.0,
+        initial_guess=[0.0, 0.0, 0.0, 0.0],
+        corrections=sidereon.SppCorrections(ionosphere=False, troposphere=False),
+        with_geodetic=False,
+    )
+    with pytest.raises(sidereon.SolveError) as exc:
+        sidereon.solve_broadcast(store, empty)
+    detail = exc.value.detail
+    assert detail["family"] == "SppError"
+    assert detail["kind"] == "too_few_satellites"
+    assert detail["used"] == 0
+    assert detail["required"] == 4
+    assert str(exc.value) == detail["message"]
+
+
+def test_fallback_surfaces_precise_spp_failure_with_full_cause(store):
+    with open(COD_SP3, "rb") as fh:
+        precise = sidereon.load_sp3(fh.read())
+    reference = _first_epoch_config(observation_limit=1)
+    empty = sidereon.SppConfig(
+        observations=[],
+        t_rx_j2000_s=reference.t_rx_j2000_s,
+        t_rx_second_of_day_s=reference.t_rx_second_of_day_s,
+        day_of_year=reference.day_of_year,
+        initial_guess=reference.initial_guess,
+        corrections=sidereon.SppCorrections(ionosphere=False, troposphere=False),
+        with_geodetic=reference.with_geodetic,
+    )
+
+    with pytest.raises(sidereon.FallbackError) as exc:
+        sidereon.solve_with_fallback([precise], store, empty)
+    detail = exc.value.detail
+    assert detail["family"] == "FallbackError"
+    assert detail["kind"] == "precise"
+    assert detail["message"] == str(exc.value)
+    assert detail["message"].startswith("precise SPP solve failed:")
+    assert detail["cause"]["family"] == "SppError"
+    assert detail["cause"]["kind"] == "too_few_satellites"
+    assert detail["cause"]["used"] == 0
+    assert detail["cause"]["required"] == 4
+
+
+def test_fallback_error_class_defaults_detail_to_none():
+    error = sidereon.FallbackError("hand-built fallback failure")
+    assert error.detail is None

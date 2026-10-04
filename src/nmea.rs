@@ -54,51 +54,6 @@ fn quality(value: u8) -> GgaQuality {
     }
 }
 
-#[pyclass(module = "sidereon._sidereon", name = "NmeaDiagnostics")]
-#[derive(Clone)]
-pub struct PyNmeaDiagnostics {
-    inner: Diagnostics,
-}
-
-#[pymethods]
-impl PyNmeaDiagnostics {
-    #[getter]
-    fn skip_count(&self) -> usize {
-        self.inner.skips.len()
-    }
-
-    #[getter]
-    fn warning_count(&self) -> usize {
-        self.inner.warnings.len()
-    }
-
-    #[getter]
-    fn skips(&self) -> Vec<String> {
-        self.inner
-            .skips
-            .iter()
-            .map(|skip| format!("{:?}", skip.reason))
-            .collect()
-    }
-
-    #[getter]
-    fn warnings(&self) -> Vec<String> {
-        self.inner
-            .warnings
-            .iter()
-            .map(|warning| format!("{:?}", warning.kind))
-            .collect()
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "NmeaDiagnostics(skip_count={}, warning_count={})",
-            self.inner.skips.len(),
-            self.inner.warnings.len()
-        )
-    }
-}
-
 #[pyclass(module = "sidereon._sidereon", name = "NmeaGga")]
 #[derive(Clone)]
 pub struct PyNmeaGga {
@@ -269,10 +224,8 @@ impl PyNmeaEpochSnapshot {
     }
 
     #[getter]
-    fn diagnostics(&self) -> PyNmeaDiagnostics {
-        PyNmeaDiagnostics {
-            inner: self.inner.diagnostics.clone(),
-        }
+    fn diagnostics(&self) -> crate::format_diagnostics::PyFormatDiagnostics {
+        crate::format_diagnostics::PyFormatDiagnostics::from_inner(self.inner.diagnostics.clone())
     }
 
     fn __repr__(&self) -> String {
@@ -302,10 +255,8 @@ impl PyNmeaLog {
     }
 
     #[getter]
-    fn diagnostics(&self) -> PyNmeaDiagnostics {
-        PyNmeaDiagnostics {
-            inner: self.diagnostics.clone(),
-        }
+    fn diagnostics(&self) -> crate::format_diagnostics::PyFormatDiagnostics {
+        crate::format_diagnostics::PyFormatDiagnostics::from_inner(self.diagnostics.clone())
     }
 
     fn group_epochs(&self) -> Vec<PyNmeaEpochSnapshot> {
@@ -352,10 +303,8 @@ impl PyNmeaChunkOutput {
     }
 
     #[getter]
-    fn diagnostics(&self) -> PyNmeaDiagnostics {
-        PyNmeaDiagnostics {
-            inner: self.inner.diagnostics.clone(),
-        }
+    fn diagnostics(&self) -> crate::format_diagnostics::PyFormatDiagnostics {
+        crate::format_diagnostics::PyFormatDiagnostics::from_inner(self.inner.diagnostics.clone())
     }
 
     fn __repr__(&self) -> String {
@@ -394,6 +343,15 @@ impl PyNmeaAccumulator {
         self.inner
             .finish()
             .map(|inner| PyNmeaEpochSnapshot { inner })
+    }
+
+    /// Finish buffered input and return every final sentence, epoch snapshot,
+    /// and parser diagnostic. Unlike `finish`, this preserves all results
+    /// produced from an unterminated final line.
+    fn finish_with_output(&mut self) -> PyNmeaChunkOutput {
+        PyNmeaChunkOutput {
+            inner: self.inner.finish_with_output(),
+        }
     }
 
     fn retained_len(&self) -> usize {
@@ -466,7 +424,6 @@ fn write_gga(
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PyNmeaDiagnostics>()?;
     m.add_class::<PyNmeaGga>()?;
     m.add_class::<PyNmeaSentence>()?;
     m.add_class::<PyNmeaEpochSnapshot>()?;

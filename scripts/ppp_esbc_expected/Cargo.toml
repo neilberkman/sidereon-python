@@ -1,0 +1,15 @@
+[package]
+name = "ppp-esbc-expected"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Writes the binding-level PPP solutions of tests/fixtures/ppp_esbc.json from sidereon-core"
+
+# Its lock records the resolved Git or registry source. The generator verifies
+# the full Git commit or checksum-bound published VCS commit before writing it.
+[dependencies]
+flate2 = "1"
+sha2 = "0.10"
+sidereon = { version = "=3.0.0" }
+sidereon-core = { version = "=3.0.0" }
+serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }

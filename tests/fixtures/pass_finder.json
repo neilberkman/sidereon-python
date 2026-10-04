@@ -23,22 +23,22 @@
       "aos_unix_us": 1530672731076964,
       "los_unix_us": 1530673217359923,
       "culmination_unix_us": 1530672973724542,
-      "max_elevation_deg": 8.61830791726523,
-      "max_elevation_deg_hex": "0x40213c92daf7062a"
+      "max_elevation_deg": 8.618307917265216,
+      "max_elevation_deg_hex": "0x40213c92daf70622"
     },
     {
       "aos_unix_us": 1530678405624694,
       "los_unix_us": 1530679033205260,
       "culmination_unix_us": 1530678718589335,
-      "max_elevation_deg": 36.35562767307705,
-      "max_elevation_deg_hex": "0x40422d853524b592"
+      "max_elevation_deg": 36.35562767307706,
+      "max_elevation_deg_hex": "0x40422d853524b593"
     },
     {
       "aos_unix_us": 1530684175282896,
       "los_unix_us": 1530684821877746,
       "culmination_unix_us": 1530684498320405,
-      "max_elevation_deg": 88.48786827110315,
-      "max_elevation_deg_hex": "0x40561f393bd74939"
+      "max_elevation_deg": 88.4878682711034,
+      "max_elevation_deg_hex": "0x40561f393bd7494a"
     },
     {
       "aos_unix_us": 1530689966059874,
@@ -51,15 +51,15 @@
       "aos_unix_us": 1530695755659484,
       "los_unix_us": 1530696368109435,
       "culmination_unix_us": 1530696062786566,
-      "max_elevation_deg": 27.236730728087938,
-      "max_elevation_deg_hex": "0x403b3c9a628f1891"
+      "max_elevation_deg": 27.236730728087927,
+      "max_elevation_deg_hex": "0x403b3c9a628f188e"
     },
     {
       "aos_unix_us": 1530701594809874,
       "los_unix_us": 1530702000124204,
       "culmination_unix_us": 1530701797783611,
-      "max_elevation_deg": 5.063216217846758,
-      "max_elevation_deg_hex": "0x401440bbc090ea20"
+      "max_elevation_deg": 5.063216217846734,
+      "max_elevation_deg_hex": "0x401440bbc090ea05"
     }
   ]
 }

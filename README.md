@@ -30,8 +30,10 @@ print(sidereon.__version__)
 ## Example: where is the ISS in the sky right now?
 
 No data files and no setup: give it a two-line element set and a ground
-station, and ask for the look angles. Everything that takes time takes unix
-microseconds (int64) and arrays propagate in one call.
+station, and ask for the look angles. The propagation and look-angle
+conveniences below take time as unix microseconds (int64) and propagate arrays
+in one call; other surfaces carry their own epoch types, and a parsed product
+keeps the exact instants its format declared.
 
 ```python
 import numpy as np
@@ -53,6 +55,26 @@ print(look.azimuth_deg, look.elevation_deg, look.range_km)
 `find_passes()` (rise/set/peak over a window). The positioning side has the same
 pattern: a typed config in, a result object with numpy positions and scalar
 attributes out.
+
+For a CCSDS OMM, parse the message and initialize the SGP4/SDP4 satellite
+directly. Its propagation results use the same TEME arrays as `Tle.propagate()`;
+incompatible theories or missing `MEAN_MOTION` / `BSTAR` raise
+`OmmParseError` with a structured `detail` field.
+Use `sidereon.parse_omm_epoch(text)` when you need the `EPOCH` field alone; it
+preserves the full 15-digit fractional-second value and UTC-like leap seconds,
+accepts a trailing `Z`, and raises `OmmParseError` with typed detail for invalid
+input.
+
+```python
+import numpy as np
+import sidereon
+
+omm = sidereon.parse_omm_json(open("orbit.json").read())
+satellite = omm.to_satellite()
+epochs_us = np.asarray([1_750_000_000_000_000], dtype=np.int64)
+states = satellite.propagate(epochs_us)
+print(states.position_km, states.velocity_km_s)
+```
 
 ```python
 import sidereon
@@ -98,6 +120,46 @@ Use `SEPARATE_MULTIPLY_ADD` for a PROJ build that does not contract the
 multiply-add operations. Invalid coordinates raise a typed
 `ProjVgridshiftError` subclass instead of panicking or extrapolating.
 
+### IONEX ionospheric maps and slant delay
+
+Load global ionospheric maps (IONEX) with non-fatal parser warnings, inspect paired validity masks for missing cells, and evaluate policy-aware slant delay:
+
+```python
+import sidereon
+
+# Load IONEX product with structured parser warnings
+parsed = sidereon.load_ionex_with_warnings("igs2024176.inx")
+ionex = parsed.ionex
+for warning in parsed.warnings:
+    print(warning.kind, warning.line, warning.message)
+
+# Missing grid nodes render as NaN alongside an explicit boolean mask
+tec = (
+    ionex.tec_maps
+)  # shape: (n_epoch, n_lat, n_lon), float64 with NaN for missing cells
+mask = (
+    ionex.tec_mask
+)  # shape: (n_epoch, n_lat, n_lon), bool (False indicates missing node)
+
+# Policy-aware slant delay evaluation
+policy = (
+    sidereon.IonexSlantPolicy()
+    .with_coverage(sidereon.IonexCoveragePolicy.HOLD)
+    .with_missing_nodes(sidereon.IonexMissingNodePolicy.RENORMALIZE)
+    .with_mapping(sidereon.IonexMappingPolicy.SINGLE_LAYER)
+)
+eval_res = ionex.slant_delay_with_policy(
+    lat_deg=45.0,
+    lon_deg=10.0,
+    azimuth_deg=120.0,
+    elevation_deg=35.0,
+    epoch_j2000_s=646_272_000,
+    frequency_hz=1_575_420_000.0,
+    policy=policy,
+)
+print("Slant delay (m):", eval_res.delay_m, "is_valid:", eval_res.status.is_valid)
+```
+
 ## Capabilities
 
 The Python package mirrors the full breadth of the engine.
@@ -136,8 +198,10 @@ The Python package mirrors the full breadth of the engine.
   real-data validated, Bias-SINEX code and phase biases (DCB/OSB), Klobuchar
   and NeQuick-G ionosphere, IONEX maps, troposphere models, top-level SBAS/SSR
   decode and SSR store helpers, and NTRIP client stream handling.
-- **Ephemeris and time:** broadcast ephemeris and precise SP3 products, JPL SPK
-  (DAF/.bsp) kernels, uniform satellite-state sampling across broadcast and
+- **Ephemeris and time:** broadcast ephemeris and precise SP3 products (full
+  header descriptors, clocks kept beside missing orbits, and a writer that
+  raises a typed `Sp3WriteError` rather than round a value; see
+  `docs/sp3.md`), JPL SPK (DAF/.bsp) kernels, uniform satellite-state sampling across broadcast and
   precise sources with batched multi-satellite interpolation, configurable
   SP3 coverage-gap interpolation policy (`gap_threshold_factor`, default 1.5)
   and window-scoped continuity verification options (`check_continuity` and
@@ -190,7 +254,11 @@ The Python package mirrors the full breadth of the engine.
   coefficients, DLL thermal-noise jitter, and multipath error envelopes,
   validated against published constants.
 - **Formats:** parse and serialize TLE/OMM, CCSDS OEM/OPM/CDM/TDM, RINEX,
-  CRINEX, SP3, IONEX, ANTEX, Bias-SINEX, SBAS logs, RTCM, and NMEA.
+  CRINEX, SP3, IONEX, ANTEX, Bias-SINEX, SBAS logs, RTCM, NMEA, and
+  ocean-loading BLQ. A RINEX clock product keeps the text it was read from,
+  restates it byte for byte and is edited through validated setters (see
+  `docs/rinex-clock.md`); an ANTEX product keeps every record the format
+  defines, including exact validity seconds (see `docs/antex.md`).
 - **Data acquisition:** the `sidereon.data` module downloads and caches GNSS
   products (SP3 and IONEX from IGS/MGEX analysis centers, including merged
   multi-center SP3) and DTED terrain tiles. Exact-product requests can select

@@ -1,12 +1,15 @@
 """0.18 domain exposure parity tests against patched core outputs."""
 
+import json
 import math
+import os
 import pathlib
 import re
 import struct
 
 import numpy as np
 import sidereon
+from _helpers import FIXTURES, core_goldens
 
 
 def _engine_dep_is_registry_versioned(manifest: str, name: str) -> bool:
@@ -24,9 +27,35 @@ def _engine_dep_is_registry_versioned(manifest: str, name: str) -> bool:
     if "path" in value or "git" in value:
         return False
     return (
-        re.search(r'version = "\d+\.\d+\.\d+"', value) is not None
-        or re.fullmatch(r'"\d+\.\d+\.\d+"', value.strip()) is not None
+        re.search(r'version = "=?\d+\.\d+\.\d+"', value) is not None
+        or re.fullmatch(r'"=?\d+\.\d+\.\d+"', value.strip()) is not None
     )
+
+
+def _assert_engine_manifest_sources_are_approved(manifest: str) -> None:
+    candidate = re.search(
+        r"^sidereon(?:-core)?\s*=\s*\{[^}\n]*\bgit\s*=",
+        manifest,
+        re.M,
+    )
+    if candidate is None:
+        assert _engine_dep_is_registry_versioned(manifest, "sidereon")
+        assert _engine_dep_is_registry_versioned(manifest, "sidereon-core")
+        return
+
+    import runpy
+
+    import tomllib
+
+    dependencies = tomllib.loads(manifest)["dependencies"]
+    release_guard = runpy.run_path(str(ROOT / "scripts" / "check-release.py"))
+    package_version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"][
+        "version"
+    ]
+    revision = release_guard["candidate_fixture_revision"](
+        dependencies, package_version
+    )
+    assert re.fullmatch(r"[0-9a-f]{40}", revision)
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -119,6 +148,21 @@ def _base_scenario():
     }
 
 
+def _golden_bits(hex_values):
+    return [int(value, 16) for value in hex_values]
+
+
+def _assert_fusion_update_matches(update, golden):
+    assert update.applied is golden["applied"]
+    assert (update.rows, update.accepted_rows, update.rejected_rows) == (
+        golden["rows"],
+        golden["accepted_rows"],
+        golden["rejected_rows"],
+    )
+    assert _bits(update.nis) == int(golden["nis"], 16)
+    assert _bits(update.ekf.normalized_innovation_squared) == int(golden["ekf_nis"], 16)
+
+
 def _filter_state():
     nominal = sidereon.NavState(
         0.0,
@@ -139,16 +183,13 @@ def _zero_fix(t_j2000_s, covariance_scale_m2):
     )
 
 
-def test_manifest_has_no_cargo_path_deps():
+def test_manifest_uses_registry_or_approved_candidate_dependencies():
     # The dev-time [patch.crates-io] override lives in a git-excluded
     # .cargo/config.toml whose location and contents are environment plumbing;
-    # the releasable invariant is that the manifest itself carries version-only
-    # dependencies.
+    # candidate Git dependencies are accepted only through the strict release
+    # guard's full-revision validation.
     cargo_toml = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
-    assert _engine_dep_is_registry_versioned(cargo_toml, "sidereon")
-    assert _engine_dep_is_registry_versioned(cargo_toml, "sidereon-core")
-    assert "sidereon = { path" not in cargo_toml
-    assert "sidereon-core = { path" not in cargo_toml
+    _assert_engine_manifest_sources_are_approved(cargo_toml)
 
 
 def test_scenario_simulator_deterministic_bytes_and_core_term_bits():
@@ -160,10 +201,16 @@ def test_scenario_simulator_deterministic_bytes_and_core_term_bits():
 
     assert bytes_a == bytes_b
     assert output.as_json_bytes() == bytes_a
+    # `scripts/core_goldens` runs the core simulator on `scenario_base.json`,
+    # which must be the scenario this test builds.
+    with open(os.path.join(FIXTURES, "scenario_base.json")) as handle:
+        assert _base_scenario() == json.load(handle)
+    golden = core_goldens()["scenario"]
     # The output embeds the engine version string, so the total length moves
     # with the version's width; pin the version-independent remainder instead
     # of a literal that breaks on every release whose version changes width.
-    assert len(bytes_a) == 3992 + len(sidereon.__version__)
+    engine_semver = output.engine_version.split(":")[0]
+    assert len(bytes_a) == golden["bytes_without_version"] + len(engine_semver)
     assert bytes_a.startswith(b'{"schema_version":1,"engine_version":"')
     assert output.schema_version == 1
     assert re.fullmatch(r"\d+\.\d+\.\d+:scenario-observables-v1", output.engine_version)
@@ -187,14 +234,10 @@ def test_scenario_simulator_deterministic_bytes_and_core_term_bits():
         "G05",
     ]
     assert _array_bits(output.observations.pseudorange_m[:3]) == [
-        0x41733F367001A84B,
-        0x4176E6F8EBDA917E,
-        0x4176E701D7EB9C6A,
+        int(bits, 16) for bits in golden["pseudorange_m"]
     ]
     assert _array_bits(output.observations.doppler_hz[:3]) == [
-        0x3FA02C7DC468DEC0,
-        0xC0A24AEDAD138034,
-        0x40A24AF6B93D53C9,
+        int(bits, 16) for bits in golden["doppler_hz"]
     ]
     assert _bits(output.truth_terms.pseudorange_sum_m(0)) == _bits(
         output.observations.pseudorange_m[0]
@@ -330,11 +373,13 @@ def test_fusion_filter_checkpoint_loose_ukf_tight_and_time_sync_bits():
     assert encoded
     assert restored.encode_state() == encoded
 
+    # The core's run of the same filter steps, written by
+    # `scripts/core_goldens` to `fixtures/core_goldens.json`.
+    golden = core_goldens()["fusion"]["checkpoint_ukf_time_sync"]
     update = filter_.update_loose(_zero_fix(0.0, 4.0))
     assert update.applied is True
-    assert _bits(update.nis) == 0x0000000000000000
     assert (update.rows, update.accepted_rows, update.rejected_rows) == (3, 3, 0)
-    assert _bits(update.ekf.normalized_innovation_squared) == 0x0000000000000000
+    _assert_fusion_update_matches(update, golden["ekf_update"])
     assert update.ekf.dx.shape == (15,)
 
     ukf = sidereon.InertialFilter.with_config(
@@ -349,12 +394,12 @@ def test_fusion_filter_checkpoint_loose_ukf_tight_and_time_sync_bits():
     assert ukf.config.tight.clock_drift_random_walk_m2_s3 == 1.0e-2
     assert ukf.config.tight.update_options.innovation_gate is None
     assert ukf_update.applied is True
-    assert _bits(ukf_update.nis) == 0x0000000000000000
     assert (ukf_update.rows, ukf_update.accepted_rows, ukf_update.rejected_rows) == (
         3,
         3,
         0,
     )
+    _assert_fusion_update_matches(ukf_update, golden["ukf_update"])
 
     range_rate = sidereon.TightRangeRateObservation(0.0, 0.1, 0.0)
     carrier_phase = sidereon.TightCarrierPhaseObservation(21_000_000.0, 0.01, 0.0)
@@ -391,12 +436,19 @@ def test_fusion_filter_checkpoint_loose_ukf_tight_and_time_sync_bits():
     assert status.newest_imu_epoch_j2000_s == 1.0
 
     replayed = replay_filter.update_loose_time_sync(_zero_fix(0.5, 25.0))
+    time_sync = golden["time_sync"]
     assert replayed.late_measurement is True
+    assert replayed.late_measurement is time_sync["late_measurement"]
     assert replayed.replayed_imu_segments == 4
-    assert _bits(replayed.restored_checkpoint_epoch_j2000_s) == 0x0000000000000000
-    assert _bits(replayed.current_epoch_j2000_s) == 0x3FF0000000000000
+    assert replayed.replayed_imu_segments == time_sync["replayed_imu_segments"]
+    assert _bits(replayed.restored_checkpoint_epoch_j2000_s) == int(
+        time_sync["restored_checkpoint_epoch_j2000_s"], 16
+    )
+    assert _bits(replayed.current_epoch_j2000_s) == int(
+        time_sync["current_epoch_j2000_s"], 16
+    )
     assert replayed.update.applied is True
-    assert _bits(replayed.update.nis) == 0x3FAD226CC390657C
+    _assert_fusion_update_matches(replayed.update, time_sync["update"])
 
 
 def test_fusion_robust_loose_recorded_rts_bits():
@@ -435,50 +487,41 @@ def test_fusion_robust_loose_recorded_rts_bits():
     recorded = history.finish()
     smoothed = sidereon.smooth_fusion_rts(recorded)
 
+    # The core's run of the same filter steps, written by
+    # `scripts/core_goldens` to `fixtures/core_goldens.json`.
+    golden = core_goldens()["fusion"]["robust_loose_rts"]
     assert update.applied is True
     assert (update.rows, update.accepted_rows, update.rejected_rows) == (3, 3, 0)
+    _assert_fusion_update_matches(update, golden["update"])
     gate = update.ekf.innovation_gate
     assert gate.max_rejected_abs_normalized_innovation is None
-    assert _bits(update.nis) == 0x400A42AD3B07976F
-    assert _bits(gate.max_abs_normalized_innovation) == 0x3FFCF4BA7AE7BCC0
-    assert _array_bits(filter_.state.nominal.position_ecef_m) == [
-        0x415854A602757FB6,
-        0x3FC7B6B11D7FA0D8,
-        0xBFB7B6B11D5C2B22,
-    ]
+    assert _bits(gate.max_abs_normalized_innovation) == int(
+        golden["gate_max_abs_normalized_innovation"], 16
+    )
+    assert _array_bits(filter_.state.nominal.position_ecef_m) == _golden_bits(
+        golden["state"]["position_ecef_m"]
+    )
+    assert _array_bits(np.diag(filter_.state.covariance)) == _golden_bits(
+        golden["state"]["covariance_diagonal"]
+    )
     assert len(recorded) == 2
+    assert len(recorded) == golden["recorded_epoch_count"]
     assert len(smoothed) == 2
+    assert len(smoothed) == len(golden["smoothed"])
     assert recorded.epochs[0].transition_from_previous is None
     assert recorded.epochs[1].transition_from_previous.shape == (15, 15)
     assert smoothed.epochs[0].rts_gain_to_next.shape == (17, 17)
     assert smoothed.epochs[1].rts_gain_to_next is None
-    assert _array_bits(np.diag(recorded.epochs[1].transition_from_previous)[:3]) == [
-        0x3FF000019D17A15A,
-        0x3FEFFFFE650C7E2C,
-        0x3FEFFFFE639F13D3,
-    ]
-    assert _array_bits(smoothed.epochs[0].snapshot.state.nominal.position_ecef_m) == [
-        0x415854A6AFB47DAB,
-        0x3FB5122C16E56642,
-        0xBFA5122C1780E0A5,
-    ]
-    assert _array_bits(smoothed.epochs[1].snapshot.state.nominal.position_ecef_m) == [
-        0x415854A602757FB6,
-        0x3FC7B6B11D7FA0D8,
-        0xBFB7B6B11D5C2B22,
-    ]
-    assert _array_bits(smoothed.epochs[0].error_state_correction[:6]) == [
-        0xBFFBED1F6AC3E068,
-        0xBFB5122C16E56642,
-        0x3FA5122C1780E0A5,
-        0xBFFBED164E925C0A,
-        0xBFB51A847AAA1978,
-        0x3FA5122D270AB803,
-    ]
-    assert _array_bits(np.diag(smoothed.epochs[0].covariance)[:5]) == [
-        0x3FFDC64F219100F6,
-        0x3FFA44D611536A90,
-        0x3FFA44D6119F127C,
-        0x3FFDBA1DE20184E2,
-        0x3FFA389FFA3F4082,
-    ]
+    assert _array_bits(np.diag(recorded.epochs[1].transition_from_previous)) == (
+        _golden_bits(golden["recorded_transition_diagonal"])
+    )
+    for epoch, expected in zip(smoothed.epochs, golden["smoothed"]):
+        assert _array_bits(epoch.snapshot.state.nominal.position_ecef_m) == (
+            _golden_bits(expected["position_ecef_m"])
+        )
+        assert _array_bits(epoch.error_state_correction) == _golden_bits(
+            expected["error_state_correction"]
+        )
+        assert _array_bits(np.diag(epoch.covariance)) == _golden_bits(
+            expected["covariance_diagonal"]
+        )

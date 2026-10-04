@@ -1,13 +1,21 @@
 """Runtime-vs-stub drift checks for the exported package surface."""
 
 import ast
+import datetime as dt
 import inspect
 import pathlib
 
+import pytest
 import sidereon
+from _helpers import CORE_FIXTURES, sp3_bytes_for_date
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 STUB = ROOT / "python" / "sidereon" / "__init__.pyi"
+INSTANCE_ONLY_STUB_ATTRIBUTES = {
+    "BiasError": {"kind", "details"},
+    "ExactSp3ValidationError": {"kind", "detail"},
+    "ScenarioError": {"detail"},
+}
 
 
 def _stub_module():
@@ -103,9 +111,88 @@ def test_stubbed_class_attributes_exist_at_runtime():
             continue
         cls = getattr(sidereon, name)
         for attr in classes[name]:
+            if attr in INSTANCE_ONLY_STUB_ATTRIBUTES.get(name, set()):
+                continue
             if not hasattr(cls, attr):
                 missing.append(f"{name}.{attr}")
     assert missing == []
+
+
+def test_instance_only_stub_attribute_allowlist_is_exact():
+    assert INSTANCE_ONLY_STUB_ATTRIBUTES == {
+        "BiasError": {"kind", "details"},
+        "ExactSp3ValidationError": {"kind", "detail"},
+        "ScenarioError": {"detail"},
+    }
+    _functions, classes, _variables = _stub_defs()
+    assert INSTANCE_ONLY_STUB_ATTRIBUTES["BiasError"] <= classes["BiasError"]
+    assert (
+        INSTANCE_ONLY_STUB_ATTRIBUTES["ExactSp3ValidationError"]
+        <= classes["ExactSp3ValidationError"]
+    )
+    assert INSTANCE_ONLY_STUB_ATTRIBUTES["ScenarioError"] <= classes["ScenarioError"]
+
+
+def test_bias_error_instance_fields_match_stub():
+    with pytest.raises(sidereon.BiasError) as captured:
+        sidereon.parse_bias_sinex(b"not a SINEX bias file\n")
+
+    assert type(captured.value.kind) is str
+    assert type(captured.value.details) is dict
+
+
+def _sp3_start_mismatch_inputs():
+    fixture_path = (
+        pathlib.Path(CORE_FIXTURES) / "sp3" / "COD0MGXFIN_20201770000_01D_05M_ORB.SP3"
+    )
+    sp3_date = dt.date(2026, 6, 25)
+    shifted = sp3_bytes_for_date(fixture_path.read_bytes(), sp3_date)
+    lines = shifted.decode("ascii").splitlines()
+    lines[0] = lines[0].replace("0.00000000", "0.00000001", 1)
+    content = ("\n".join(lines) + "\n").encode("ascii")
+    request = sidereon.ExactSp3Request(sp3_date, "01D", "05M")
+    return content, request
+
+
+def test_exact_sp3_validation_error_instance_fields_match_stub():
+    assert not hasattr(sidereon.ExactSp3ValidationError, "kind")
+    assert not hasattr(sidereon.ExactSp3ValidationError, "detail")
+
+    direct = sidereon.ExactSp3ValidationError("untyped validation failure")
+    assert direct.kind is None
+    assert direct.detail is None
+    assert "kind" in direct.__dict__
+    assert "detail" in direct.__dict__
+
+    with pytest.raises(sidereon.ExactSp3ValidationError) as default_captured:
+        sidereon.ExactSp3Request(
+            "not-a-date",
+            "01D",
+            "05M",  # type: ignore[arg-type]
+        )
+
+    default_err = default_captured.value
+    assert default_err.kind is None
+    assert default_err.detail is None
+    assert "kind" in default_err.__dict__
+    assert "detail" in default_err.__dict__
+
+    content, request = _sp3_start_mismatch_inputs()
+    with pytest.raises(sidereon.ExactSp3ValidationError) as mismatch_captured:
+        sidereon.parse_exact_sp3(content, request)
+
+    err = mismatch_captured.value
+    assert "kind" in err.__dict__
+    assert "detail" in err.__dict__
+    assert type(err.kind) is str
+    assert err.kind == "declared_start_mismatch"
+    assert type(err.detail) is dict
+    assert err.detail["kind"] == "declared_start_mismatch"
+    assert type(err.detail["requested_j2000_s"]) is float
+    assert type(err.detail["declared_j2000_s"]) is float
+    assert type(err.detail["requested_tick"]) is str
+    assert type(err.detail["declared_tick"]) is str
+    assert err.detail["requested_tick"] != err.detail["declared_tick"]
 
 
 def test_code_dcb_option_requiredness_matches_runtime():

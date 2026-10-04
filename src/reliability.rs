@@ -15,6 +15,7 @@ use sidereon_core::quality::{
 };
 
 use crate::araim::{PyAraimGeometry, PyIsm};
+use crate::quality_err;
 
 fn to_value_err<E: std::fmt::Display>(err: E) -> PyErr {
     PyValueError::new_err(err.to_string())
@@ -375,7 +376,7 @@ fn wtest_noncentrality(
         (None, None) => ReliabilityOptions::default().beta,
     };
     let components =
-        core_wtest_noncentrality_components(alpha, missed_detection).map_err(to_value_err)?;
+        core_wtest_noncentrality_components(alpha, missed_detection).map_err(quality_err)?;
     Ok(PyWtestNoncentrality {
         delta0: components.delta0,
         lambda0: components.lambda0,
@@ -397,7 +398,7 @@ fn reliability_design(
     let options = PyReliabilityOptions::inner_or_default(options);
     core_reliability_design(&rows, &options)
         .map(Into::into)
-        .map_err(to_value_err)
+        .map_err(quality_err)
 }
 
 /// Compute reliability for ARAIM geometry and an integrity support model.

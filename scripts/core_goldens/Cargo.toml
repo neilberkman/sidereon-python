@@ -1,0 +1,15 @@
+[package]
+name = "core-goldens"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Writes tests/fixtures/core_goldens.json, the core results several binding tests compare with"
+
+# Its lock records the resolved Git or registry source. The generator verifies
+# the full Git commit or checksum-bound published VCS commit before writing it.
+[dependencies]
+flate2 = "1"
+sha2 = "0.10"
+sidereon = { version = "=3.0.0" }
+sidereon-core = { version = "=3.0.0" }
+serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }

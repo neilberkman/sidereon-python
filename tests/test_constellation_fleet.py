@@ -33,7 +33,12 @@ def _opsmode(name):
 
 def _tles(fx):
     mode = _opsmode(fx["opsmode"])
-    return [sidereon.Tle(t["line1"], t["line2"], mode) for t in fx["tles"]]
+    # The Vallado verification set carries element sets whose checksum
+    # disagrees; they are read as `twoline2rv` reads them.
+    return [
+        sidereon.Tle(t["line1"], t["line2"], mode, policy=sidereon.TlePolicy.LENIENT)
+        for t in fx["tles"]
+    ]
 
 
 def _epochs(fx):
@@ -105,7 +110,11 @@ def test_propagate_matches_propagate_batch_serial_bitexact():
     batch = const.propagate(epochs)
     pairs = [(t["line1"], t["line2"]) for t in fx["tles"]]
     serial = sidereon.propagate_batch(
-        pairs, epochs, opsmode=fx["opsmode"], parallel=False
+        pairs,
+        epochs,
+        opsmode=fx["opsmode"],
+        parallel=False,
+        policy=sidereon.TlePolicy.LENIENT,
     )
     assert _bits_equal(batch.position_km, serial.position_km)
     assert _bits_equal(batch.velocity_km_s, serial.velocity_km_s)
@@ -127,6 +136,80 @@ def test_look_angle_arcs_match_per_tle_bitexact():
         assert _bits_equal(arcs[i].azimuth_deg, ref.azimuth_deg)
         assert _bits_equal(arcs[i].elevation_deg, ref.elevation_deg)
         assert _bits_equal(arcs[i].range_km, ref.range_km)
+
+
+def test_detailed_fleet_outcomes_preserve_station_and_ut1_causes():
+    fx = _load_fixture()
+    tles = _tles(fx)
+    const = sidereon.Constellation(tles)
+    epochs = _epochs(fx)
+    invalid_station = sidereon.GroundStation(
+        latitude_deg=91.0, longitude_deg=-75.0, altitude_m=0.0
+    )
+
+    legacy = const.look_angle_arcs(invalid_station, epochs)
+    assert len(legacy) == len(tles)
+    assert [row.epoch_count for row in legacy] == [0] * len(tles)
+    detailed = const.look_angle_arcs_detailed(invalid_station, epochs)
+    assert [row["satellite_index"] for row in detailed] == list(range(len(tles)))
+    assert all(row["value"] is None for row in detailed)
+    assert all(row["error"]["kind"] == "invalid_input" for row in detailed)
+    assert all(
+        row["error"]["fields"]["field"] == "ground_station.latitude_deg"
+        for row in detailed
+    )
+    assert all(row["error"]["fields"]["reason"] == "out of range" for row in detailed)
+
+    # A valid satellite and station with an empty epoch grid is a successful
+    # empty result, distinct from the legacy empty-arc error sentinel.
+    empty_detailed = const.look_angle_arcs_detailed(
+        _station(), np.asarray([], dtype=np.int64)
+    )
+    assert [row["satellite_index"] for row in empty_detailed] == list(range(len(const)))
+    assert all(
+        row["error"] is None and row["value"] is not None for row in empty_detailed
+    )
+    assert all(row["value"]["azimuth_deg"] == [] for row in empty_detailed)
+    assert all(row["value"]["elevation_deg"] == [] for row in empty_detailed)
+    assert all(row["value"]["range_km"] == [] for row in empty_detailed)
+
+    outside_ut1 = np.asarray([-2208988800000000], dtype=np.int64)  # 1900-01-01
+    legacy_tracks = const.ground_tracks(outside_ut1)
+    assert len(legacy_tracks) == len(tles)
+    assert [track.epoch_count for track in legacy_tracks] == [0] * len(tles)
+    track_outcomes = const.ground_tracks_detailed(outside_ut1)
+    assert [row["satellite_index"] for row in track_outcomes] == list(range(len(tles)))
+    assert all(row["value"] is None for row in track_outcomes)
+    assert all(row["error"]["kind"] == "frame_transform" for row in track_outcomes)
+    assert all(
+        track_outcomes[i]["error"]["fields"]["cause"]["kind"] == "ut1_outside_coverage"
+        for i in range(len(tles))
+    )
+    assert all(
+        track_outcomes[i]["error"]["fields"]["cause"]["fields"]["reason"]
+        == "before_coverage"
+        for i in range(len(tles))
+    )
+
+    start, end = int(epochs[0]), int(epochs[-1]) + 60_000_000
+    legacy_passes = const.passes(invalid_station, start, end)
+    assert legacy_passes == []
+    pass_outcomes = const.passes_detailed(
+        invalid_station,
+        start,
+        end,
+        elevation_mask_deg=0.0,
+        step_seconds=30.0,
+        time_tolerance_s=1.0e-3,
+    )
+    assert [row["satellite_index"] for row in pass_outcomes] == list(range(len(tles)))
+    assert all(row["value"] is None for row in pass_outcomes)
+    assert all(row["error"]["kind"] == "invalid_input" for row in pass_outcomes)
+    assert all(
+        row["error"]["fields"]
+        == {"field": "ground_station.latitude_deg", "reason": "out of range"}
+        for row in pass_outcomes
+    )
 
 
 def test_ground_tracks_match_per_tle():
@@ -184,6 +267,21 @@ def test_passes_match_per_tle_and_carry_fleet_index():
         for fp in fleet
     ]
     assert got == expected
+
+    detailed = const.passes_detailed(station, start, end, elevation_mask_deg=0.0)
+    assert [row["satellite_index"] for row in detailed] == list(range(len(tles)))
+    assert all(row["error"] is None and row["value"] is not None for row in detailed)
+    detailed_rows = [
+        (row["satellite_index"], aos, los, culmination, elevation)
+        for row in detailed
+        for aos, los, elevation, culmination in row["value"]
+    ]
+    assert detailed_rows == expected
+
+    empty = const.passes_detailed(station, start, start + 1, elevation_mask_deg=0.0)
+    assert len(empty) == len(tles)
+    assert all(row["error"] is None and row["value"] == [] for row in empty)
+
     # Every pass points back into the fleet by index, and duration is consistent.
     for fp in fleet:
         assert 0 <= fp.satellite_index < len(tles)
