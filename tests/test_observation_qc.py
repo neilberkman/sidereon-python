@@ -179,6 +179,8 @@ def test_unavailable_zero_source_interval_is_linted_inferred_and_repaired(zero):
     unavailable = [finding for finding in lint.findings if finding.code == "OBS-H19"]
     assert len(unavailable) == 1
     assert unavailable[0].kind == "ObsIntervalUnavailable"
+    assert unavailable[0].details() == {}
+    assert unavailable[0].at.field == "INTERVAL"
     assert unavailable[0].severity == sidereon.RinexLintSeverity.INFO
     assert unavailable[0].is_repairable
 

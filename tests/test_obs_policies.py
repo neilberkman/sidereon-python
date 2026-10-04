@@ -1232,6 +1232,72 @@ def test_lint_findings_carry_their_native_payload_not_only_text():
         assert finding.kind != "Unknown"
 
 
+def test_public_observation_fixture_exposes_header_and_glonass_finding_details():
+    report = sidereon.lint_rinex_obs(read_fixture("algo0010_2015001_v1_trim.rnx"))
+
+    header = next(f for f in report.findings if f.kind == "ObsUnretainedHeader")
+    assert header.details() == {"label": "WAVELENGTH FACT L1/2"}
+    assert header.code == "OBS-H90"
+    assert header.at.field == "header"
+
+    slots = [f for f in report.findings if f.kind == "ObsGlonassSlotIssue"]
+    expected_satellites = ["R05", "R06", "R07", "R09", "R15", "R16", "R17", "R24"]
+    assert [f.at.satellite for f in slots] == expected_satellites
+    assert [f.details() for f in slots] == [
+        {"satellite": satellite, "issue": "missing slot"}
+        for satellite in expected_satellites
+    ]
+
+
+def test_public_observation_text_reports_both_out_of_order_epoch_times():
+    text = obs_text(
+        3.05,
+        [header_line("G    1 C1C", "SYS / # / OBS TYPES")],
+        [
+            epoch_line(1, 0.0, 0, 1),
+            obs_record("G01", [obs_field(20000000.0, 0, 7)]),
+            epoch_line(0, 0.0, 0, 1),
+            obs_record("G01", [obs_field(20000001.0, 0, 7)]),
+        ],
+    )
+    finding = next(
+        f for f in sidereon.lint_rinex_obs(text).findings if f.kind == "ObsEpochOrder"
+    )
+
+    details = finding.details()
+    assert finding.code == "OBS-B01"
+    assert finding.at.epoch_index == 1
+    assert details["current"].hour == 0
+    assert details["current"].minute == 0
+    assert details["current"].second == 0.0
+    assert details["previous"].hour == 0
+    assert details["previous"].minute == 1
+    assert details["previous"].second == 0.0
+
+
+def test_public_navigation_fixture_reports_exact_implausible_record_payload():
+    path = os.path.join(FIXTURES, "nav", "ESBC00DNK_R_20201770000_01D_MN.rnx")
+    with open(path, encoding="utf-8") as handle:
+        report = sidereon.lint_rinex_nav(handle.read())
+
+    finding = next(
+        f
+        for f in report.findings
+        if f.kind == "NavImplausibleRecord"
+        and f.details()
+        == {
+            "satellite": "E14",
+            "field": "eccentricity",
+            "value": 0.1668391372077,
+        }
+    )
+    assert finding.code == "NAV-B04"
+    assert finding.severity.label == "warning"
+    assert finding.spec_ref == "RINEX QC policy"
+    assert finding.is_repairable is False
+    assert finding.at.epoch_index is not None
+
+
 def test_a_time_of_first_obs_mismatch_reports_typed_epochs_and_scales():
     """The richest lint payload carries four values, none of them text: the
     declared and observed epochs as `ObsEpochTime`, each with its `TimeScale`.
