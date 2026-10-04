@@ -54,9 +54,33 @@ def test_observation_qc_matches_real_oracle_summary():
     assert report.interval_s == pytest.approx(oracle["interval_s"])
     assert report.interval_source == sidereon.IntervalSource.HEADER
     assert report.missing_epochs == oracle["missing_epochs"]
+    assert oracle["data_gaps"] == []
+    assert report.data_gaps == []
     assert len(report.satellites) == len(oracle["satellites"])
     assert len(report.satellite_signals) == len(oracle["satellite_signals"])
     assert len(report.system_signals) == len(oracle["system_signals"])
+
+    gps_c1c = next(
+        row
+        for row in report.system_signals
+        if row.system == sidereon.GnssSystem.GPS and row.code == "C1C"
+    )
+    assert gps_c1c.value_observations == 1293
+    assert gps_c1c.ssi.counts == [0, 0, 0, 5, 13, 156, 457, 295, 367, 0]
+    assert gps_c1c.snr is None
+
+    gps_s1c = next(
+        row
+        for row in report.system_signals
+        if row.system == sidereon.GnssSystem.GPS and row.code == "S1C"
+    )
+    assert gps_s1c.value_observations == 1293
+    assert gps_s1c.ssi.counts == [1293, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    assert gps_s1c.snr.n == 1293
+    assert gps_s1c.snr.mean == pytest.approx(42.54891724671307)
+    assert gps_s1c.snr.min == 19.75
+    assert gps_s1c.snr.max == 51.75
+    assert gps_s1c.snr.std == pytest.approx(6.226261014936549)
     assert report.clock_jumps == []
     assert report.notes == []
 
@@ -266,3 +290,72 @@ def test_negative_source_interval_is_linted_ignored_and_repaired():
     assert repaired.repaired.header.interval_s == pytest.approx(30.0)
     assert "A6" in [action.id for action in repaired.actions]
     assert "OBS-H20" not in [finding.code for finding in repaired.remaining.findings]
+
+
+def _qc_synthetic_text(epoch_rows):
+    """Build minimal valid RINEX 3 observation data for QC edge checks."""
+
+    def header(body, label):
+        return f"{body:<60}{label}"
+
+    lines = [
+        header(
+            "     3.05           OBSERVATION DATA    M (MIXED)",
+            "RINEX VERSION / TYPE",
+        ),
+        header("G    1 C1C", "SYS / # / OBS TYPES"),
+        header(f"{30.0:10.3f}", "INTERVAL"),
+        header("", "END OF HEADER"),
+    ]
+    for minute, second, clock_offset_s in epoch_rows:
+        epoch = f"> 2020 01 01 00 {minute:02d}{second:11.7f}{0:3d}{1:3d}"
+        if clock_offset_s is not None:
+            epoch += " " * 6 + f"{clock_offset_s:15.12f}"
+        lines.extend((epoch, f"G01{20_000_000.0:14.3f}07"))
+    return "\n".join(lines) + "\n"
+
+
+def test_observation_qc_projects_exact_nonempty_data_gap():
+    text = _qc_synthetic_text([(0, 0.0, None), (1, 30.0, None)])
+    obs = sidereon.parse_rinex_obs(text)
+    report = sidereon.observation_qc(obs)
+
+    assert report.missing_epochs == 2
+    assert len(report.data_gaps) == 1
+    gap = report.data_gaps[0]
+    assert (gap.start_epoch.year, gap.start_epoch.month, gap.start_epoch.day) == (
+        2020,
+        1,
+        1,
+    )
+    assert (gap.start_epoch.hour, gap.start_epoch.minute, gap.start_epoch.second) == (
+        0,
+        0,
+        0.0,
+    )
+    assert (
+        gap.end_epoch.year,
+        gap.end_epoch.month,
+        gap.end_epoch.day,
+        gap.end_epoch.hour,
+        gap.end_epoch.minute,
+        gap.end_epoch.second,
+    ) == (2020, 1, 1, 0, 1, 30.0)
+    assert gap.nominal_interval_s == 30.0
+    assert gap.observed_delta_s == 90.0
+    assert gap.missing_epochs == 2
+
+
+def test_observation_qc_projects_exact_clock_step():
+    offsets = [0.0, 0.000010, 0.001020, 0.001030]
+    rows = [
+        (index // 2, 30.0 * (index % 2), offset) for index, offset in enumerate(offsets)
+    ]
+    report = sidereon.observation_qc(sidereon.parse_rinex_obs(_qc_synthetic_text(rows)))
+
+    assert len(report.clock_jumps) == 1
+    jump = report.clock_jumps[0]
+    assert jump.epoch_index == 2
+    assert (jump.epoch.year, jump.epoch.month, jump.epoch.day) == (2020, 1, 1)
+    assert (jump.epoch.hour, jump.epoch.minute, jump.epoch.second) == (0, 1, 0.0)
+    assert jump.delta_s == pytest.approx(0.001, abs=1e-12)
