@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 const REGISTRY_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
 const GIT_SOURCE_PREFIX: &str = "git+https://github.com/neilberkman/sidereon?rev=";
-const RELEASE_VERSION: &str = "3.0.0";
+const RELEASE_VERSION: &str = "3.0.1";
 
 #[derive(Debug)]
 struct LockedPackage {
@@ -343,7 +343,7 @@ mod tests {
             NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
         ));
         let cache = temp.join("registry/cache/test-index");
-        let extracted = temp.join("registry/src/test-index/sidereon-3.0.0");
+        let extracted = temp.join("registry/src/test-index/sidereon-3.0.1");
         fs::create_dir_all(&cache).expect("create registry cache");
         fs::create_dir_all(&extracted).expect("create extracted source");
         fs::write(
@@ -355,17 +355,17 @@ mod tests {
         let revision = "0123456789abcdef0123456789abcdef01234567";
         let archive = crate_archive(
             "sidereon",
-            "3.0.0",
-            "[package]\nname = \"sidereon\"\nversion = \"3.0.0\"\n",
+            "3.0.1",
+            "[package]\nname = \"sidereon\"\nversion = \"3.0.1\"\n",
             &format!(r#"{{"git":{{"sha1":"{revision}","dirty":false}}}}"#),
         );
         let checksum = format!("{:x}", Sha256::digest(&archive));
-        fs::write(cache.join("sidereon-3.0.0.crate"), archive).expect("write crate archive");
+        fs::write(cache.join("sidereon-3.0.1.crate"), archive).expect("write crate archive");
         assert_eq!(
-            registry_revision(&temp, "sidereon", "3.0.0", &checksum).unwrap(),
+            registry_revision(&temp, "sidereon", "3.0.1", &checksum).unwrap(),
             revision
         );
-        assert!(registry_revision(&temp, "sidereon", "3.0.0", &"f".repeat(64)).is_err());
+        assert!(registry_revision(&temp, "sidereon", "3.0.1", &"f".repeat(64)).is_err());
         fs::remove_dir_all(temp).expect("remove registry test directory");
     }
 

@@ -20,12 +20,12 @@ def candidate_dependencies(revision: str) -> dict[str, object]:
         "sidereon": {
             "git": "https://github.com/neilberkman/sidereon",
             "rev": revision,
-            "version": "3.0.0",
+            "version": "3.0.1",
         },
         "sidereon-core": {
             "git": "https://github.com/neilberkman/sidereon",
             "rev": revision,
-            "version": "3.0.0",
+            "version": "3.0.1",
             "features": ["mmap"],
         },
     }
@@ -34,7 +34,7 @@ def candidate_dependencies(revision: str) -> dict[str, object]:
 def test_candidate_requires_matching_full_revision_and_versions() -> None:
     revision = "0123456789abcdef0123456789abcdef01234567"
     assert (
-        GUARD["candidate_fixture_revision"](candidate_dependencies(revision), "3.0.0")
+        GUARD["candidate_fixture_revision"](candidate_dependencies(revision), "3.0.1")
         == revision
     )
 
@@ -43,7 +43,7 @@ def test_trust_region_accepts_only_exact_coordinated_candidate_revision() -> Non
     revision = "0123456789abcdef0123456789abcdef01234567"
     dependencies = candidate_dependencies(revision)
     validate = GUARD["validate_trust_region_dependency"]
-    validate("0.11.0", dependencies, "3.0.0", allow_candidate=False)
+    validate("0.11.0", dependencies, "3.0.1", allow_candidate=False)
     validate(
         {
             "version": "0.11.0",
@@ -51,7 +51,7 @@ def test_trust_region_accepts_only_exact_coordinated_candidate_revision() -> Non
             "rev": revision,
         },
         dependencies,
-        "3.0.0",
+        "3.0.1",
         allow_candidate=True,
     )
 
@@ -76,7 +76,7 @@ def test_trust_region_rejects_candidate_mismatches_and_extra_fields(mutation) ->
     mutation(candidate)
     with pytest.raises(ValueError):
         GUARD["validate_trust_region_dependency"](
-            candidate, dependencies, "3.0.0", allow_candidate=True
+            candidate, dependencies, "3.0.1", allow_candidate=True
         )
 
 
@@ -90,7 +90,7 @@ def test_trust_region_candidate_is_rejected_in_registry_mode() -> None:
                 "rev": revision,
             },
             candidate_dependencies(revision),
-            "3.0.0",
+            "3.0.1",
             allow_candidate=False,
         )
 
@@ -103,11 +103,11 @@ def test_trust_region_candidate_is_rejected_in_registry_mode() -> None:
         ),
         lambda dependencies: dependencies["sidereon"].update(path="../sidereon"),
         lambda dependencies: dependencies["sidereon"].update(branch="main"),
-        lambda dependencies: dependencies["sidereon"].update(tag="v3.0.0"),
+        lambda dependencies: dependencies["sidereon"].update(tag="v3.0.1"),
         lambda dependencies: dependencies["sidereon"].update(package="other"),
         lambda dependencies: dependencies["sidereon"].update(rev="main"),
         lambda dependencies: dependencies["sidereon"].update(rev="0" * 39),
-        lambda dependencies: dependencies["sidereon"].update(version="3.0.1"),
+        lambda dependencies: dependencies["sidereon"].update(version="3.0.2"),
         lambda dependencies: dependencies["sidereon-core"].update(rev="f" * 40),
     ],
 )
@@ -115,65 +115,65 @@ def test_candidate_rejects_unapproved_sources_or_mismatches(mutation) -> None:
     dependencies = candidate_dependencies("a" * 40)
     mutation(dependencies)
     with pytest.raises(ValueError):
-        GUARD["candidate_fixture_revision"](dependencies, "3.0.0")
+        GUARD["candidate_fixture_revision"](dependencies, "3.0.1")
 
 
 def test_registry_guard_rejects_git_and_path_dependencies() -> None:
     registry_version = GUARD["registry_version"]
     for source in (
-        {"version": "3.0.0", "git": "https://github.com/neilberkman/sidereon"},
-        {"version": "3.0.0", "path": "../sidereon"},
-        {"version": "=3.0.0", "registry": "alternate"},
-        {"version": "=3.0.0", "rev": "a" * 40},
-        {"version": "=3.0.0", "package": "other"},
+        {"version": "3.0.1", "git": "https://github.com/neilberkman/sidereon"},
+        {"version": "3.0.1", "path": "../sidereon"},
+        {"version": "=3.0.1", "registry": "alternate"},
+        {"version": "=3.0.1", "rev": "a" * 40},
+        {"version": "=3.0.1", "package": "other"},
     ):
         with pytest.raises(SystemExit):
-            registry_version("sidereon", source, "3.0.0")
+            registry_version("sidereon", source, "3.0.1")
 
 
 def test_registry_guard_requires_exact_release_requirement() -> None:
     registry_version = GUARD["registry_version"]
-    assert registry_version("sidereon", {"version": "=3.0.0"}, "3.0.0") == "3.0.0"
-    assert registry_version("sidereon", "=3.0.0", "3.0.0") == "3.0.0"
-    for requirement in ("3.0.0", "^3.0.0", ">=3.0.0, <4.0.0"):
+    assert registry_version("sidereon", {"version": "=3.0.1"}, "3.0.1") == "3.0.1"
+    assert registry_version("sidereon", "=3.0.1", "3.0.1") == "3.0.1"
+    for requirement in ("3.0.1", "^3.0.1", ">=3.0.1, <4.0.0"):
         with pytest.raises(SystemExit, match="require exactly"):
-            registry_version("sidereon", {"version": requirement}, "3.0.0")
+            registry_version("sidereon", {"version": requirement}, "3.0.1")
 
 
 def test_registry_ci_fixture_ref_is_version_tag() -> None:
-    dependencies = {"sidereon": "=3.0.0", "sidereon-core": "=3.0.0"}
-    assert GUARD["ci_fixture_ref"](dependencies, "3.0.0") == "v3.0.0"
+    dependencies = {"sidereon": "=3.0.1", "sidereon-core": "=3.0.1"}
+    assert GUARD["ci_fixture_ref"](dependencies, "3.0.1") == "v3.0.1"
 
 
 def test_candidate_ci_fixture_ref_is_the_validated_revision() -> None:
     revision = "0123456789abcdef0123456789abcdef01234567"
     assert (
-        GUARD["ci_fixture_ref"](candidate_dependencies(revision), "3.0.0") == revision
+        GUARD["ci_fixture_ref"](candidate_dependencies(revision), "3.0.1") == revision
     )
 
 
 def test_ci_rejects_mixed_candidate_and_registry_sources() -> None:
     dependencies = candidate_dependencies("a" * 40)
-    dependencies["sidereon-core"] = "3.0.0"
+    dependencies["sidereon-core"] = "3.0.1"
     with pytest.raises(ValueError):
-        GUARD["ci_fixture_ref"](dependencies, "3.0.0")
+        GUARD["ci_fixture_ref"](dependencies, "3.0.1")
 
 
 def test_registry_ci_fixture_accepts_only_exact_crates_io_requirements() -> None:
     dependencies = {
-        "sidereon": {"version": "=3.0.0", "features": ["mmap"]},
-        "sidereon-core": {"version": "=3.0.0"},
+        "sidereon": {"version": "=3.0.1", "features": ["mmap"]},
+        "sidereon-core": {"version": "=3.0.1"},
     }
-    assert GUARD["ci_fixture_ref"](dependencies, "3.0.0") == "v3.0.0"
-    dependencies["sidereon-core"] = {"version": "^3.0.0"}
+    assert GUARD["ci_fixture_ref"](dependencies, "3.0.1") == "v3.0.1"
+    dependencies["sidereon-core"] = {"version": "^3.0.1"}
     with pytest.raises(SystemExit, match="require exactly"):
-        GUARD["ci_fixture_ref"](dependencies, "3.0.0")
-    dependencies["sidereon-core"] = {"version": "=3.0.0", "registry": "other"}
+        GUARD["ci_fixture_ref"](dependencies, "3.0.1")
+    dependencies["sidereon-core"] = {"version": "=3.0.1", "registry": "other"}
     with pytest.raises(SystemExit, match="crates.io registry"):
-        GUARD["ci_fixture_ref"](dependencies, "3.0.0")
-    dependencies["sidereon-core"] = {"version": "=3.0.0", "package": "other"}
+        GUARD["ci_fixture_ref"](dependencies, "3.0.1")
+    dependencies["sidereon-core"] = {"version": "=3.0.1", "package": "other"}
     with pytest.raises(SystemExit, match="select package"):
-        GUARD["ci_fixture_ref"](dependencies, "3.0.0")
+        GUARD["ci_fixture_ref"](dependencies, "3.0.1")
 
 
 def test_maturin_and_cargo_enforce_a_current_lockfile(tmp_path: Path) -> None:

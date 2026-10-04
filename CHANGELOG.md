@@ -4,6 +4,8 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-10-04
+
 ### Added
 
 - Opt-in `acquire(..., http_client_exception_diagnostics=callback)` reports
