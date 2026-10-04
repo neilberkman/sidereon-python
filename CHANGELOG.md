@@ -2,7 +2,7 @@
 
 All notable changes to the Sidereon Python interface are documented here.
 
-## [3.0.0]
+## [3.0.0] - 2026-10-04
 
 ### Added
 
@@ -70,7 +70,7 @@ All notable changes to the Sidereon Python interface are documented here.
 - `Sp3MergeOptions` no longer refuses a `target_epoch_interval_s` that is not a whole number of seconds. The merge takes any interval a whole number of 10-nanosecond ticks states and the core refuses the rest; the persisted merge-input identity still binds whole seconds only, and the core refuses a fractional interval there.
 - **Breaking.** The robust (Huber) reweighting runs until it settles: `SPP_DEFAULT_ROBUST_MAX_OUTER`, the default `SppRobustConfig.max_outer`, is 100 instead of 5, a safeguard rather than a working budget. A reweighting that cycles stops with the new status `outer_oscillation`.
 
-- Engine update: sidereon and sidereon-core 3.0.0, at core revision `2373644611953e1833c0deb94057acc34bcec973`. Every core breaking change below reaches Python as the core states it; the core CHANGELOG gives the reason for each.
+- Engine update: sidereon and sidereon-core 3.0.0, at core revision `e2fb3dfdc392d23087ed8aa1ee028a0056b4021b`. Every core breaking change below reaches Python as the core states it; the core CHANGELOG gives the reason for each.
 - **Breaking.** `NmeaDiagnostics.skips` and `warnings` are lists of `FormatSkip` and `FormatWarning` instead of strings, and `NmeaDiagnostics` is `FormatDiagnostics`.
 - **Breaking.** `BiasSet.code_osb_seconds`, `phase_osb_cycles`, `code_dsb_seconds` and `code_bias_model_m` return a `BiasLookup` whose `status` names the outcome (`available`, `absent`, `unsupported_scale`, `ambiguous`, `carrier_frequency_required`, `invalid_carrier_frequency`, `carrier_frequency_unknown`, `undefined_slope_reference`, `invalid_epoch`) instead of a float or `None`. A phase bias stated in nanoseconds needs `carrier_hz`. `BiasSet.time_scale` is `None` for a product with no usable time scale, and a lookup on such a product needs `time_scale`. `BiasRecord.is_phase` follows the observable code, so a phase bias stated in nanoseconds is a phase bias.
 - **Breaking.** The Bias-SINEX readers are strict by default and raise `ValueError` for a file that departs from Bias-SINEX 1.00 or states another version; `BiasReadPolicy.LENIENT` reads it and reports each departure in `BiasSet.notices`. A CODE DCB title whose time-system label names no known scale is refused likewise.
