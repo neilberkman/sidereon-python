@@ -27,8 +27,8 @@ def _engine_dep_is_registry_versioned(manifest: str, name: str) -> bool:
     if "path" in value or "git" in value:
         return False
     return (
-        re.search(r'version = "\d+\.\d+\.\d+"', value) is not None
-        or re.fullmatch(r'"\d+\.\d+\.\d+"', value.strip()) is not None
+        re.search(r'version = "=?\d+\.\d+\.\d+"', value) is not None
+        or re.fullmatch(r'"=?\d+\.\d+\.\d+"', value.strip()) is not None
     )
 
 
