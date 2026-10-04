@@ -107,7 +107,7 @@ def test_trust_region_candidate_is_rejected_in_registry_mode() -> None:
         lambda dependencies: dependencies["sidereon"].update(package="other"),
         lambda dependencies: dependencies["sidereon"].update(rev="main"),
         lambda dependencies: dependencies["sidereon"].update(rev="0" * 39),
-        lambda dependencies: dependencies["sidereon"].update(version="3.0.1"),
+        lambda dependencies: dependencies["sidereon"].update(version="3.0.2"),
         lambda dependencies: dependencies["sidereon-core"].update(rev="f" * 40),
     ],
 )
