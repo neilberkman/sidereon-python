@@ -134,6 +134,8 @@ jobs:
       - name: Build the extension (maturin develop)
         run: uv run --locked --extra test --group dev maturin develop --locked --features exact-cache-test-failpoints
       - name: stub accuracy
+        env:
+          SIDEREON_CORE_FIXTURES: ${{ github.workspace }}/.core-checkout/crates/sidereon-core/tests/fixtures
         run: uv run --locked --extra test --group dev pytest tests/test_stub_accuracy.py
       - name: pytest
         env:
