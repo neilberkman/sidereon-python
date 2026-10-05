@@ -1,0 +1,71 @@
+name: 3.0.2 fixture preparation
+
+on:
+  push:
+    branches: [release/3.0.2-20261005]
+    paths:
+      - '.github/workflows/release-prep.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixtures:
+    runs-on: macos-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fixture-preparation
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Resolve exact core fixture source
+        id: metadata
+        run: python scripts/check-release.py --ci --github-output "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: neilberkman/sidereon
+          ref: ${{ steps.metadata.outputs.fixture_ref }}
+          path: .core-checkout
+      - name: Regenerate both fixtures from the locked core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp tests/fixtures/core_goldens.json "$RUNNER_TEMP/core_goldens.before.json"
+          cp tests/fixtures/ppp_esbc.json "$RUNNER_TEMP/ppp_esbc.before.json"
+          cargo run --release --locked --manifest-path scripts/core_goldens/Cargo.toml -- \
+            "$GITHUB_WORKSPACE/.core-checkout/crates/sidereon-core/tests/fixtures" \
+            "$GITHUB_WORKSPACE/tests/fixtures"
+          cargo run --release --locked --manifest-path scripts/ppp_esbc_expected/Cargo.toml -- \
+            "$GITHUB_WORKSPACE/tests/fixtures/ppp_esbc.json" \
+            "$GITHUB_WORKSPACE/.core-checkout/crates/sidereon-core/tests/fixtures/sp3"
+      - name: Require unchanged numerical fixture values
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          for name in ('core_goldens', 'ppp_esbc'):
+              before = json.loads((Path(os.environ['RUNNER_TEMP']) / f'{name}.before.json').read_text())
+              after = json.loads((Path('tests/fixtures') / f'{name}.json').read_text())
+              before.pop('core_revision')
+              after.pop('core_revision')
+              assert before == after, f'{name}: numerical values changed; review required'
+          print('Both genuine regenerated fixtures preserve every numerical value.')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-3.0.2-regenerated-fixtures
+          path: |
+            tests/fixtures/core_goldens.json
+            tests/fixtures/ppp_esbc.json
+          if-no-files-found: error

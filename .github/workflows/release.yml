@@ -153,10 +153,10 @@ jobs:
             done
             for source in mod.rs ocean.rs pole.rs; do
               unzip -p "$wheel" \
-                "third_party_source/sidereon-core-3.0.1/tides/$source" \
+                "third_party_source/sidereon-core-3.0.2/tides/$source" \
                 >"$RUNNER_TEMP/$source"
               cmp "$RUNNER_TEMP/$source" \
-                "third_party_source/sidereon-core-3.0.1/tides/$source"
+                "third_party_source/sidereon-core-3.0.2/tides/$source"
             done
           done
           notice="$RUNNER_TEMP/sdist.notices"
@@ -173,10 +173,10 @@ jobs:
           done
           for source in mod.rs ocean.rs pole.rs; do
             tar -xOf "${sdists[0]}" --wildcards \
-              "*/third_party_source/sidereon-core-3.0.1/tides/$source" \
+              "*/third_party_source/sidereon-core-3.0.2/tides/$source" \
               >"$RUNNER_TEMP/sdist-$source"
             cmp "$RUNNER_TEMP/sdist-$source" \
-              "third_party_source/sidereon-core-3.0.1/tides/$source"
+              "third_party_source/sidereon-core-3.0.2/tides/$source"
           done
       - name: Smoke-test installed x86_64 Linux wheel
         shell: bash

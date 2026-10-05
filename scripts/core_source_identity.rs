@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 const REGISTRY_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
 const GIT_SOURCE_PREFIX: &str = "git+https://github.com/neilberkman/sidereon?rev=";
-const RELEASE_VERSION: &str = "3.0.1";
+const RELEASE_VERSION: &str = "3.0.2";
 
 #[derive(Debug)]
 struct LockedPackage {
