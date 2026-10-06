@@ -4,6 +4,13 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-10-05
+
+### Changed
+
+- Use the coordinated 3.0.2 Rust engine release, including NaN-safe Portable ULP comparisons.
+- Retain the existing Python API while keeping package versions and shipped source disclosures aligned across all libraries.
+
 ## [3.0.1] - 2026-10-04
 
 ### Added

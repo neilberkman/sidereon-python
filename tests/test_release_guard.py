@@ -44,6 +44,7 @@ def test_trust_region_accepts_only_exact_coordinated_candidate_revision() -> Non
     dependencies = candidate_dependencies(revision)
     validate = GUARD["validate_trust_region_dependency"]
     validate("0.11.0", dependencies, "3.0.1", allow_candidate=False)
+    validate("=0.11.0", dependencies, "3.0.1", allow_candidate=False)
     validate(
         {
             "version": "0.11.0",

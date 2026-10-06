@@ -153,10 +153,10 @@ jobs:
             done
             for source in mod.rs ocean.rs pole.rs; do
               unzip -p "$wheel" \
-                "third_party_source/sidereon-core-3.0.1/tides/$source" \
+                "third_party_source/sidereon-core-3.0.2/tides/$source" \
                 >"$RUNNER_TEMP/$source"
               cmp "$RUNNER_TEMP/$source" \
-                "third_party_source/sidereon-core-3.0.1/tides/$source"
+                "third_party_source/sidereon-core-3.0.2/tides/$source"
             done
           done
           notice="$RUNNER_TEMP/sdist.notices"
@@ -173,10 +173,10 @@ jobs:
           done
           for source in mod.rs ocean.rs pole.rs; do
             tar -xOf "${sdists[0]}" --wildcards \
-              "*/third_party_source/sidereon-core-3.0.1/tides/$source" \
+              "*/third_party_source/sidereon-core-3.0.2/tides/$source" \
               >"$RUNNER_TEMP/sdist-$source"
             cmp "$RUNNER_TEMP/sdist-$source" \
-              "third_party_source/sidereon-core-3.0.1/tides/$source"
+              "third_party_source/sidereon-core-3.0.2/tides/$source"
           done
       - name: Smoke-test installed x86_64 Linux wheel
         shell: bash
@@ -218,3 +218,39 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           attestations: true
+
+  public-consumer:
+    name: Verify public PyPI consumer
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    needs: publish
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install exact published wheel and exercise public references
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          python -m venv "$scratch/venv"
+          installed=false
+          for attempt in 1 2 3 4 5 6; do
+            if "$scratch/venv/bin/python" -m pip install --only-binary=sidereon "sidereon==$version" pytest; then
+              installed=true
+              break
+            fi
+            sleep 10
+          done
+          test "$installed" = true
+          mkdir -p "$scratch/tests/fixtures/bodies"
+          cp scripts/smoke-release.py "$scratch/smoke-release.py"
+          cp tests/test_body_observe_reference.py "$scratch/tests/"
+          cp tests/fixtures/bodies/observe_de.bsp "$scratch/tests/fixtures/bodies/"
+          cd "$scratch"
+          unset PYTHONPATH
+          SIDEREON_EXPECTED_VERSION="$version" "$scratch/venv/bin/python" -I smoke-release.py
+          "$scratch/venv/bin/python" -I -m pytest -q tests/test_body_observe_reference.py
