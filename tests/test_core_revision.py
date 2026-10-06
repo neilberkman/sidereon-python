@@ -42,9 +42,7 @@ _PROJECTS = (
 def _manifest_dependencies(path):
     text = path.read_text()
     found = {}
-    dependency_pattern = (
-        r'^\s*(sidereon(?:-core)?)\s*=\s*(?:"([^"\n]*)"|\{([^}\n]*)\})'
-    )
+    dependency_pattern = r'^\s*(sidereon(?:-core)?)\s*=\s*(?:"([^"\n]*)"|\{([^}\n]*)\})'
     for name, scalar_version, body in re.findall(dependency_pattern, text, re.M):
         assert name not in found, f"{path}: duplicate direct dependency {name}"
         if scalar_version:
