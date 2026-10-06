@@ -1,6 +1,6 @@
 {
   "source": "scripts/core_goldens",
-  "core_revision": "47eaf24e39afa71168670664e88361ed41011bc2",
+  "core_revision": "8694648892d8ab065d94014e2e21d6cd5054818e",
   "spp_trace_default": {
     "position_m": [
       "0x41511b0a63f49487",

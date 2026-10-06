@@ -24,12 +24,12 @@ exact-cache-test-failpoints = ["sidereon-core/exact-cache-test-failpoints"]
 # The thin ergonomic engine surface this binding marshals to. No modeling logic
 # lives here: every solve delegates to a `sidereon` entry point, which in turn
 # delegates to `sidereon-core`.
-sidereon = { version = "3.0.2", git = "https://github.com/neilberkman/sidereon", rev = "47eaf24e39afa71168670664e88361ed41011bc2" }
-sidereon-core = { version = "3.0.2", git = "https://github.com/neilberkman/sidereon", rev = "47eaf24e39afa71168670664e88361ed41011bc2", features = ["mmap"] }
+sidereon = "=3.0.2"
+sidereon-core = { version = "=3.0.2", features = ["mmap"] }
 # The standalone general-purpose trust-region least-squares solver: a data-driven
 # `least_squares` whose residual and Jacobian are evaluated entirely in Rust, so
 # no per-iteration Python callback is paid.
-trust-region-least-squares = { version = "0.11.0", git = "https://github.com/neilberkman/sidereon", rev = "47eaf24e39afa71168670664e88361ed41011bc2" }
+trust-region-least-squares = "=0.11.0"
 pyo3 = { version = "0.25", features = ["abi3-py39"] }
 # Zero-copy ndarray marshalling so a batched propagate/look-angle call crosses
 # the FFI boundary once (1-D epochs in, 2-D states / 1-D angles out) instead of a

@@ -13,7 +13,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 CORE_GIT_URL = "https://github.com/neilberkman/sidereon"
 FULL_GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
-CORE_SOURCE_REVISION = "47eaf24e39afa71168670664e88361ed41011bc2"
+CORE_SOURCE_REVISION = "8694648892d8ab065d94014e2e21d6cd5054818e"
 
 
 def registry_version(name, value, package_version):
@@ -114,7 +114,7 @@ def validate_trust_region_dependency(
     value, engine_dependencies, package_version, *, allow_candidate
 ):
     """Accept the registry release or its exact coordinated Git candidate."""
-    if value == "0.11.0":
+    if value in ("0.11.0", "=0.11.0"):
         return
     if not allow_candidate:
         raise ValueError(
