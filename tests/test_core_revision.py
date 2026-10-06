@@ -42,15 +42,32 @@ _PROJECTS = (
 def _manifest_dependencies(path):
     text = path.read_text()
     found = {}
-    dependency_pattern = r"^\s*(sidereon(?:-core)?)\s*=\s*\{([^}\n]*)\}"
-    for name, body in re.findall(dependency_pattern, text, re.M):
+    dependency_pattern = (
+        r'^\s*(sidereon(?:-core)?)\s*=\s*(?:"([^"\n]*)"|\{([^}\n]*)\})'
+    )
+    for name, scalar_version, body in re.findall(dependency_pattern, text, re.M):
         assert name not in found, f"{path}: duplicate direct dependency {name}"
+        if scalar_version:
+            found[name] = {"version": scalar_version}
+            continue
         fields = r'([A-Za-z_][A-Za-z_0-9]*)\s*=\s*"([^"]*)"'
         found[name] = dict(re.findall(fields, body))
     assert set(found) == set(_DEPENDENCIES), (
         f"{path}: engine dependencies are {sorted(found)}"
     )
     return found
+
+
+def test_manifest_dependencies_accept_scalar_and_inline_versions(tmp_path):
+    manifest = tmp_path / "Cargo.toml"
+    manifest.write_text(
+        '[dependencies]\nsidereon = "=3.0.2"\n'
+        'sidereon-core = { version = "=3.0.2", features = ["mmap"] }\n'
+    )
+    assert _manifest_dependencies(manifest) == {
+        "sidereon": {"version": "=3.0.2"},
+        "sidereon-core": {"version": "=3.0.2"},
+    }
 
 
 def _locked_packages(path):
