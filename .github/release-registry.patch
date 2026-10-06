@@ -1,0 +1,95 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 8c07ea6..c592048 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -24,12 +24,12 @@ exact-cache-test-failpoints = ["sidereon-core/exact-cache-test-failpoints"]
+ # The thin ergonomic engine surface this binding marshals to. No modeling logic
+ # lives here: every solve delegates to a `sidereon` entry point, which in turn
+ # delegates to `sidereon-core`.
+-sidereon = { version = "3.0.2", git = "https://github.com/neilberkman/sidereon", rev = "47eaf24e39afa71168670664e88361ed41011bc2" }
+-sidereon-core = { version = "3.0.2", git = "https://github.com/neilberkman/sidereon", rev = "47eaf24e39afa71168670664e88361ed41011bc2", features = ["mmap"] }
++sidereon = "=3.0.2"
++sidereon-core = { version = "=3.0.2", features = ["mmap"] }
+ # The standalone general-purpose trust-region least-squares solver: a data-driven
+ # `least_squares` whose residual and Jacobian are evaluated entirely in Rust, so
+ # no per-iteration Python callback is paid.
+-trust-region-least-squares = { version = "0.11.0", git = "https://github.com/neilberkman/sidereon", rev = "47eaf24e39afa71168670664e88361ed41011bc2" }
++trust-region-least-squares = "=0.11.0"
+ pyo3 = { version = "0.25", features = ["abi3-py39"] }
+ # Zero-copy ndarray marshalling so a batched propagate/look-angle call crosses
+ # the FFI boundary once (1-D epochs in, 2-D states / 1-D angles out) instead of a
+diff --git a/THIRD-PARTY-NOTICES.md b/THIRD-PARTY-NOTICES.md
+index bd73781..1728e0d 100644
+--- a/THIRD-PARTY-NOTICES.md
++++ b/THIRD-PARTY-NOTICES.md
+@@ -331,8 +331,8 @@ the renamed routines, and the differences from the Fortran implementation.
+ The complete non-test tide source distributed in the compiled extension is
+ included under
+ `third_party_source/sidereon-core-3.0.2/tides/` in wheels and source
+-distributions. These files match sidereon-core 3.0.2 at commit 47eaf24e39afa71168670664e88361ed41011bc2.
+-Source: [sidereon-core tides at the pinned commit](https://github.com/neilberkman/sidereon/tree/47eaf24e39afa71168670664e88361ed41011bc2/crates/sidereon-core/src/tides).
++distributions. These files match sidereon-core 3.0.2 at commit 8694648892d8ab065d94014e2e21d6cd5054818e.
++Source: [sidereon-core tides at the pinned commit](https://github.com/neilberkman/sidereon/tree/8694648892d8ab065d94014e2e21d6cd5054818e/crates/sidereon-core/src/tides).
+ The authoritative original is available from:
+ 
+ <https://iers-conventions.obspm.fr/content/chapter7/software/dehanttideinel/DEHANTTIDEINEL.F>
+diff --git a/scripts/check-release.py b/scripts/check-release.py
+index 7d73728..786d1c7 100644
+--- a/scripts/check-release.py
++++ b/scripts/check-release.py
+@@ -13,7 +13,7 @@ import tomllib
+ ROOT = Path(__file__).resolve().parents[1]
+ CORE_GIT_URL = "https://github.com/neilberkman/sidereon"
+ FULL_GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
+-CORE_SOURCE_REVISION = "47eaf24e39afa71168670664e88361ed41011bc2"
++CORE_SOURCE_REVISION = "8694648892d8ab065d94014e2e21d6cd5054818e"
+ 
+ 
+ def registry_version(name, value, package_version):
+@@ -114,7 +114,7 @@ def validate_trust_region_dependency(
+     value, engine_dependencies, package_version, *, allow_candidate
+ ):
+     """Accept the registry release or its exact coordinated Git candidate."""
+-    if value == "0.11.0":
++    if value in ("0.11.0", "=0.11.0"):
+         return
+     if not allow_candidate:
+         raise ValueError(
+diff --git a/scripts/core_goldens/Cargo.toml b/scripts/core_goldens/Cargo.toml
+index e39beea..21dd4e6 100644
+--- a/scripts/core_goldens/Cargo.toml
++++ b/scripts/core_goldens/Cargo.toml
+@@ -10,6 +10,6 @@ description = "Writes tests/fixtures/core_goldens.json, the core results several
+ [dependencies]
+ flate2 = "1"
+ sha2 = "0.10"
+-sidereon = { version = "3.0.2", git = "https://github.com/neilberkman/sidereon", rev = "47eaf24e39afa71168670664e88361ed41011bc2" }
+-sidereon-core = { version = "3.0.2", git = "https://github.com/neilberkman/sidereon", rev = "47eaf24e39afa71168670664e88361ed41011bc2" }
++sidereon = "=3.0.2"
++sidereon-core = "=3.0.2"
+ serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
+diff --git a/scripts/ppp_esbc_expected/Cargo.toml b/scripts/ppp_esbc_expected/Cargo.toml
+index cff9972..54bd398 100644
+--- a/scripts/ppp_esbc_expected/Cargo.toml
++++ b/scripts/ppp_esbc_expected/Cargo.toml
+@@ -10,6 +10,6 @@ description = "Writes the binding-level PPP solutions of tests/fixtures/ppp_esbc
+ [dependencies]
+ flate2 = "1"
+ sha2 = "0.10"
+-sidereon = { version = "3.0.2", git = "https://github.com/neilberkman/sidereon", rev = "47eaf24e39afa71168670664e88361ed41011bc2" }
+-sidereon-core = { version = "3.0.2", git = "https://github.com/neilberkman/sidereon", rev = "47eaf24e39afa71168670664e88361ed41011bc2" }
++sidereon = "=3.0.2"
++sidereon-core = "=3.0.2"
+ serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
+diff --git a/tests/test_release_guard.py b/tests/test_release_guard.py
+index 7f8d0fa..7db0fb1 100644
+--- a/tests/test_release_guard.py
++++ b/tests/test_release_guard.py
+@@ -44,6 +44,7 @@ def test_trust_region_accepts_only_exact_coordinated_candidate_revision() -> Non
+     dependencies = candidate_dependencies(revision)
+     validate = GUARD["validate_trust_region_dependency"]
+     validate("0.11.0", dependencies, "3.0.1", allow_candidate=False)
++    validate("=0.11.0", dependencies, "3.0.1", allow_candidate=False)
+     validate(
+         {
+             "version": "0.11.0",
