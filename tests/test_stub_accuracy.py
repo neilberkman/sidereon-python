@@ -252,3 +252,71 @@ def test_selector_declarations_match_runtime_classes():
     for name in names:
         assert not issubclass(getattr(sidereon, name), enum.Enum)
         assert classes[name].bases == []
+
+
+def test_fixed_vector_declarations_match_list_runtime_contract():
+    expected = {
+        "SppKlobucharCoeffs": {"alpha": "list[float]", "beta": "list[float]"},
+        "SppConfig": {"initial_guess": "list[float]"},
+        "RtkFixedSolution": {
+            "fixed_baseline_m": "list[float]",
+            "float_baseline_m": "list[float]",
+        },
+        "StationDisplacementPosition": {"ecef_m": "list[float] | None"},
+        "StationDisplacement": {
+            "ecef_m": "list[float]",
+            "solid_earth_tide_ecef_m": "list[float] | None",
+            "pole_tide_ecef_m": "list[float] | None",
+            "ocean_loading_ecef_m": "list[float] | None",
+        },
+        "MovingBaselineEpoch": {"base_position_m": "list[float]"},
+        "MovingBaselineEpochSolution": {
+            "base_position_m": "list[float]",
+            "baseline_m": "list[float]",
+        },
+        "ImuBias": {"accel_mps2": "list[float]", "gyro_rps": "list[float]"},
+        "ImuSample": {
+            "specific_force_mps2": "list[float] | None",
+            "angular_rate_rps": "list[float] | None",
+            "delta_velocity_mps": "list[float] | None",
+            "delta_theta_rad": "list[float] | None",
+        },
+        "CorrectedImuIncrement": {
+            "delta_velocity_mps": "list[float]",
+            "delta_theta_rad": "list[float]",
+        },
+        "InertialFilterSnapshot": {"last_body_rate_wrt_ecef_rps": "list[float]"},
+    }
+    classes = {
+        node.name: node
+        for node in _stub_module().body
+        if isinstance(node, ast.ClassDef)
+    }
+    for class_name, properties in expected.items():
+        methods = {
+            node.name: node
+            for node in classes[class_name].body
+            if isinstance(node, ast.FunctionDef)
+        }
+        for property_name, annotation in properties.items():
+            assert ast.unparse(methods[property_name].returns) == annotation
+
+    klobuchar = sidereon.SppKlobucharCoeffs()
+    bias = sidereon.ImuBias()
+    sample = sidereon.ImuSample.rate(1.0, [1.0, 2.0, 3.0], [0.1, 0.2, 0.3])
+    corrected = sidereon.CorrectedImuIncrement(
+        1.0, [1.0, 2.0, 3.0], [0.1, 0.2, 0.3], 1.0
+    )
+    position = sidereon.StationDisplacementPosition.from_ecef_m([1.0, 2.0, 3.0])
+    for value in (
+        klobuchar.alpha,
+        klobuchar.beta,
+        bias.accel_mps2,
+        bias.gyro_rps,
+        sample.specific_force_mps2,
+        sample.angular_rate_rps,
+        corrected.delta_velocity_mps,
+        corrected.delta_theta_rad,
+        position.ecef_m,
+    ):
+        assert type(value) is list
