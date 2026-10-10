@@ -3229,7 +3229,9 @@ impl PyRtcmDeparture {
         match &self.inner {
             RtcmDeparture::TrailingBits { message_number, .. }
             | RtcmDeparture::MsmCellMaskOver64 { message_number, .. }
-            | RtcmDeparture::SsrRecordsShort { message_number, .. } => Some(*message_number),
+            | RtcmDeparture::OrderExceedsDegree { message_number, .. }
+            | RtcmDeparture::SsrRecordsShort { message_number, .. }
+            | RtcmDeparture::RecordsShort { message_number, .. } => Some(*message_number),
             _ => None,
         }
     }
