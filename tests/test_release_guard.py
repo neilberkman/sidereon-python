@@ -20,12 +20,12 @@ def candidate_dependencies(revision: str) -> dict[str, object]:
         "sidereon": {
             "git": "https://github.com/neilberkman/sidereon",
             "rev": revision,
-            "version": "3.0.1",
+            "version": "=3.0.1",
         },
         "sidereon-core": {
             "git": "https://github.com/neilberkman/sidereon",
             "rev": revision,
-            "version": "3.0.1",
+            "version": "=3.0.1",
             "features": ["mmap"],
         },
     }
@@ -47,7 +47,7 @@ def test_trust_region_accepts_only_exact_coordinated_candidate_revision() -> Non
     validate("=0.11.0", dependencies, "3.0.1", allow_candidate=False)
     validate(
         {
-            "version": "0.11.0",
+            "version": "=0.11.0",
             "git": "https://github.com/neilberkman/sidereon",
             "rev": revision,
         },
@@ -108,7 +108,7 @@ def test_trust_region_candidate_is_rejected_in_registry_mode() -> None:
         lambda dependencies: dependencies["sidereon"].update(package="other"),
         lambda dependencies: dependencies["sidereon"].update(rev="main"),
         lambda dependencies: dependencies["sidereon"].update(rev="0" * 39),
-        lambda dependencies: dependencies["sidereon"].update(version="3.0.2"),
+        lambda dependencies: dependencies["sidereon"].update(version="3.0.1"),
         lambda dependencies: dependencies["sidereon-core"].update(rev="f" * 40),
     ],
 )

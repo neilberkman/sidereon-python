@@ -76,10 +76,11 @@ def candidate_fixture_revision(engine_dependencies, package_version):
             raise ValueError(
                 f"{name} candidate dependency must pin a full 40-character Git revision"
             )
-        if value.get("version") != package_version:
+        expected_requirement = f"={package_version}"
+        if value.get("version") != expected_requirement:
             raise ValueError(
-                f"{name} candidate version must match package version "
-                f"{package_version!r}"
+                f"{name} candidate version must require exactly "
+                f"{expected_requirement!r}"
             )
         revisions.append(revision)
     if revisions[0] != revisions[1]:
@@ -135,10 +136,10 @@ def validate_trust_region_dependency(
             "trust-region-least-squares candidate requires the approved "
             f"coordinated engine revision: {error}"
         ) from error
-    if value.get("version") != "0.11.0":
+    if value.get("version") != "=0.11.0":
         raise ValueError(
             "trust-region-least-squares candidate version must be exactly "
-            f"'0.11.0', found {value.get('version')!r}"
+            f"'=0.11.0', found {value.get('version')!r}"
         )
     if value.get("git") != CORE_GIT_URL:
         raise ValueError(
@@ -201,9 +202,7 @@ def main() -> None:
             )
         except ValueError as error:
             raise SystemExit(str(error)) from error
-        engine_dependency_versions = {
-            name: engine_dependencies[name]["version"] for name in engine_dependencies
-        }
+        engine_dependency_versions = dict.fromkeys(engine_dependencies, python_version)
         source_kind = "candidate Git revision"
     elif args.ci:
         try:
@@ -211,10 +210,9 @@ def main() -> None:
         except ValueError as error:
             raise SystemExit(str(error)) from error
         if is_git_candidate(engine_dependencies):
-            engine_dependency_versions = {
-                name: engine_dependencies[name]["version"]
-                for name in engine_dependencies
-            }
+            engine_dependency_versions = dict.fromkeys(
+                engine_dependencies, python_version
+            )
             source_kind = "candidate Git revision"
         else:
             engine_dependency_versions = {
