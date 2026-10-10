@@ -79,6 +79,23 @@ def test_subframe_id_and_tow_helpers():
     assert sidereon.lnav_subframe_id([0, 1, 0]) is None
 
 
+def test_full_subframe_helpers_restore_complemented_how():
+    def set_bits(bits, start, width, value):
+        for index in range(width):
+            bits[start + index] = value >> (width - 1 - index) & 1
+
+    source_how = [0] * 30
+    set_bits(source_how, 0, 17, 54_321)
+    set_bits(source_how, 19, 3, 1)
+    subframe = [0] * 300
+    subframe[29] = 1
+    subframe[30:54] = [bit ^ 1 for bit in source_how[:24]]
+    subframe[54:60] = source_how[24:30]
+
+    assert sidereon.lnav_tow(subframe) == 54_321
+    assert sidereon.lnav_subframe_id(subframe) == 1
+
+
 def test_round_trip_recovers_integer_fields_exactly():
     sf1, sf2, sf3 = _encode()
     d = sidereon.lnav_decode(sf1, sf2, sf3)
