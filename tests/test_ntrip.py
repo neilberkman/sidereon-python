@@ -49,6 +49,17 @@ def test_core_ntrip_machine_decodes_rev2_chunked_payload():
     assert events[1].payload == b"abc"
 
 
+def test_core_ntrip_finish_emits_unterminated_sourcetable_once():
+    config = sidereon.NtripConfig("caster.example.test", 2101, "")
+    machine = sidereon.NtripClientMachine(config)
+    machine.connection_request()
+    events = machine.push(
+        b"SOURCETABLE 200 OK\r\nContent-Type: gnss/sourcetable\r\n\r\nENDSOURCETABLE"
+    )
+    events.extend(machine.finish())
+    assert [event.kind for event in events].count("sourcetable") == 1
+
+
 def test_nmea_parser_and_gga_writer_delegate_to_core():
     sentence = sidereon.write_gga(48.0, 11.0, 500.0, 45296.12)
     parsed = sidereon.parse_nmea_sentence(sentence)
