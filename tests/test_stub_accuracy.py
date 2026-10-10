@@ -2,6 +2,7 @@
 
 import ast
 import datetime as dt
+import enum
 import inspect
 import pathlib
 
@@ -221,3 +222,33 @@ def test_code_dcb_option_requiredness_matches_runtime():
             if parameter.arg == "options"
         )
         assert option_index < first_default
+
+
+def test_selector_declarations_match_runtime_classes():
+    names = (
+        "TlePolicy",
+        "SlipReason",
+        "VelocityObservable",
+        "ReducedOrbitModel",
+        "ReducedOrbitFrame",
+        "OrbitType",
+        "ProjVgridshiftArithmetic",
+        "SeasonKind",
+        "MoonPhaseKind",
+        "PlanetaryEventKind",
+        "CulminationKind",
+        "EclipseKind",
+        "Planet",
+        "SbasSolveMode",
+        "CovarianceFrame",
+        "FusionFilterKind",
+        "ErrorStateLayout",
+    )
+    classes = {
+        node.name: node
+        for node in _stub_module().body
+        if isinstance(node, ast.ClassDef)
+    }
+    for name in names:
+        assert not issubclass(getattr(sidereon, name), enum.Enum)
+        assert classes[name].bases == []

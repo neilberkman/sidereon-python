@@ -4,6 +4,11 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve RTCM message numbers on order/degree and short-record departure diagnostics.
+- Align selector declarations with their runtime PyO3 classes instead of promising `enum.Enum` behavior they do not provide.
+
 ## [3.0.2] - 2026-10-05
 
 ### Changed
