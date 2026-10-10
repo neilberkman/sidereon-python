@@ -169,11 +169,7 @@ def _source_identity(manifest_path, lock_path, cargo_home=None):
         )
         git = dependency.get("git")
         revision = dependency.get("rev")
-        expected_requirement = (
-            _RELEASE_VERSION
-            if git is not None or revision is not None
-            else f"={_RELEASE_VERSION}"
-        )
+        expected_requirement = f"={_RELEASE_VERSION}"
         assert dependency.get("version") == expected_requirement, (
             f"{manifest_path}: {name} must request exactly "
             f"{expected_requirement!r} for its source"
@@ -252,8 +248,8 @@ def _write_candidate(tmp_path, revision):
     lock = tmp_path / "Cargo.lock"
     manifest.write_text(
         "[dependencies]\n"
-        f'sidereon = {{ version = "3.0.2", git = "{_GIT_URL}", rev = "{revision}" }}\n'
-        f'sidereon-core = {{ version = "3.0.2", git = "{_GIT_URL}", '
+        f'sidereon = {{ version = "=3.0.2", git = "{_GIT_URL}", rev = "{revision}" }}\n'
+        f'sidereon-core = {{ version = "=3.0.2", git = "{_GIT_URL}", '
         f'rev = "{revision}" }}\n'
     )
     source = f"git+{_GIT_URL}?rev={revision}#{revision}"

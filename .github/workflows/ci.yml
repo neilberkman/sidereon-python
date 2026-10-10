@@ -125,6 +125,33 @@ jobs:
             "$RUNNER_TEMP/core-source-identity.log"
           grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in .*s$' \
             "$RUNNER_TEMP/core-source-identity.log"
+      - name: Verify candidate-generated fixtures
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          set -euo pipefail
+          scratch="$(mktemp -d "$RUNNER_TEMP/candidate-fixtures.XXXXXX")"
+          cp -R tests/fixtures "$scratch/fixtures"
+          cargo run --release --locked --manifest-path scripts/core_goldens/Cargo.toml -- \
+            "$GITHUB_WORKSPACE/.core-checkout/crates/sidereon-core/tests/fixtures" \
+            "$scratch/fixtures"
+          cargo run --release --locked --manifest-path scripts/ppp_esbc_expected/Cargo.toml -- \
+            "$scratch/fixtures/ppp_esbc.json" \
+            "$GITHUB_WORKSPACE/.core-checkout/crates/sidereon-core/tests/fixtures/sp3"
+          python - "$scratch/fixtures" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          generated = Path(sys.argv[1])
+          committed = Path("tests/fixtures")
+          for name in ("core_goldens.json", "ppp_esbc.json"):
+              with (generated / name).open() as handle:
+                  actual = json.load(handle)
+              with (committed / name).open() as handle:
+                  expected = json.load(handle)
+              assert actual == expected, f"{name}: candidate generator output differs"
+          PY
       - name: ruff check
         run: uv run --locked --extra test --group dev ruff check .
       - name: ruff format --check
