@@ -450,6 +450,43 @@ def test_ppp_auto_init_empty_epochs_preserves_typed_error_detail():
         raise AssertionError("empty PPP arc unexpectedly solved")
 
 
+def test_ppp_auto_init_enabled_spp_troposphere_validates_seed_meteorology():
+    fx = _load_fixture()
+    sp3 = _load_sp3(fx)
+    options = sidereon.PppAutoInitOptions(
+        spp_troposphere=True,
+        pressure_hpa=0.0,
+    )
+
+    try:
+        sidereon.solve_ppp_auto_init_float(
+            sp3,
+            epochs=_epochs(fx),
+            config=_float_config(fx),
+            options=options,
+        )
+    except sidereon.SolveError as error:
+        assert str(error) == (
+            "PPP code seed failed at epoch 0: "
+            "invalid SPP input met.pressure_hpa: not positive"
+        )
+        assert error.detail == {
+            "family": "PppAutoInitError",
+            "kind": "code_seed_failed",
+            "message": str(error),
+            "epoch_index": 0,
+            "cause": {
+                "family": "SppError",
+                "kind": "invalid_input",
+                "message": "invalid SPP input met.pressure_hpa: not positive",
+                "field": "met.pressure_hpa",
+                "reason": "not_positive",
+            },
+        }
+    else:
+        raise AssertionError("invalid SPP seed meteorology unexpectedly solved")
+
+
 def test_ppp_auto_init_fixed_recovers_reference():
     fx = _load_fixture()
     sp3 = _load_sp3(fx)
