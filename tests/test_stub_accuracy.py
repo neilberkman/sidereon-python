@@ -6,6 +6,7 @@ import enum
 import inspect
 import pathlib
 
+import numpy as np
 import pytest
 import sidereon
 from _helpers import CORE_FIXTURES, sp3_bytes_for_date
@@ -117,6 +118,17 @@ def test_stubbed_class_attributes_exist_at_runtime():
             if not hasattr(cls, attr):
                 missing.append(f"{name}.{attr}")
     assert missing == []
+
+
+def test_time_scale_stub_members_match_runtime():
+    _functions, classes, _variables = _stub_defs()
+    declared = classes["TimeScale"] - {"abbrev", "__repr__"}
+    runtime = {
+        name
+        for name, value in vars(sidereon.TimeScale).items()
+        if isinstance(value, sidereon.TimeScale)
+    }
+    assert declared == runtime
 
 
 def test_instance_only_stub_attribute_allowlist_is_exact():
@@ -243,6 +255,7 @@ def test_selector_declarations_match_runtime_classes():
         "CovarianceFrame",
         "FusionFilterKind",
         "ErrorStateLayout",
+        "TimeScale",
     )
     classes = {
         node.name: node
@@ -285,6 +298,7 @@ def test_fixed_vector_declarations_match_list_runtime_contract():
             "delta_velocity_mps": "list[float]",
             "delta_theta_rad": "list[float]",
         },
+        "GnssFixMeasurement": {"velocity_ecef_mps": "list[float] | None"},
         "InertialFilterSnapshot": {"last_body_rate_wrt_ecef_rps": "list[float]"},
     }
     classes = {
@@ -307,6 +321,13 @@ def test_fixed_vector_declarations_match_list_runtime_contract():
     corrected = sidereon.CorrectedImuIncrement(
         1.0, [1.0, 2.0, 3.0], [0.1, 0.2, 0.3], 1.0
     )
+    measurement = sidereon.GnssFixMeasurement.position_velocity(
+        1.0,
+        [1.0, 2.0, 3.0],
+        [0.1, 0.2, 0.3],
+        np.eye(6, dtype=np.float64),
+        6,
+    )
     position = sidereon.StationDisplacementPosition.from_ecef_m([1.0, 2.0, 3.0])
     for value in (
         klobuchar.alpha,
@@ -317,6 +338,7 @@ def test_fixed_vector_declarations_match_list_runtime_contract():
         sample.angular_rate_rps,
         corrected.delta_velocity_mps,
         corrected.delta_theta_rad,
+        measurement.velocity_ecef_mps,
         position.ecef_m,
     ):
         assert type(value) is list
