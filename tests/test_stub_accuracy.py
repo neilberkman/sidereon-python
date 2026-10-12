@@ -267,39 +267,174 @@ def test_selector_declarations_match_runtime_classes():
         assert classes[name].bases == []
 
 
+def test_enum_declarations_match_runtime_classes():
+    enum_claims = (
+        node.name
+        for node in _stub_module().body
+        if isinstance(node, ast.ClassDef)
+        and any(ast.unparse(base) == "enum.Enum" for base in node.bases)
+    )
+    for name in enum_claims:
+        assert issubclass(getattr(sidereon, name), enum.Enum)
+
+
 def test_fixed_vector_declarations_match_list_runtime_contract():
     expected = {
-        "SppKlobucharCoeffs": {"alpha": "list[float]", "beta": "list[float]"},
-        "SppConfig": {"initial_guess": "list[float]"},
-        "RtkFixedSolution": {
-            "fixed_baseline_m": "list[float]",
-            "float_baseline_m": "list[float]",
+        "CorrectedImuIncrement": {
+            "delta_theta_rad": "list[float]",
+            "delta_velocity_mps": "list[float]",
         },
-        "StationDisplacementPosition": {"ecef_m": "list[float] | None"},
-        "StationDisplacement": {
-            "ecef_m": "list[float]",
-            "solid_earth_tide_ecef_m": "list[float] | None",
-            "pole_tide_ecef_m": "list[float] | None",
-            "ocean_loading_ecef_m": "list[float] | None",
+        "EphemerisQueryState": {
+            "position_ecef_m": "list[float]",
         },
-        "MovingBaselineEpoch": {"base_position_m": "list[float]"},
+        "GnssFixMeasurement": {
+            "velocity_ecef_mps": "list[float] | None",
+        },
+        "ImuBias": {
+            "accel_mps2": "list[float]",
+            "gyro_rps": "list[float]",
+        },
+        "ImuSample": {
+            "angular_rate_rps": "list[float] | None",
+            "delta_theta_rad": "list[float] | None",
+            "delta_velocity_mps": "list[float] | None",
+            "specific_force_mps2": "list[float] | None",
+        },
+        "InertialFilter": {
+            "last_body_rate_wrt_ecef_rps": "list[float]",
+        },
+        "InertialFilterSnapshot": {
+            "last_body_rate_wrt_ecef_rps": "list[float]",
+        },
+        "LooseCouplingConfig": {
+            "lever_arm_body_m": "list[float]",
+        },
+        "MovingBaselineEpoch": {
+            "base_position_m": "list[float]",
+        },
         "MovingBaselineEpochSolution": {
             "base_position_m": "list[float]",
             "baseline_m": "list[float]",
         },
-        "ImuBias": {"accel_mps2": "list[float]", "gyro_rps": "list[float]"},
-        "ImuSample": {
-            "specific_force_mps2": "list[float] | None",
-            "angular_rate_rps": "list[float] | None",
-            "delta_velocity_mps": "list[float] | None",
-            "delta_theta_rad": "list[float] | None",
+        "PppFixedSolution": {
+            "position_m": "list[float]",
         },
-        "CorrectedImuIncrement": {
-            "delta_velocity_mps": "list[float]",
-            "delta_theta_rad": "list[float]",
+        "PppFloatSolution": {
+            "position_m": "list[float]",
         },
-        "GnssFixMeasurement": {"velocity_ecef_mps": "list[float] | None"},
-        "InertialFilterSnapshot": {"last_body_rate_wrt_ecef_rps": "list[float]"},
+        "PppFloatState": {
+            "position_m": "list[float]",
+        },
+        "PreciseEphemerisAccuracySample": {
+            "position_variance_m2": "list[Sp3AccuracyValue]",
+        },
+        "RinexSppEpochInputs": {
+            "initial_guess": "list[float]",
+        },
+        "RinexWideLaneFixedRtkSolution": {
+            "fixed_baseline_m": "list[float]",
+            "float_baseline_m": "list[float]",
+        },
+        "RtcmGlonassCodePhaseBiases": {
+            "biases_m": "list[float | None]",
+        },
+        "RtkArcConfig": {
+            "base": "list[float]",
+            "initial_baseline_m": "list[float]",
+        },
+        "RtkArcEpoch": {
+            "velocity_mps": "list[float] | None",
+        },
+        "RtkArcEpochSolution": {
+            "float_baseline_m": "list[float]",
+            "reported_baseline_m": "list[float]",
+        },
+        "RtkDualFrequencyArcEpoch": {
+            "velocity_mps": "list[float] | None",
+        },
+        "RtkEpoch": {
+            "velocity_mps": "list[float] | None",
+        },
+        "RtkFilterState": {
+            "baseline_m": "list[float]",
+        },
+        "RtkFixedConfig": {
+            "base": "list[float]",
+            "initial_baseline_m": "list[float]",
+        },
+        "RtkFixedSolution": {
+            "fixed_baseline_m": "list[float]",
+            "float_baseline_m": "list[float]",
+        },
+        "RtkFloatConfig": {
+            "base": "list[float]",
+            "initial_baseline_m": "list[float]",
+        },
+        "RtkFloatSolution": {
+            "baseline_m": "list[float]",
+        },
+        "RtkIonosphereFreeArcConfig": {
+            "base": "list[float]",
+            "initial_baseline_m": "list[float]",
+        },
+        "RtkSatMeasurement": {
+            "base_tx_pos": "list[float]",
+            "pos": "list[float]",
+            "rover_tx_pos": "list[float]",
+        },
+        "RtkStaticArcConfig": {
+            "base": "list[float]",
+        },
+        "RtkWideLaneArcConfig": {
+            "base": "list[float]",
+        },
+        "Sp3AccuracyCodeGroup": {
+            "axis_exponents": "list[int | None]",
+        },
+        "Sp3PositionClockAccuracy": {
+            "position_sigma_m": "list[Sp3AccuracyValue]",
+        },
+        "Sp3VelocityAccuracy": {
+            "velocity_sigma_m_s": "list[Sp3AccuracyValue]",
+        },
+        "SppConfig": {
+            "initial_guess": "list[float]",
+        },
+        "SppKlobucharCoeffs": {
+            "alpha": "list[float]",
+            "beta": "list[float]",
+        },
+        "StaticReferenceCarrierSolution": {
+            "baseline_vector_m": "list[float]",
+            "position_m": "list[float]",
+        },
+        "StaticReferenceCodeSolution": {
+            "baseline_vector_m": "list[float]",
+            "position_m": "list[float]",
+        },
+        "StaticReferenceStationSolution": {
+            "baseline_vector_m": "list[float]",
+            "position_m": "list[float]",
+        },
+        "StaticSolveOptions": {
+            "initial_position_m": "list[float]",
+        },
+        "StationDisplacement": {
+            "ecef_m": "list[float]",
+            "ocean_loading_ecef_m": "list[float] | None",
+            "pole_tide_ecef_m": "list[float] | None",
+            "solid_earth_tide_ecef_m": "list[float] | None",
+        },
+        "StationDisplacementPosition": {
+            "ecef_m": "list[float] | None",
+        },
+        "TightCouplingConfig": {
+            "lever_arm_body_m": "list[float]",
+        },
+        "VelocityMatchedTrajectory": {
+            "endpoint_position_correction_ecef_m": "list[float]",
+            "endpoint_velocity_correction_ecef_mps": "list[float]",
+        },
     }
     classes = {
         node.name: node
@@ -329,7 +464,11 @@ def test_fixed_vector_declarations_match_list_runtime_contract():
         6,
     )
     position = sidereon.StationDisplacementPosition.from_ecef_m([1.0, 2.0, 3.0])
+    ppp_state = sidereon.PppFloatState(
+        position_m=[1.0, 2.0, 3.0], clocks_m=[], ambiguities_m={}
+    )
     for value in (
+        ppp_state.position_m,
         klobuchar.alpha,
         klobuchar.beta,
         bias.accel_mps2,
