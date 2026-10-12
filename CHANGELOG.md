@@ -6,9 +6,11 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ### Fixed
 
+- Align all public PyO3 class declarations with their runtime inheritance, retaining `enum.Enum` only for the actual Python enum.
 - Preserve RTCM message numbers on order/degree and short-record departure diagnostics.
 - Align selector declarations with their runtime PyO3 classes instead of promising `enum.Enum` behavior they do not provide.
-- Declare fixed-vector getters as lists, matching their existing runtime containers.
+- Declare fixed-vector getters, including PPP float-state positions, as lists matching
+  their existing runtime containers.
 - Declare the existing `TimeScale.TCG` and `TimeScale.TCB` runtime members and its
   runtime PyO3 class inheritance in the public stub.
 - Declare GNSS fix velocity as a list, matching its existing runtime container.
