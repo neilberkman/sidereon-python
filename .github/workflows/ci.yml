@@ -130,7 +130,9 @@ jobs:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: |
           set -euo pipefail
-          scratch="$(mktemp -d "$RUNNER_TEMP/candidate-fixtures.XXXXXX")"
+          scratch="$RUNNER_TEMP/candidate-fixtures"
+          rm -rf "$scratch"
+          mkdir -p "$scratch"
           cp -R tests/fixtures "$scratch/fixtures"
           cargo run --release --locked --manifest-path scripts/core_goldens/Cargo.toml -- \
             "$GITHUB_WORKSPACE/.core-checkout/crates/sidereon-core/tests/fixtures" \
@@ -152,6 +154,13 @@ jobs:
                   expected = json.load(handle)
               assert actual == expected, f"{name}: candidate generator output differs"
           PY
+      - name: Retain generated candidate fixtures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-core-fixtures
+          path: ${{ runner.temp }}/candidate-fixtures/fixtures/*.json
+          if-no-files-found: error
       - name: ruff check
         run: uv run --locked --extra test --group dev ruff check .
       - name: ruff format --check
