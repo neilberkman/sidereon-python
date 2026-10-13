@@ -4,6 +4,8 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [3.0.3] - 2026-10-12
+
 ### Fixed
 
 - Align all public PyO3 class declarations with their runtime inheritance, retaining `enum.Enum` only for the actual Python enum.
