@@ -639,7 +639,7 @@ dependencies = [
  "simba",
  "smallvec",
  "thiserror",
- "trust-region-least-squares 0.11.0 (git+https://github.com/neilberkman/sidereon?rev=a100da16bd1c7a683a5b47dcbe1e2472402d3d60)",
+ "trust-region-least-squares",
 ]
 
 [[package]]
@@ -654,7 +654,7 @@ dependencies = [
  "serde_json",
  "sidereon",
  "sidereon-core",
- "trust-region-least-squares 0.11.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trust-region-least-squares",
 ]
 
 [[package]]
@@ -717,17 +717,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "trust-region-least-squares"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "362e767929e65ad1599d79014d73a8fcba6c390392572ec44c8e7e49c8e4f1c3"
-dependencies = [
- "libloading",
- "nalgebra",
- "rayon",
 ]
 
 [[package]]
