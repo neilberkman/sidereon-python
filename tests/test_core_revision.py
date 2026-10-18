@@ -20,7 +20,7 @@ from _helpers import FIXTURES
 _ROOT = Path(__file__).resolve().parents[1]
 _FIXTURES = Path(FIXTURES)
 _SCRIPTS = _ROOT / "scripts"
-_RELEASE_VERSION = "3.0.3"
+_RELEASE_VERSION = "3.0.4"
 _REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 _GIT_URL = "https://github.com/neilberkman/sidereon"
 _DEPENDENCIES = ("sidereon", "sidereon-core")
@@ -59,12 +59,12 @@ def _manifest_dependencies(path):
 def test_manifest_dependencies_accept_scalar_and_inline_versions(tmp_path):
     manifest = tmp_path / "Cargo.toml"
     manifest.write_text(
-        '[dependencies]\nsidereon = "=3.0.3"\n'
-        'sidereon-core = { version = "=3.0.3", features = ["mmap"] }\n'
+        '[dependencies]\nsidereon = "=3.0.4"\n'
+        'sidereon-core = { version = "=3.0.4", features = ["mmap"] }\n'
     )
     assert _manifest_dependencies(manifest) == {
-        "sidereon": {"version": "=3.0.3"},
-        "sidereon-core": {"version": "=3.0.3"},
+        "sidereon": {"version": "=3.0.4"},
+        "sidereon-core": {"version": "=3.0.4"},
     }
 
 
@@ -248,15 +248,15 @@ def _write_candidate(tmp_path, revision):
     lock = tmp_path / "Cargo.lock"
     manifest.write_text(
         "[dependencies]\n"
-        f'sidereon = {{ version = "=3.0.3", git = "{_GIT_URL}", rev = "{revision}" }}\n'
-        f'sidereon-core = {{ version = "=3.0.3", git = "{_GIT_URL}", '
+        f'sidereon = {{ version = "=3.0.4", git = "{_GIT_URL}", rev = "{revision}" }}\n'
+        f'sidereon-core = {{ version = "=3.0.4", git = "{_GIT_URL}", '
         f'rev = "{revision}" }}\n'
     )
     source = f"git+{_GIT_URL}?rev={revision}#{revision}"
     lock.write_text(
-        '[[package]]\nname = "sidereon"\nversion = "3.0.3"\n'
+        '[[package]]\nname = "sidereon"\nversion = "3.0.4"\n'
         f'source = "{source}"\n\n'
-        '[[package]]\nname = "sidereon-core"\nversion = "3.0.3"\n'
+        '[[package]]\nname = "sidereon-core"\nversion = "3.0.4"\n'
         f'source = "{source}"\n'
     )
     return manifest, lock
@@ -321,13 +321,13 @@ def test_registry_vcs_commit_is_bound_to_both_locked_checksums(tmp_path):
     manifest = tmp_path / "Cargo.toml"
     lock = tmp_path / "Cargo.lock"
     manifest.write_text(
-        '[dependencies]\nsidereon = { version = "=3.0.3" }\n'
-        'sidereon-core = { version = "=3.0.3" }\n'
+        '[dependencies]\nsidereon = { version = "=3.0.4" }\n'
+        'sidereon-core = { version = "=3.0.4" }\n'
     )
     packages = []
     for name in _DEPENDENCIES:
         packages.append(
-            f'[[package]]\nname = "{name}"\nversion = "3.0.3"\n'
+            f'[[package]]\nname = "{name}"\nversion = "3.0.4"\n'
             f'source = "{_REGISTRY_SOURCE}"\nchecksum = "{checksums[name]}"\n'
         )
     lock.write_text("\n".join(packages))
@@ -352,13 +352,13 @@ def test_registry_lock_rejects_wrong_source_version_and_missing_checksum(tmp_pat
     }
     manifest = tmp_path / "Cargo.toml"
     manifest.write_text(
-        '[dependencies]\nsidereon = { version = "=3.0.3" }\n'
-        'sidereon-core = { version = "=3.0.3" }\n'
+        '[dependencies]\nsidereon = { version = "=3.0.4" }\n'
+        'sidereon-core = { version = "=3.0.4" }\n'
     )
     lock = tmp_path / "Cargo.lock"
     lock.write_text(
         "\n".join(
-            f'[[package]]\nname = "{name}"\nversion = "3.0.3"\n'
+            f'[[package]]\nname = "{name}"\nversion = "3.0.4"\n'
             f'source = "{_REGISTRY_SOURCE}"\nchecksum = "{checksums[name]}"\n'
             for name in _DEPENDENCIES
         )
@@ -369,7 +369,7 @@ def test_registry_lock_rejects_wrong_source_version_and_missing_checksum(tmp_pat
             valid_lock.replace(_REGISTRY_SOURCE, "registry+https://example.invalid"),
             "approved",
         ),
-        (valid_lock.replace('version = "3.0.3"', 'version = "3.0.4"', 1), "resolve"),
+        (valid_lock.replace('version = "3.0.4"', 'version = "3.0.5"', 1), "resolve"),
         (
             re.sub(r'^checksum = "[0-9a-f]{64}"\n', "", valid_lock, flags=re.M),
             "checksum",
@@ -389,13 +389,13 @@ def test_registry_vcs_metadata_must_name_a_full_commit(tmp_path):
     }
     manifest = tmp_path / "Cargo.toml"
     manifest.write_text(
-        '[dependencies]\nsidereon = { version = "=3.0.3" }\n'
-        'sidereon-core = { version = "=3.0.3" }\n'
+        '[dependencies]\nsidereon = { version = "=3.0.4" }\n'
+        'sidereon-core = { version = "=3.0.4" }\n'
     )
     lock = tmp_path / "Cargo.lock"
     lock.write_text(
         "\n".join(
-            f'[[package]]\nname = "{name}"\nversion = "3.0.3"\n'
+            f'[[package]]\nname = "{name}"\nversion = "3.0.4"\n'
             f'source = "{_REGISTRY_SOURCE}"\nchecksum = "{checksums[name]}"\n'
             for name in _DEPENDENCIES
         )
@@ -414,13 +414,13 @@ def test_registry_dirty_vcs_metadata_is_rejected(tmp_path):
     }
     manifest = tmp_path / "Cargo.toml"
     manifest.write_text(
-        '[dependencies]\nsidereon = { version = "=3.0.3" }\n'
-        'sidereon-core = { version = "=3.0.3" }\n'
+        '[dependencies]\nsidereon = { version = "=3.0.4" }\n'
+        'sidereon-core = { version = "=3.0.4" }\n'
     )
     lock = tmp_path / "Cargo.lock"
     lock.write_text(
         "\n".join(
-            f'[[package]]\nname = "{name}"\nversion = "3.0.3"\n'
+            f'[[package]]\nname = "{name}"\nversion = "3.0.4"\n'
             f'source = "{_REGISTRY_SOURCE}"\nchecksum = "{checksums[name]}"\n'
             for name in _DEPENDENCIES
         )
@@ -450,13 +450,13 @@ def test_registry_packages_from_different_commits_fail(tmp_path):
     }
     manifest = tmp_path / "Cargo.toml"
     manifest.write_text(
-        '[dependencies]\nsidereon = { version = "=3.0.3" }\n'
-        'sidereon-core = { version = "=3.0.3" }\n'
+        '[dependencies]\nsidereon = { version = "=3.0.4" }\n'
+        'sidereon-core = { version = "=3.0.4" }\n'
     )
     lock = tmp_path / "Cargo.lock"
     lock.write_text(
         "\n".join(
-            f'[[package]]\nname = "{name}"\nversion = "3.0.3"\n'
+            f'[[package]]\nname = "{name}"\nversion = "3.0.4"\n'
             f'source = "{_REGISTRY_SOURCE}"\nchecksum = "{checksums[name]}"\n'
             for name in _DEPENDENCIES
         )

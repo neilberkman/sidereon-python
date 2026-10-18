@@ -1,6 +1,6 @@
 [package]
 name = "sidereon-py"
-version = "3.0.3"
+version = "3.0.4"
 authors = []
 edition = "2021"
 description = "Python (PyO3) bindings over the sidereon ergonomic API: SP3 loading and SPP/RTK/PPP positioning solves"
@@ -24,8 +24,8 @@ exact-cache-test-failpoints = ["sidereon-core/exact-cache-test-failpoints"]
 # The thin ergonomic engine surface this binding marshals to. No modeling logic
 # lives here: every solve delegates to a `sidereon` entry point, which in turn
 # delegates to `sidereon-core`.
-sidereon = "=3.0.3"
-sidereon-core = { version = "=3.0.3", features = ["mmap"] }
+sidereon = { version = "=3.0.4", git = "https://github.com/neilberkman/sidereon", rev = "a100da16bd1c7a683a5b47dcbe1e2472402d3d60" }
+sidereon-core = { version = "=3.0.4", git = "https://github.com/neilberkman/sidereon", rev = "a100da16bd1c7a683a5b47dcbe1e2472402d3d60", features = ["mmap"] }
 # The standalone general-purpose trust-region least-squares solver: a data-driven
 # `least_squares` whose residual and Jacobian are evaluated entirely in Rust, so
 # no per-iteration Python callback is paid.
