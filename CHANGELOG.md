@@ -4,6 +4,14 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [3.0.4] - 2026-10-18
+
+### Fixed
+
+- Reject RINEX 2 observation and cycle-slip epochs before an observation-type
+  declaration takes effect, including empty epochs written with version 3 record
+  layout.
+
 ## [3.0.3] - 2026-10-12
 
 ### Fixed
