@@ -7,7 +7,9 @@ same recovery contract the core test asserts: integer fields exactly, scaled
 fields to within their IS-GPS-200 LSB.
 """
 
+import ast
 import math
+from pathlib import Path
 
 import pytest
 import sidereon
@@ -54,6 +56,37 @@ TWO_POW_M31 = 2.0**-31
 TWO_POW_M33 = 2.0**-33
 TWO_POW_M43 = 2.0**-43
 TWO_POW_M55 = 2.0**-55
+
+PARITY_TAPS = (
+    (1, 2, 3, 5, 6, 10, 11, 12, 13, 14, 17, 18, 20, 23),
+    (2, 3, 4, 6, 7, 11, 12, 13, 14, 15, 18, 19, 21, 24),
+    (1, 3, 4, 5, 7, 8, 12, 13, 14, 15, 16, 19, 20, 22),
+    (2, 4, 5, 6, 8, 9, 13, 14, 15, 16, 17, 20, 21, 23),
+    (1, 3, 5, 6, 7, 9, 10, 14, 15, 16, 17, 18, 21, 22, 24),
+    (3, 5, 6, 8, 9, 10, 11, 13, 15, 19, 22, 23, 24),
+)
+PARITY_MASKS = tuple(
+    sum(1 << (24 - position) for position in positions) for positions in PARITY_TAPS
+)
+
+
+def _transmitted_subframe(words):
+    """Add LNAV parity and the chained D30* data complement to 24-bit words."""
+    previous_d29 = 0
+    previous_d30 = 0
+    bits = []
+    for source_word in words:
+        parity_bits = 0
+        for index, mask in enumerate(PARITY_MASKS):
+            previous = previous_d29 if index in (0, 2, 5) else previous_d30
+            check = (source_word & mask).bit_count() % 2
+            parity_bits = parity_bits * 2 + (check ^ previous)
+        transmitted_data = source_word ^ (0xFFFFFF if previous_d30 else 0)
+        transmitted_word = transmitted_data * 64 + parity_bits
+        bits.extend((transmitted_word >> index) & 1 for index in range(29, -1, -1))
+        previous_d29 = parity_bits >> 1 & 1
+        previous_d30 = parity_bits & 1
+    return bytes(bits)
 
 
 def _encode():
@@ -122,12 +155,87 @@ def test_round_trip_recovers_scaled_fields_within_lsb():
         (d.crs, EXAMPLE["crs"], TWO_POW_M5),
         (d.crc, EXAMPLE["crc"], TWO_POW_M5),
         (d.cuc, EXAMPLE["cuc"], TWO_POW_M29),
-        (d.delta_n, EXAMPLE["delta_n"], math.pi * TWO_POW_M43),
-        (d.idot, EXAMPLE["idot"], math.pi * TWO_POW_M43),
+        (d.delta_n, EXAMPLE["delta_n"], TWO_POW_M43),
+        (d.idot, EXAMPLE["idot"], TWO_POW_M43),
     ]
     for decoded, original, lsb in cases:
         quantized = round(original / lsb) * lsb
         assert abs(decoded - quantized) <= lsb / 2.0
+
+
+def test_decode_preserves_raw_lnav_angular_fields_in_semicircles():
+    raw = {
+        "delta_n": 23_456,
+        "m0": -123_456_789,
+        "omega0": -345_678_901,
+        "i0": 567_890_123,
+        "omega": -678_901_234,
+        "omega_dot": 3_456_789,
+        "idot": -4_321,
+    }
+    encoded = {field: value & 0xFFFFFFFF for field, value in raw.items()}
+    sf1_words = [(0x731FA9 + 0x13579B * index) & 0xFFFFFF for index in range(10)]
+    sf2_words = [(0x2468AD + 0x13579B * index) & 0xFFFFFF for index in range(10)]
+    sf3_words = [(0x1953BF + 0x13579B * index) & 0xFFFFFF for index in range(10)]
+    sf2_words[3] = (raw["delta_n"] & 0xFFFF) << 8 | encoded["m0"] >> 24
+    sf2_words[4] = encoded["m0"] & 0xFFFFFF
+    sf3_words[2] = encoded["omega0"] >> 24
+    sf3_words[3] = encoded["omega0"] & 0xFFFFFF
+    sf3_words[4] = encoded["i0"] >> 24
+    sf3_words[5] = encoded["i0"] & 0xFFFFFF
+    sf3_words[6] = encoded["omega"] >> 24
+    sf3_words[7] = encoded["omega"] & 0xFFFFFF
+    sf3_words[8] = raw["omega_dot"] & 0xFFFFFF
+    sf3_words[9] = (raw["idot"] & 0x3FFF) << 2
+
+    decoded = sidereon.lnav_decode(
+        _transmitted_subframe(sf1_words),
+        _transmitted_subframe(sf2_words),
+        _transmitted_subframe(sf3_words),
+    )
+    expected = {
+        field: value
+        * (TWO_POW_M43 if field in {"delta_n", "omega_dot", "idot"} else TWO_POW_M31)
+        for field, value in raw.items()
+    }
+    for field, value in expected.items():
+        assert getattr(decoded, field) == value
+        assert getattr(decoded, field) != value * math.pi
+
+
+LNAV_ANGULAR_PROPERTY_DOCS = {
+    "delta_n": "Mean motion difference, semicircles/second.",
+    "m0": "Mean anomaly at reference time, semicircles.",
+    "omega0": "Longitude of ascending node at reference time, semicircles.",
+    "i0": "Inclination at reference time, semicircles.",
+    "omega": "Argument of perigee, semicircles.",
+    "omega_dot": "Rate of right ascension, semicircles/second.",
+    "idot": "Rate of inclination, semicircles/second.",
+}
+
+
+def test_lnav_angular_property_docs_state_raw_broadcast_units():
+    for field, doc in LNAV_ANGULAR_PROPERTY_DOCS.items():
+        assert getattr(sidereon.LnavDecoded, field).__doc__ == doc
+
+
+def test_lnav_stub_docs_match_runtime_contract():
+    stub = ast.parse(
+        (Path(__file__).parents[1] / "python/sidereon/__init__.pyi").read_text()
+    )
+    lnav_decoded = next(
+        node
+        for node in stub.body
+        if isinstance(node, ast.ClassDef) and node.name == "LnavDecoded"
+    )
+    stub_docs = {
+        node.name: ast.get_docstring(node)
+        for node in lnav_decoded.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert {
+        field: stub_docs[field] for field in LNAV_ANGULAR_PROPERTY_DOCS
+    } == LNAV_ANGULAR_PROPERTY_DOCS
 
 
 def test_parity_helpers_are_self_consistent():
