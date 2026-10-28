@@ -4,6 +4,11 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Describe the seven raw LNAV broadcast angular fields as semicircles or
+  semicircles/second, matching their unchanged transmitted-integer scaling.
+
 ## [3.0.4] - 2026-10-18
 
 ### Fixed
