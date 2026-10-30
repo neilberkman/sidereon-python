@@ -25,6 +25,7 @@ parsing, rounding or repair of its own.
 | `clock_record(satellite, epoch_index)` | `Sp3ClockRecord`: a clock beside a missing orbit |
 | `clock_records_at(epoch_index)` | dict from satellite token to `Sp3ClockRecord` at one epoch, ascending |
 | `to_sp3_string()` | the SP3 text, or `Sp3WriteError` |
+| `to_sp3_string_with_rounding()` | `(text, Sp3RoundingReport)`, or `Sp3WriteError` |
 
 `state` and `clock_record` raise `IndexError` for an epoch index past the end
 and `KeyError` when the satellite has no such record at that epoch.
@@ -86,11 +87,19 @@ back unchanged; it can still be refused on a header base finer than its field,
 on header text wider than its columns, or on velocity records under a `P`
 header.
 
-A mean or median merge usually holds positions finer than the millimetre
-`F14.6` column, and a clock shifted onto the reference clock datum can hold a
-clock finer than its column, so writing such a merge raises
-`RecordValueNotRepresentable` naming the value. `data.write_sp3` and
-`data.fetch_merged_sp3_file` write nothing in that case.
+`to_sp3_string_with_rounding()` is an explicit alternative for products whose
+record values need the precision of their SP3 columns. It returns
+`(text, Sp3RoundingReport)`. The immutable report gives maximum absolute changes
+per field in SI units (`position_*_m`, `velocity_*_m_s`, `clock_s`, and
+`clock_rate_s_s`). It applies no rounding to header fields or epochs; refusals
+there still raise `Sp3WriteError`. `data.write_sp3_with_rounding()` writes the
+text atomically and returns `(path, report)`.
+
+The merge path preserves grid-in/grid-out for record values derived from
+on-grid inputs, including means between column values. Other products can still
+hold record values finer than their columns; the strict writer refuses those,
+and the explicit rounding writer can state them while reporting the maximum
+SI change.
 
 ### Sp3WriteError
 

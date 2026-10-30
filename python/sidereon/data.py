@@ -284,6 +284,7 @@ __all__ = [
     "sp3_merge_input_identity",
     "verify_merge_report",
     "write_sp3",
+    "write_sp3_with_rounding",
     "DistributionSource",
     "Distribution",
     "ProductIdentity",
@@ -5888,6 +5889,29 @@ def write_sp3(sp3: "sidereon.Sp3", path: str, *, gzip: bool = False) -> str:
         _silent_remove(tmp)
         raise CacheNotWritable(f"cannot write {path}: {exc}") from exc
     return path
+
+
+def write_sp3_with_rounding(
+    sp3: "sidereon.Sp3", path: str, *, gzip: bool = False
+) -> tuple[str, "sidereon.Sp3RoundingReport"]:
+    """Write rounded SP3 record values atomically and return ``(path, report)``.
+
+    Header fields and epochs retain the exact checks of the strict writer. The
+    immutable report gives maximum absolute changes in SI units for each field.
+    """
+    text, report = sp3.to_sp3_string_with_rounding()
+    data = text.encode("ascii")
+    if gzip:
+        data = _gzip.compress(data)
+    directory = _os.path.dirname(_os.path.abspath(path))
+    _ensure_dir(directory)
+    tmp = _write_temp(directory, data)
+    try:
+        _os.replace(tmp, path)
+    except OSError as exc:
+        _silent_remove(tmp)
+        raise CacheNotWritable(f"cannot write {path}: {exc}") from exc
+    return path, report
 
 
 def fetch_merged_sp3_file(

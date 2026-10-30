@@ -77,6 +77,27 @@ def _write_refusal(sp3):
     return detail
 
 
+def test_rounding_writer_returns_immutable_si_report_and_preserves_strict_writer():
+    sp3 = _load([_G01])
+
+    strict_text = sp3.to_sp3_string()
+    rounded_text, report = sp3.to_sp3_string_with_rounding()
+
+    assert rounded_text == strict_text
+    assert (
+        report.position_x_m,
+        report.position_y_m,
+        report.position_z_m,
+        report.velocity_x_m_s,
+        report.velocity_y_m_s,
+        report.velocity_z_m_s,
+        report.clock_s,
+        report.clock_rate_s_s,
+    ) == (0.0,) * 8
+    with pytest.raises(AttributeError):
+        report.position_x_m = 1.0
+
+
 # --- header ------------------------------------------------------------------
 
 
