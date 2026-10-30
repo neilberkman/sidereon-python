@@ -128,6 +128,68 @@ def test_accuracy_rounding_writer_preserves_decoded_sigmas_after_merge(order):
 
 
 @pytest.mark.parametrize("reverse", [False, True])
+def test_equal_sigmas_with_compatible_defined_bases_write_in_either_order(reverse):
+    a_text = _replace_bases(
+        _load("A-anchor.sp3").to_sp3_string(), position=2.0, clock=2.0
+    )
+    a_text = _replace_codes(a_text, "G01", position=(2, None, None, 2))
+    b_text = _replace_bases(
+        _load("B-anchor.sp3").to_sp3_string(), position=4.0, clock=4.0
+    )
+    b_text = _replace_codes(b_text, "G12", position=(1, None, None, 1))
+    a = sidereon.load_sp3(a_text.encode("ascii"))
+    b = sidereon.load_sp3(b_text.encode("ascii"))
+    a_roundtrip = sidereon.load_sp3(a.to_sp3_string().encode("ascii"))
+    b_roundtrip = sidereon.load_sp3(b.to_sp3_string().encode("ascii"))
+    for source, restored, satellite in (
+        (a, a_roundtrip, "G01"),
+        (b, b_roundtrip, "G12"),
+    ):
+        source_accuracy = source.record_accuracy(satellite, 0).p
+        restored_accuracy = restored.record_accuracy(satellite, 0).p
+        assert restored_accuracy.position_sigma_m == source_accuracy.position_sigma_m
+        assert restored_accuracy.clock_sigma_m == source_accuracy.clock_sigma_m
+    sources = [b, a] if reverse else [a, b]
+    merged, _ = sidereon.merge_sp3(sources, _options())
+
+    strict = sidereon.load_sp3(merged.to_sp3_string().encode("ascii"))
+    rounded_text, report = merged.to_sp3_string_with_accuracy_rounding(
+        sidereon.Sp3AccuracyRoundingPolicy.CONSERVATIVE
+    )
+    rounded = sidereon.load_sp3(rounded_text.encode("ascii"))
+    assert rounded.to_sp3_string() == strict.to_sp3_string()
+    assert (
+        tuple(
+            getattr(report.accuracy_sigmas, field)
+            for field in (
+                "position_sigma_x_m",
+                "position_sigma_y_m",
+                "position_sigma_z_m",
+                "velocity_sigma_x_m_s",
+                "velocity_sigma_y_m_s",
+                "velocity_sigma_z_m_s",
+                "clock_sigma_m",
+                "clock_rate_sigma_m_s",
+            )
+        )
+        == (0.0,) * 8
+    )
+    for satellite in ("G01", "G12"):
+        source = merged.record_accuracy(satellite, 0).p
+        output = rounded.record_accuracy(satellite, 0).p
+        assert output.position_sigma_m == source.position_sigma_m
+        assert output.clock_sigma_m == source.clock_sigma_m
+    assert (
+        merged.record_accuracy("G01", 0).p.position_sigma_m[0].value
+        == merged.record_accuracy("G12", 0).p.position_sigma_m[0].value
+    )
+    assert (
+        merged.record_accuracy("G01", 0).p.clock_sigma_m.value
+        == merged.record_accuracy("G12", 0).p.clock_sigma_m.value
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
 def test_accuracy_rounding_reports_a_nonzero_conservative_sigma_increase(reverse):
     first = (
         (_FIXTURES / "A.sp3")
