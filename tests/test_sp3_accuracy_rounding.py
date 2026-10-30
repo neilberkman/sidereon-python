@@ -23,19 +23,24 @@ def _replace_position_x_exponent(text, satellite, exponent):
 
 
 def _replace_codes(text, satellite, *, position=None, velocity=None):
+    def code(value, width):
+        return " " * width if value is None else f"{value:>{width}d}"
+
     lines = text.splitlines()
     for index, line in enumerate(lines):
         if position is not None and line.startswith(f"P{satellite}"):
             lines[index] = (
                 line[:60]
-                + f"{position[0]:2d} {position[1]:2d} "
-                + f"{position[2]:2d} {position[3]:3d}  "
+                + " "
+                + f"{code(position[0], 2)} {code(position[1], 2)} "
+                + f"{code(position[2], 2)} {code(position[3], 3)}  "
             )
         elif velocity is not None and line.startswith(f"V{satellite}"):
             lines[index] = (
                 line[:60]
-                + f"{velocity[0]:2d} {velocity[1]:2d} "
-                + f"{velocity[2]:2d} {velocity[3]:3d}  "
+                + " "
+                + f"{code(velocity[0], 2)} {code(velocity[1], 2)} "
+                + f"{code(velocity[2], 2)} {code(velocity[3], 3)}  "
             )
     return "\n".join(lines) + "\n"
 
@@ -260,10 +265,10 @@ def test_accuracy_rounding_preserves_clock_anchor_uncertainty():
 
 
 def test_accuracy_rounding_respects_i2_i3_finite_lower_bounds_and_sentinels():
-    a_text = _replace_bases(_load("A.sp3").to_sp3_string(), position=2.0)
-    a_text = _replace_codes(a_text, "G01", position=(-9, 99, 99, 999))
-    b_text = _replace_bases(_load("B.sp3").to_sp3_string(), position=4.0)
-    b_text = _replace_codes(b_text, "G12", position=(-5, 99, 99, 999))
+    a_text = _replace_bases(_load("A-anchor.sp3").to_sp3_string(), position=2.0)
+    a_text = _replace_codes(a_text, "G01", position=(-9, None, None, None))
+    b_text = _replace_bases(_load("B-anchor.sp3").to_sp3_string(), position=4.0)
+    b_text = _replace_codes(b_text, "G12", position=(-5, None, None, None))
     lower_axis, _ = sidereon.merge_sp3(
         [
             sidereon.load_sp3(a_text.encode("ascii")),
@@ -281,9 +286,9 @@ def test_accuracy_rounding_respects_i2_i3_finite_lower_bounds_and_sentinels():
     assert axis_report.accuracy_sigmas.position_sigma_x_m > 0.0
 
     a_clock = _replace_bases(_load("A-anchor.sp3").to_sp3_string(), clock=2.0)
-    a_clock = _replace_codes(a_clock, "G01", position=(99, 99, 99, -99))
+    a_clock = _replace_codes(a_clock, "G01", position=(None, None, None, -99))
     b_clock = _replace_bases(_load("B-anchor.sp3").to_sp3_string(), clock=4.0)
-    b_clock = _replace_codes(b_clock, "G12", position=(99, 99, 99, -50))
+    b_clock = _replace_codes(b_clock, "G12", position=(None, None, None, -50))
     lower_clock, _ = sidereon.merge_sp3(
         [
             sidereon.load_sp3(a_clock.encode("ascii")),
@@ -301,9 +306,9 @@ def test_accuracy_rounding_respects_i2_i3_finite_lower_bounds_and_sentinels():
     assert clock_report.accuracy_sigmas.clock_sigma_m > 0.0
 
     a_clock = _replace_bases(_load("A-anchor.sp3").to_sp3_string(), clock=1.025)
-    a_clock = _replace_codes(a_clock, "G01", position=(99, 99, 99, 1))
+    a_clock = _replace_codes(a_clock, "G01", position=(None, None, None, 1))
     b_clock = _replace_bases(_load("B-anchor.sp3").to_sp3_string(), clock=2.0)
-    b_clock = _replace_codes(b_clock, "G12", position=(99, 99, 99, 998))
+    b_clock = _replace_codes(b_clock, "G12", position=(None, None, None, 998))
     upper_clock, _ = sidereon.merge_sp3(
         [
             sidereon.load_sp3(a_clock.encode("ascii")),
