@@ -147,8 +147,18 @@ def test_equal_sigmas_with_compatible_defined_bases_write_in_either_order(revers
     ):
         source_accuracy = source.record_accuracy(satellite, 0).p
         restored_accuracy = restored.record_accuracy(satellite, 0).p
-        assert restored_accuracy.position_sigma_m == source_accuracy.position_sigma_m
-        assert restored_accuracy.clock_sigma_m == source_accuracy.clock_sigma_m
+        assert tuple(
+            (value.kind, value.value) for value in restored_accuracy.position_sigma_m
+        ) == tuple(
+            (value.kind, value.value) for value in source_accuracy.position_sigma_m
+        )
+        assert (
+            restored_accuracy.clock_sigma_m.kind,
+            restored_accuracy.clock_sigma_m.value,
+        ) == (
+            source_accuracy.clock_sigma_m.kind,
+            source_accuracy.clock_sigma_m.value,
+        )
     sources = [b, a] if reverse else [a, b]
     merged, _ = sidereon.merge_sp3(sources, _options())
 
@@ -177,8 +187,13 @@ def test_equal_sigmas_with_compatible_defined_bases_write_in_either_order(revers
     for satellite in ("G01", "G12"):
         source = merged.record_accuracy(satellite, 0).p
         output = rounded.record_accuracy(satellite, 0).p
-        assert output.position_sigma_m == source.position_sigma_m
-        assert output.clock_sigma_m == source.clock_sigma_m
+        assert tuple(
+            (value.kind, value.value) for value in output.position_sigma_m
+        ) == tuple((value.kind, value.value) for value in source.position_sigma_m)
+        assert (output.clock_sigma_m.kind, output.clock_sigma_m.value) == (
+            source.clock_sigma_m.kind,
+            source.clock_sigma_m.value,
+        )
     assert (
         merged.record_accuracy("G01", 0).p.position_sigma_m[0].value
         == merged.record_accuracy("G12", 0).p.position_sigma_m[0].value
