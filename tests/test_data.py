@@ -78,7 +78,8 @@ def test_write_sp3_with_rounding_returns_written_path_and_report(tmp_path):
 
     assert written == path
     assert os.path.isfile(path)
-    assert open(path, "rb").read().startswith(b"#")
+    with open(path, "rb") as handle:
+        assert handle.read().startswith(b"#")
     assert report.position_x_m >= 0.0
     assert report.clock_s >= 0.0
 

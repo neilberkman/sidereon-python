@@ -330,8 +330,11 @@ def test_opt_in_rounding_writer_preserves_grid_in_mean_merge_and_reports_zero_de
     reread = sidereon.load_sp3(text.encode("ascii"))
 
     assert text == strict_text
-    assert reread.state("G01", 0).position_m[0] == pytest.approx(
-        15_000_000.0, abs=0.001
-    )
+    # The source columns are 15000.000000 and 15000.000001 km. Parsing scales
+    # them to 15000000.0 and 15000000.001 m; their f64 mean converts back to
+    # just above the 15000.0000005 km midpoint, so the canonical F14.6 column
+    # is 15000.000001 km and parses back as 15000000.001 m.
+    expected_x_m = 15000.000001 * 1000.0
+    assert reread.state("G01", 0).position_m[0] == expected_x_m
     assert report.position_x_m == 0.0
     assert report.position_y_m == 0.0
