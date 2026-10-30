@@ -2,7 +2,13 @@
 
 All notable changes to the Sidereon Python interface are documented here.
 
-## [Unreleased]
+## [3.0.6] - 2026-10-30
+
+### Added
+
+- Adds an explicit conservative accuracy-sigma rounding policy alongside the
+  existing record-value writer, with detailed SI change reports and an atomic
+  file writer.
 
 ## [3.0.5] - 2026-10-30
 

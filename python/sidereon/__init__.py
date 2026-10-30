@@ -69,6 +69,7 @@ value, and :class:`SolveError` for a solve or propagation failure. Invalid
 arguments raise the built-in :class:`TypeError` / :class:`ValueError`.
 """
 
+from enum import Enum
 import warnings
 
 from ._sidereon import (
@@ -118,6 +119,8 @@ from ._sidereon import (
     Sp3PositionClockAccuracy,
     Sp3VelocityAccuracy,
     Sp3RecordAccuracy,
+    Sp3AccuracyRoundingReport,
+    Sp3DetailedRoundingReport,
     Sp3Interpolation,
     Sp3ClockReferenceOffset,
     Sp3State,
@@ -1437,6 +1440,8 @@ from ._sidereon import (
     signal_dll_lower_bound,
     signal_multipath_error_envelope,
 )
+
+
 from .exact_sp3 import (
     ExactSp3Coverage,
     ExactSp3Request,
@@ -1641,6 +1646,13 @@ from ._sidereon import (
     SsrRtcmIngest,
 )
 
+
+class Sp3AccuracyRoundingPolicy(str, Enum):
+    """Required policy for rounding decoded SP3 accuracy standard deviations."""
+
+    CONSERVATIVE = "conservative"
+
+
 OCEAN_LOADING_CONSTITUENTS = tuple(ocean_loading_constituents())
 
 __all__ = [
@@ -1689,6 +1701,9 @@ __all__ = [
     "Sp3PositionClockAccuracy",
     "Sp3VelocityAccuracy",
     "Sp3RecordAccuracy",
+    "Sp3AccuracyRoundingPolicy",
+    "Sp3AccuracyRoundingReport",
+    "Sp3DetailedRoundingReport",
     "Sp3Interpolation",
     "Sp3ClockReferenceOffset",
     "Sp3State",

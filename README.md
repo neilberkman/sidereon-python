@@ -263,7 +263,9 @@ The Python package mirrors the full breadth of the engine.
   products (SP3 and IONEX from IGS/MGEX analysis centers, including merged
   multi-center SP3) and DTED terrain tiles. Merges from column-grid inputs
   retain SP3-writable records; higher-precision inputs can still need the
-  opt-in rounding writer. Agreement metrics use combined values before final
+  opt-in record rounding writer. The accuracy-aware writer requires an
+  explicit conservative policy when encoded standard deviations need column
+  adjustment, and reports each maximum absolute SI increase. Agreement metrics use combined values before final
   column quantization. Exact-product requests can select
   direct archives, NASA CDDIS/Earthdata, local files, or caller-provided bytes
   without changing product identity. `ExactSp3Request` validates the declared

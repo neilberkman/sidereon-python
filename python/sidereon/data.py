@@ -285,6 +285,7 @@ __all__ = [
     "verify_merge_report",
     "write_sp3",
     "write_sp3_with_rounding",
+    "write_sp3_with_accuracy_rounding",
     "DistributionSource",
     "Distribution",
     "ProductIdentity",
@@ -5876,7 +5877,10 @@ def write_sp3(sp3: "sidereon.Sp3", path: str, *, gzip: bool = False) -> str:
     :class:`sidereon.Sp3WriteError` before anything is written when a product
     holds record values finer than SP3 columns; ``detail`` names the value.
     Merges from column-grid inputs keep records on that grid, including means.
-    Higher-precision inputs can still require :func:`write_sp3_with_rounding`.
+    Higher-precision records can still require :func:`write_sp3_with_rounding`;
+    products whose accuracy sigmas need conservative increases under their
+    output bases
+    can use :func:`write_sp3_with_accuracy_rounding`.
     """
     data = sp3.to_sp3_string().encode("ascii")
     if gzip:
@@ -5915,6 +5919,35 @@ def write_sp3_with_rounding(
     return path, report
 
 
+def write_sp3_with_accuracy_rounding(
+    sp3: "sidereon.Sp3",
+    path: str,
+    *,
+    policy: "sidereon.Sp3AccuracyRoundingPolicy",
+    gzip: bool = False,
+) -> tuple[str, "sidereon.Sp3DetailedRoundingReport"]:
+    """Write with the required accuracy-sigma policy, atomically.
+
+    The conservative policy rounds record values and raises encoded finite
+    accuracy standard deviations only as much as the SP3 columns require.
+    Returns ``(path, detailed_report)``. No file is replaced if serialization
+    fails.
+    """
+    text, report = sp3.to_sp3_string_with_accuracy_rounding(policy)
+    data = text.encode("ascii")
+    if gzip:
+        data = _gzip.compress(data)
+    directory = _os.path.dirname(_os.path.abspath(path))
+    _ensure_dir(directory)
+    tmp = _write_temp(directory, data)
+    try:
+        _os.replace(tmp, path)
+    except OSError as exc:
+        _silent_remove(tmp)
+        raise CacheNotWritable(f"cannot write {path}: {exc}") from exc
+    return path, report
+
+
 def fetch_merged_sp3_file(
     target: Union[_dt.date, _dt.datetime],
     centers: Sequence[str],
@@ -5939,7 +5972,9 @@ def fetch_merged_sp3_file(
     cannot be written as SP3 text (:class:`sidereon.Sp3WriteError`). When
     contributors are on the SP3 column grid, merge results stay on that grid,
     including means, medians and clock-datum adjustments. Higher-precision
-    contributor values can still require :func:`write_sp3_with_rounding`;
+    contributor values can still require :func:`write_sp3_with_rounding` or
+    :func:`write_sp3_with_accuracy_rounding` when accuracy columns need
+    conservative increases;
     ``detail`` on a strict-writer exception names the value.
     """
     merged, report = fetch_merged_sp3(

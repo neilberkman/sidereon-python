@@ -511,6 +511,10 @@ class Sp3:
         value to fit its columns."""
     def to_sp3_string_with_rounding(self) -> tuple[str, Sp3RoundingReport]:
         """Write rounded record values and return their maximum SI deltas."""
+    def to_sp3_string_with_accuracy_rounding(
+        self, policy: Sp3AccuracyRoundingPolicy
+    ) -> tuple[str, Sp3DetailedRoundingReport]:
+        """Round record values and conservatively raise encoded accuracy sigmas."""
     def precise_ephemeris_samples(self) -> list[PreciseEphemerisSample]: ...
     def precise_ephemeris_accuracy_samples(
         self,
@@ -539,6 +543,34 @@ class Sp3RoundingReport:
     @property
     def clock_rate_s_s(self) -> float: ...
     def __repr__(self) -> str: ...
+
+class Sp3AccuracyRoundingPolicy(str, enum.Enum):
+    CONSERVATIVE = "conservative"
+
+class Sp3AccuracyRoundingReport:
+    """Maximum absolute SI changes to the decoded accuracy standard deviations."""
+    @property
+    def position_sigma_x_m(self) -> float: ...
+    @property
+    def position_sigma_y_m(self) -> float: ...
+    @property
+    def position_sigma_z_m(self) -> float: ...
+    @property
+    def velocity_sigma_x_m_s(self) -> float: ...
+    @property
+    def velocity_sigma_y_m_s(self) -> float: ...
+    @property
+    def velocity_sigma_z_m_s(self) -> float: ...
+    @property
+    def clock_sigma_m(self) -> float: ...
+    @property
+    def clock_rate_sigma_m_s(self) -> float: ...
+
+class Sp3DetailedRoundingReport:
+    @property
+    def record_values(self) -> Sp3RoundingReport: ...
+    @property
+    def accuracy_sigmas(self) -> Sp3AccuracyRoundingReport: ...
 
 class ExactSp3ValidationError(ValueError):
     kind: str | None
