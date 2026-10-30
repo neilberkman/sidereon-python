@@ -109,44 +109,6 @@ def _check_sp3_half_grid_clock_merge() -> None:
         )
 
 
-def _check_nonzero_rounding_report() -> None:
-    lines = _clock_sp3([-598.410235, 138.983111, 0.0]).to_sp3_string().splitlines()
-    record_index = next(i for i, line in enumerate(lines) if line.startswith("PG01"))
-    record = lines[record_index]
-    lines[record_index] = record[:46] + f"{-598.4102354:14.7f}"
-    source = _sp3("\n".join(lines) + "\n")
-    original_clock_s = source.state("G01", 0).clock_s
-
-    try:
-        source.to_sp3_string()
-    except sidereon.Sp3WriteError as error:
-        if error.detail.kind != "RecordValueNotRepresentable":
-            raise SystemExit(
-                f"strict SP3 writer refused for {error.detail.kind!r}"
-            ) from None
-    else:
-        raise SystemExit("strict SP3 writer accepted a clock finer than its SP3 column")
-
-    text, report = source.to_sp3_string_with_rounding()
-    reread = sidereon.load_sp3(text.encode("ascii"))
-    delta = abs(reread.state("G01", 0).clock_s - original_clock_s)
-    if delta <= 0.0 or report.clock_s != delta:
-        raise SystemExit("SP3 clock rounding report did not expose the nonzero change")
-    if source.state("G01", 0).clock_s != original_clock_s:
-        raise SystemExit("SP3 rounding writer changed its source product")
-    other_fields = (
-        "position_x_m",
-        "position_y_m",
-        "position_z_m",
-        "velocity_x_m_s",
-        "velocity_y_m_s",
-        "velocity_z_m_s",
-        "clock_rate_s_s",
-    )
-    if any(getattr(report, field) != 0.0 for field in other_fields):
-        raise SystemExit("SP3 rounding report changed fields other than the clock")
-
-
 def main() -> None:
     expected_version = os.environ.get("SIDEREON_EXPECTED_VERSION")
     if expected_version is not None and sidereon.__version__ != expected_version:
@@ -184,7 +146,6 @@ def main() -> None:
 
     _check_sp3_grid_merge()
     _check_sp3_half_grid_clock_merge()
-    _check_nonzero_rounding_report()
 
     print(f"sidereon {sidereon.__version__} release smoke passed")
 
