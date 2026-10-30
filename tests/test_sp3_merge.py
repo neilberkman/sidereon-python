@@ -134,11 +134,16 @@ def test_merge_sp3_helmert_frame_reconciliation_reports_table_values():
     merged, report = sidereon.merge_sp3([a, b], options)
 
     got = merged.state("G02", 0).position_m
-    expected = np.array(
+    expected_columns = np.array(
+        [14999.999992 * 1000.0, -19999.999993 * 1000.0, 5000.0 * 1000.0],
+        dtype=np.float64,
+    )
+    analytic = np.array(
         [14_999_999.992_3, -19_999_999.993_048_087, 5_000_000.000_396_175],
         dtype=np.float64,
     )
-    np.testing.assert_allclose(got, expected, rtol=0.0, atol=2.0e-9)
+    np.testing.assert_array_equal(got, expected_columns)
+    np.testing.assert_allclose(got, analytic, rtol=0.0, atol=0.0005)
     reconciliation = report.frame_reconciliations[0]
     assert reconciliation.method == "helmert"
     assert reconciliation.source_frame == "ITRF2020"

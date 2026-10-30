@@ -169,6 +169,8 @@ jobs:
         run: uv run --locked --extra test --group dev mypy
       - name: Build the extension (maturin develop)
         run: uv run --locked --extra test --group dev maturin develop --locked --features exact-cache-test-failpoints
+      - name: Release consumer contract
+        run: uv run --locked --extra test --group dev python scripts/smoke-release.py
       - name: stub accuracy
         env:
           SIDEREON_CORE_FIXTURES: ${{ github.workspace }}/.core-checkout/crates/sidereon-core/tests/fixtures
