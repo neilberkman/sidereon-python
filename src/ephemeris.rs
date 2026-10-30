@@ -35,10 +35,11 @@ use sidereon_core::ephemeris::{
     ObservableStateElementStatus, ObservablesError, PreciseEphemerisAccuracySample,
     PreciseEphemerisInterpolant, PreciseEphemerisSample, PreciseEphemerisSamples,
     PreciseInterpolantError, PreciseInterpolantStoreError,
-    PreciseSamplesError as CorePreciseSamplesError, Sp3, Sp3AccuracyCodeGroup, Sp3AccuracyValue,
-    Sp3ClockRecord, Sp3DataType, Sp3Header, Sp3PositionClockAccuracy, Sp3RawRecordAccuracy,
-    Sp3AccuracyRoundingPolicy, Sp3AccuracyRoundingReport, Sp3DetailedRoundingReport,
-    Sp3RecordAccuracy, Sp3RoundingReport, Sp3VelocityAccuracy, Sp3Version, Sp3WriteError,
+    PreciseSamplesError as CorePreciseSamplesError, Sp3, Sp3AccuracyCodeGroup,
+    Sp3AccuracyRoundingPolicy, Sp3AccuracyRoundingReport, Sp3AccuracyValue, Sp3ClockRecord,
+    Sp3DataType, Sp3DetailedRoundingReport, Sp3Header, Sp3PositionClockAccuracy,
+    Sp3RawRecordAccuracy, Sp3RecordAccuracy, Sp3RoundingReport, Sp3VelocityAccuracy, Sp3Version,
+    Sp3WriteError,
     OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
 };
 use sidereon_core::ephemeris::{
@@ -1418,7 +1419,11 @@ impl PySp3 {
     ) -> PyResult<(String, PySp3DetailedRoundingReport)> {
         let policy = match policy {
             "conservative" => Sp3AccuracyRoundingPolicy::Conservative,
-            _ => return Err(PyValueError::new_err("unknown SP3 accuracy rounding policy")),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "unknown SP3 accuracy rounding policy",
+                ))
+            }
         };
         self.inner
             .to_sp3_string_with_accuracy_rounding(policy)
@@ -1557,7 +1562,11 @@ impl PySp3RoundingReport {
 }
 
 /// Immutable maximum absolute changes to decoded SP3 standard deviations.
-#[pyclass(module = "sidereon._sidereon", name = "Sp3AccuracyRoundingReport", frozen)]
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "Sp3AccuracyRoundingReport",
+    frozen
+)]
 #[derive(Clone, Copy, PartialEq)]
 pub struct PySp3AccuracyRoundingReport {
     inner: Sp3AccuracyRoundingReport,
@@ -1572,21 +1581,37 @@ impl From<Sp3AccuracyRoundingReport> for PySp3AccuracyRoundingReport {
 #[pymethods]
 impl PySp3AccuracyRoundingReport {
     #[getter]
-    fn position_sigma_x_m(&self) -> f64 { self.inner.position_sigma_x_m }
+    fn position_sigma_x_m(&self) -> f64 {
+        self.inner.position_sigma_x_m
+    }
     #[getter]
-    fn position_sigma_y_m(&self) -> f64 { self.inner.position_sigma_y_m }
+    fn position_sigma_y_m(&self) -> f64 {
+        self.inner.position_sigma_y_m
+    }
     #[getter]
-    fn position_sigma_z_m(&self) -> f64 { self.inner.position_sigma_z_m }
+    fn position_sigma_z_m(&self) -> f64 {
+        self.inner.position_sigma_z_m
+    }
     #[getter]
-    fn velocity_sigma_x_m_s(&self) -> f64 { self.inner.velocity_sigma_x_m_s }
+    fn velocity_sigma_x_m_s(&self) -> f64 {
+        self.inner.velocity_sigma_x_m_s
+    }
     #[getter]
-    fn velocity_sigma_y_m_s(&self) -> f64 { self.inner.velocity_sigma_y_m_s }
+    fn velocity_sigma_y_m_s(&self) -> f64 {
+        self.inner.velocity_sigma_y_m_s
+    }
     #[getter]
-    fn velocity_sigma_z_m_s(&self) -> f64 { self.inner.velocity_sigma_z_m_s }
+    fn velocity_sigma_z_m_s(&self) -> f64 {
+        self.inner.velocity_sigma_z_m_s
+    }
     #[getter]
-    fn clock_sigma_m(&self) -> f64 { self.inner.clock_sigma_m }
+    fn clock_sigma_m(&self) -> f64 {
+        self.inner.clock_sigma_m
+    }
     #[getter]
-    fn clock_rate_sigma_m_s(&self) -> f64 { self.inner.clock_rate_sigma_m_s }
+    fn clock_rate_sigma_m_s(&self) -> f64 {
+        self.inner.clock_rate_sigma_m_s
+    }
 
     fn __repr__(&self) -> String {
         format!(
@@ -1604,7 +1629,11 @@ impl PySp3AccuracyRoundingReport {
 }
 
 /// Combined record-value and accuracy-sigma changes from the accuracy writer.
-#[pyclass(module = "sidereon._sidereon", name = "Sp3DetailedRoundingReport", frozen)]
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "Sp3DetailedRoundingReport",
+    frozen
+)]
 #[derive(Clone, Copy, PartialEq)]
 pub struct PySp3DetailedRoundingReport {
     record_values: PySp3RoundingReport,
@@ -1623,9 +1652,13 @@ impl From<Sp3DetailedRoundingReport> for PySp3DetailedRoundingReport {
 #[pymethods]
 impl PySp3DetailedRoundingReport {
     #[getter]
-    fn record_values(&self) -> PySp3RoundingReport { self.record_values }
+    fn record_values(&self) -> PySp3RoundingReport {
+        self.record_values
+    }
     #[getter]
-    fn accuracy_sigmas(&self) -> PySp3AccuracyRoundingReport { self.accuracy_sigmas }
+    fn accuracy_sigmas(&self) -> PySp3AccuracyRoundingReport {
+        self.accuracy_sigmas
+    }
 
     fn __eq__(&self, other: &PySp3DetailedRoundingReport) -> bool {
         self == other

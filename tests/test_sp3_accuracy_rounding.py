@@ -357,11 +357,36 @@ def test_accuracy_rounding_preserves_sentinels_and_refuses_invalid_bases():
     assert (
         invalid.record_accuracy("G12", 0).p.position_sigma_m[0].kind == "invalid_base"
     )
-    with pytest.raises(sidereon.Sp3WriteError) as excinfo:
-        invalid.to_sp3_string_with_accuracy_rounding(
-            sidereon.Sp3AccuracyRoundingPolicy.CONSERVATIVE
+    invalid_output, invalid_report = invalid.to_sp3_string_with_accuracy_rounding(
+        sidereon.Sp3AccuracyRoundingPolicy.CONSERVATIVE
+    )
+    invalid_codes = (
+        sidereon.load_sp3(invalid_output.encode("ascii"))
+        .record_accuracy_codes("G12", 0)
+        .p
+    )
+    assert invalid_codes.axis_exponents[0] == 1
+    assert invalid_report.accuracy_sigmas.position_sigma_x_m == 0.0
+
+    invalid_source = _replace_codes(
+        _load("A-anchor.sp3").to_sp3_string(), "G01", position=(13, 13, 13, 13)
+    )
+    known_source = _replace_codes(
+        _load("B-anchor.sp3").to_sp3_string(), "G12", position=(13, 13, 13, 13)
+    )
+    for source_texts in (
+        (invalid_source, known_source),
+        (known_source, invalid_source),
+    ):
+        merged, _ = sidereon.merge_sp3(
+            [sidereon.load_sp3(source.encode("ascii")) for source in source_texts],
+            _options(),
         )
-    assert excinfo.value.detail.kind == "AccuracyNotRepresentable"
+        with pytest.raises(sidereon.Sp3WriteError) as excinfo:
+            merged.to_sp3_string_with_accuracy_rounding(
+                sidereon.Sp3AccuracyRoundingPolicy.CONSERVATIVE
+            )
+        assert excinfo.value.detail.kind == "AccuracyNotRepresentable"
 
 
 def test_accuracy_rounding_requires_a_known_policy_and_data_writer_is_atomic(tmp_path):
