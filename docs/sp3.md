@@ -96,10 +96,11 @@ there still raise `Sp3WriteError`. `data.write_sp3_with_rounding()` writes the
 text atomically and returns `(path, report)`.
 
 The merge path preserves grid-in/grid-out for record values derived from
-on-grid inputs, including means between column values. Other products can still
-hold record values finer than their columns; the strict writer refuses those,
-and the explicit rounding writer can state them while reporting the maximum
-SI change.
+on-grid inputs, including means between column values. Agreement and dispersion
+metrics are computed from combined values before the final column quantization;
+their arithmetic is unchanged. Other products can still hold record values
+finer than their columns; the strict writer refuses those, and the explicit
+rounding writer can state them while reporting the maximum SI change.
 
 ### Sp3WriteError
 

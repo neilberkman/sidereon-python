@@ -5873,9 +5873,10 @@ def write_sp3(sp3: "sidereon.Sp3", path: str, *, gzip: bool = False) -> str:
 
     Pass ``gzip=True`` to gzip-compress the output (pair it with a ``.gz``
     extension on ``path``). Returns the written path. Raises
-    :class:`sidereon.Sp3WriteError` before anything is written when the
-    product holds a value SP3 text cannot state, such as a mean-merged position
-    finer than a millimetre; ``detail`` names the value.
+    :class:`sidereon.Sp3WriteError` before anything is written when a product
+    holds record values finer than SP3 columns; ``detail`` names the value.
+    Merges from column-grid inputs keep records on that grid, including means.
+    Higher-precision inputs can still require :func:`write_sp3_with_rounding`.
     """
     data = sp3.to_sp3_string().encode("ascii")
     if gzip:
@@ -5935,10 +5936,11 @@ def fetch_merged_sp3_file(
     path by default. Pass ``return_report=True`` to receive ``(path, report)``
     and retain the exact contributor provenance and stable input identity.
     Nothing is written if the fetch/merge step raises, or if the merged product
-    cannot be written as SP3 text (:class:`sidereon.Sp3WriteError`). A mean or
-    median of positions that differ below the column resolution, or a clock
-    shifted onto the reference clock datum, can be finer than its SP3 column;
-    ``detail`` on the exception names the value.
+    cannot be written as SP3 text (:class:`sidereon.Sp3WriteError`). When
+    contributors are on the SP3 column grid, merge results stay on that grid,
+    including means, medians and clock-datum adjustments. Higher-precision
+    contributor values can still require :func:`write_sp3_with_rounding`;
+    ``detail`` on a strict-writer exception names the value.
     """
     merged, report = fetch_merged_sp3(
         target,
