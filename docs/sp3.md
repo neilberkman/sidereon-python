@@ -26,6 +26,7 @@ parsing, rounding or repair of its own.
 | `clock_records_at(epoch_index)` | dict from satellite token to `Sp3ClockRecord` at one epoch, ascending |
 | `to_sp3_string()` | the SP3 text, or `Sp3WriteError` |
 | `to_sp3_string_with_rounding()` | `(text, Sp3RoundingReport)`, or `Sp3WriteError` |
+| `to_sp3_string_with_accuracy_rounding(policy)` | `(text, Sp3DetailedRoundingReport)`, or `Sp3WriteError` |
 
 `state` and `clock_record` raise `IndexError` for an epoch index past the end
 and `KeyError` when the satellite has no such record at that epoch.
@@ -94,6 +95,15 @@ per field in SI units (`position_*_m`, `velocity_*_m_s`, `clock_s`, and
 `clock_rate_s_s`). It applies no rounding to header fields or epochs; refusals
 there still raise `Sp3WriteError`. `data.write_sp3_with_rounding()` writes the
 text atomically and returns `(path, report)`.
+
+For products whose encoded accuracy sigmas need a conservative increase under
+the selected output bases,
+`to_sp3_string_with_accuracy_rounding(Sp3AccuracyRoundingPolicy.CONSERVATIVE)`
+requires an explicit policy and returns a nested report with `record_values`
+and `accuracy_sigmas`. Conservative rounding never lowers a finite standard
+deviation; the latter report gives the maximum absolute SI increase per field.
+Unspecified accuracy remains unspecified. `data.write_sp3_with_accuracy_rounding()`
+uses the same policy and atomic file replacement, and returns `(path, report)`.
 
 The merge path preserves grid-in/grid-out for record values derived from
 on-grid inputs, including means between column values. Agreement and dispersion

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "sidereon"
-version = "3.0.5"
+version = "3.0.6"
 description = "Python (PyO3) bindings over the sidereon engine: SP3 loading and SPP/RTK/PPP positioning solves"
 readme = "README.md"
 license = { text = "MIT" }
@@ -82,7 +82,7 @@ include = [
   "third_party_licenses/ERFA-BSD-3-Clause.txt",
   "third_party_licenses/IERS-CONVENTIONS-SOFTWARE-LICENSE.txt",
   "third_party_licenses/SciPy-BSD-3-Clause.txt",
-  "third_party_source/sidereon-core-3.0.5/tides/mod.rs",
-  "third_party_source/sidereon-core-3.0.5/tides/ocean.rs",
-  "third_party_source/sidereon-core-3.0.5/tides/pole.rs",
+  "third_party_source/sidereon-core-3.0.6/tides/mod.rs",
+  "third_party_source/sidereon-core-3.0.6/tides/ocean.rs",
+  "third_party_source/sidereon-core-3.0.6/tides/pole.rs",
 ]

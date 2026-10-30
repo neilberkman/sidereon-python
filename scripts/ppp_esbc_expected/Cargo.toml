@@ -10,6 +10,6 @@ description = "Writes the binding-level PPP solutions of tests/fixtures/ppp_esbc
 [dependencies]
 flate2 = "1"
 sha2 = "0.10"
-sidereon = { version = "=3.0.5" }
-sidereon-core = { version = "=3.0.5" }
+sidereon = { version = "=3.0.6", git = "https://github.com/neilberkman/sidereon", rev = "38d2c92ba00ca4acd9f5eec17d6215f3cf1aec5f" }
+sidereon-core = { version = "=3.0.6", git = "https://github.com/neilberkman/sidereon", rev = "38d2c92ba00ca4acd9f5eec17d6215f3cf1aec5f" }
 serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
