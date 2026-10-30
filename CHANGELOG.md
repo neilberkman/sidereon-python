@@ -4,6 +4,13 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## [Unreleased]
 
+## [3.0.5] - 2026-10-30
+
+### Added
+
+- Add opt-in SP3 column rounding writers that report maximum absolute SI changes; strict writers remain unchanged.
+- Preserve strictly writable SP3 columns for grid-aligned merge and alignment products.
+
 ### Fixed
 
 - Describe the seven raw LNAV broadcast angular fields as semicircles or

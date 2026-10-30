@@ -325,6 +325,8 @@ def test_opt_in_rounding_writer_preserves_grid_in_mean_merge_and_reports_zero_de
     reread = sidereon.load_sp3(text.encode("ascii"))
 
     assert text == strict_text
-    assert reread.state("G01", 0).position_m[0] == pytest.approx(15_000_000.0, abs=0.001)
+    assert reread.state("G01", 0).position_m[0] == pytest.approx(
+        15_000_000.0, abs=0.001
+    )
     assert report.position_x_m == 0.0
     assert report.position_y_m == 0.0

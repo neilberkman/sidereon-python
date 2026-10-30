@@ -13,7 +13,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 CORE_GIT_URL = "https://github.com/neilberkman/sidereon"
 FULL_GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
-CORE_SOURCE_REVISION = "5cfcdf929b57a5998e304df786735b171ba8afaf"
+CORE_SOURCE_REVISION = "7970b1a3332ceba70088b64b4849b12b6d2b4874"
 
 
 def registry_version(name, value, package_version):
@@ -307,7 +307,7 @@ def main() -> None:
         "ocean.rs": "25946677944425671a92717860ac2d70f255de5403eeb1fbf98b361716821d5c",
         "pole.rs": "b4cc4c16bdd8ce1d8f04073602ab47dfb85a002b946ab192e8d4d2d600f0a1f8",
     }
-    tide_root = ROOT / "third_party_source" / "sidereon-core-3.0.4" / "tides"
+    tide_root = ROOT / "third_party_source" / "sidereon-core-3.0.5" / "tides"
     for filename, expected_digest in tide_sources.items():
         source = tide_root / filename
         if not source.is_file():
@@ -316,7 +316,7 @@ def main() -> None:
         if digest != expected_digest:
             raise SystemExit(
                 f"IERS-derived source disclosure {source} has digest {digest}, "
-                f"expected {expected_digest} from sidereon-core 3.0.4 at "
+                f"expected {expected_digest} from sidereon-core 3.0.5 at "
                 f"{CORE_SOURCE_REVISION}"
             )
 

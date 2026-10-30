@@ -37,7 +37,7 @@ use sidereon_core::ephemeris::{
     PreciseInterpolantError, PreciseInterpolantStoreError,
     PreciseSamplesError as CorePreciseSamplesError, Sp3, Sp3AccuracyCodeGroup, Sp3AccuracyValue,
     Sp3ClockRecord, Sp3DataType, Sp3Header, Sp3PositionClockAccuracy, Sp3RawRecordAccuracy,
-    Sp3RecordAccuracy, Sp3VelocityAccuracy, Sp3Version, Sp3WriteError, Sp3RoundingReport,
+    Sp3RecordAccuracy, Sp3RoundingReport, Sp3VelocityAccuracy, Sp3Version, Sp3WriteError,
     OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
 };
 use sidereon_core::ephemeris::{
@@ -1380,8 +1380,8 @@ impl PySp3 {
     ///
     /// Raises `Sp3WriteError`, a subclass of `Sp3ParseError` and `ValueError`,
     /// when a value cannot be stated in its fixed columns without changing it:
-    /// a record value finer than the `F14.6` column (the usual case for a mean
-    /// or median merge), a value that would read back as an absence sentinel,
+    /// a record value finer than the `F14.6` column, a value that would read
+    /// back as an absence sentinel,
     /// a header base finer than its field, text wider than its columns, or an
     /// epoch no record restates exactly. Nothing is rounded, shifted or dropped
     /// to make the write succeed. The exception's `detail` is an

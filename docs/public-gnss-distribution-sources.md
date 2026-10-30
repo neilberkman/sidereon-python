@@ -278,11 +278,11 @@ except sidereon.Sp3WriteError as error:
 assert data.verify_merge_report(json.loads(persisted_report_json))
 ```
 
-The file helpers write SP3 text only when every value restates exactly. The
-default mean merge of two centers holds positions finer than the millimetre
-record column wherever the centers differ, and a clock moved onto the reference
-clock datum can be finer than its column; `Sp3WriteError` names the value
-instead of the helper rounding it.
+The merge path preserves grid-in/grid-out for record values derived from
+on-grid inputs, including means between column values. The file helpers write
+those merged products directly. Other products can still hold higher-precision
+values than the record columns; the strict writer names those with
+`Sp3WriteError`, while the explicit rounding writer reports its SI changes.
 
 `report.to_dict()` writes merged-SP3 report schema 3. A merge keeps a
 satellite whose orbit is missing but whose clock reached a consensus as a
