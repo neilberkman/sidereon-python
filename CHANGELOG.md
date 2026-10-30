@@ -13,6 +13,8 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ### Fixed
 
+- Normalize extreme-scale quaternions robustly while preserving ordinary quaternion rounding.
+- Reject zero probability values where probability inputs must be strictly between zero and one.
 - Describe the seven raw LNAV broadcast angular fields as semicircles or
   semicircles/second, matching their unchanged transmitted-integer scaling.
 
