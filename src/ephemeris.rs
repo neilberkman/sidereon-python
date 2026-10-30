@@ -39,8 +39,7 @@ use sidereon_core::ephemeris::{
     Sp3AccuracyRoundingPolicy, Sp3AccuracyRoundingReport, Sp3AccuracyValue, Sp3ClockRecord,
     Sp3DataType, Sp3DetailedRoundingReport, Sp3Header, Sp3PositionClockAccuracy,
     Sp3RawRecordAccuracy, Sp3RecordAccuracy, Sp3RoundingReport, Sp3VelocityAccuracy, Sp3Version,
-    Sp3WriteError,
-    OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
+    Sp3WriteError, OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
 };
 use sidereon_core::ephemeris::{
     check_continuity, CellSelection, ContinuityDefect, ContinuityOptions, ContinuityOptionsError,
