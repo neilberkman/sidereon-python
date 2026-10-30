@@ -331,8 +331,8 @@ the renamed routines, and the differences from the Fortran implementation.
 The complete non-test tide source distributed in the compiled extension is
 included under
 `third_party_source/sidereon-core-3.0.5/tides/` in wheels and source
-distributions. These files match sidereon-core 3.0.5 at commit 7970b1a3332ceba70088b64b4849b12b6d2b4874.
-Source: [sidereon-core tides at the pinned commit](https://github.com/neilberkman/sidereon/tree/7970b1a3332ceba70088b64b4849b12b6d2b4874/crates/sidereon-core/src/tides).
+distributions. These files match sidereon-core 3.0.5 at commit da59d0eba8e273cc37821eac5535662e5d991126.
+Source: [sidereon-core tides at the pinned commit](https://github.com/neilberkman/sidereon/tree/da59d0eba8e273cc37821eac5535662e5d991126/crates/sidereon-core/src/tides).
 The authoritative original is available from:
 
 <https://iers-conventions.obspm.fr/content/chapter7/software/dehanttideinel/DEHANTTIDEINEL.F>

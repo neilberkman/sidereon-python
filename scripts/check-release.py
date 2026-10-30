@@ -13,7 +13,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 CORE_GIT_URL = "https://github.com/neilberkman/sidereon"
 FULL_GIT_REVISION = re.compile(r"^[0-9a-f]{40}$")
-CORE_SOURCE_REVISION = "7970b1a3332ceba70088b64b4849b12b6d2b4874"
+CORE_SOURCE_REVISION = "da59d0eba8e273cc37821eac5535662e5d991126"
 
 
 def registry_version(name, value, package_version):
