@@ -209,12 +209,12 @@ impl PyLnavDecoded {
     fn crs(&self) -> f64 {
         self.inner.crs
     }
-    /// Mean motion difference, radians/second.
+    /// Mean motion difference, semicircles/second.
     #[getter]
     fn delta_n(&self) -> f64 {
         self.inner.delta_n
     }
-    /// Mean anomaly at reference time, radians.
+    /// Mean anomaly at reference time, semicircles.
     #[getter]
     fn m0(&self) -> f64 {
         self.inner.m0
@@ -259,7 +259,7 @@ impl PyLnavDecoded {
     fn cic(&self) -> f64 {
         self.inner.cic
     }
-    /// Longitude of ascending node at reference time, radians.
+    /// Longitude of ascending node at reference time, semicircles.
     #[getter]
     fn omega0(&self) -> f64 {
         self.inner.omega0
@@ -269,7 +269,7 @@ impl PyLnavDecoded {
     fn cis(&self) -> f64 {
         self.inner.cis
     }
-    /// Inclination at reference time, radians.
+    /// Inclination at reference time, semicircles.
     #[getter]
     fn i0(&self) -> f64 {
         self.inner.i0
@@ -279,17 +279,17 @@ impl PyLnavDecoded {
     fn crc(&self) -> f64 {
         self.inner.crc
     }
-    /// Argument of perigee, radians.
+    /// Argument of perigee, semicircles.
     #[getter]
     fn omega(&self) -> f64 {
         self.inner.omega
     }
-    /// Rate of right ascension, radians/second.
+    /// Rate of right ascension, semicircles/second.
     #[getter]
     fn omega_dot(&self) -> f64 {
         self.inner.omega_dot
     }
-    /// Rate of inclination, radians/second.
+    /// Rate of inclination, semicircles/second.
     #[getter]
     fn idot(&self) -> f64 {
         self.inner.idot

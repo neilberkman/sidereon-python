@@ -37,7 +37,7 @@ use sidereon_core::ephemeris::{
     PreciseInterpolantError, PreciseInterpolantStoreError,
     PreciseSamplesError as CorePreciseSamplesError, Sp3, Sp3AccuracyCodeGroup, Sp3AccuracyValue,
     Sp3ClockRecord, Sp3DataType, Sp3Header, Sp3PositionClockAccuracy, Sp3RawRecordAccuracy,
-    Sp3RecordAccuracy, Sp3VelocityAccuracy, Sp3Version, Sp3WriteError,
+    Sp3RecordAccuracy, Sp3RoundingReport, Sp3VelocityAccuracy, Sp3Version, Sp3WriteError,
     OBSERVABLE_STATE_MISSING_POSITION_ECEF_M,
 };
 use sidereon_core::ephemeris::{
@@ -1380,8 +1380,8 @@ impl PySp3 {
     ///
     /// Raises `Sp3WriteError`, a subclass of `Sp3ParseError` and `ValueError`,
     /// when a value cannot be stated in its fixed columns without changing it:
-    /// a record value finer than the `F14.6` column (the usual case for a mean
-    /// or median merge), a value that would read back as an absence sentinel,
+    /// a record value finer than the `F14.6` column, a value that would read
+    /// back as an absence sentinel,
     /// a header base finer than its field, text wider than its columns, or an
     /// epoch no record restates exactly. Nothing is rounded, shifted or dropped
     /// to make the write succeed. The exception's `detail` is an
@@ -1389,6 +1389,20 @@ impl PySp3 {
     fn to_sp3_string(&self, py: Python<'_>) -> PyResult<String> {
         self.inner
             .to_sp3_string()
+            .map_err(|err| to_sp3_write_err(py, err))
+    }
+
+    /// Write SP3 text after rounding record values to the columns' precision.
+    /// Header fields and epochs retain the strict writer's exact checks.
+    /// Returns `(text, report)`; the report gives each field's maximum absolute
+    /// change in SI units. Raises `Sp3WriteError` for any remaining refusal.
+    fn to_sp3_string_with_rounding(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<(String, PySp3RoundingReport)> {
+        self.inner
+            .to_sp3_string_with_rounding()
+            .map(|(text, report)| (text, PySp3RoundingReport::from(report)))
             .map_err(|err| to_sp3_write_err(py, err))
     }
 
@@ -1441,6 +1455,84 @@ impl PySp3 {
             self.inner.epoch_count(),
             self.inner.satellites().len()
         )
+    }
+}
+
+/// Immutable SI-unit summary of changes made by the opt-in SP3 writer.
+#[pyclass(module = "sidereon._sidereon", name = "Sp3RoundingReport", frozen)]
+#[derive(Clone, Copy, PartialEq)]
+pub struct PySp3RoundingReport {
+    position_x_m: f64,
+    position_y_m: f64,
+    position_z_m: f64,
+    velocity_x_m_s: f64,
+    velocity_y_m_s: f64,
+    velocity_z_m_s: f64,
+    clock_s: f64,
+    clock_rate_s_s: f64,
+}
+
+impl From<Sp3RoundingReport> for PySp3RoundingReport {
+    fn from(report: Sp3RoundingReport) -> Self {
+        Self {
+            position_x_m: report.position_x_m,
+            position_y_m: report.position_y_m,
+            position_z_m: report.position_z_m,
+            velocity_x_m_s: report.velocity_x_m_s,
+            velocity_y_m_s: report.velocity_y_m_s,
+            velocity_z_m_s: report.velocity_z_m_s,
+            clock_s: report.clock_s,
+            clock_rate_s_s: report.clock_rate_s_s,
+        }
+    }
+}
+
+#[pymethods]
+impl PySp3RoundingReport {
+    #[getter]
+    fn position_x_m(&self) -> f64 {
+        self.position_x_m
+    }
+    #[getter]
+    fn position_y_m(&self) -> f64 {
+        self.position_y_m
+    }
+    #[getter]
+    fn position_z_m(&self) -> f64 {
+        self.position_z_m
+    }
+    #[getter]
+    fn velocity_x_m_s(&self) -> f64 {
+        self.velocity_x_m_s
+    }
+    #[getter]
+    fn velocity_y_m_s(&self) -> f64 {
+        self.velocity_y_m_s
+    }
+    #[getter]
+    fn velocity_z_m_s(&self) -> f64 {
+        self.velocity_z_m_s
+    }
+    #[getter]
+    fn clock_s(&self) -> f64 {
+        self.clock_s
+    }
+    #[getter]
+    fn clock_rate_s_s(&self) -> f64 {
+        self.clock_rate_s_s
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Sp3RoundingReport(position_x_m={}, position_y_m={}, position_z_m={}, velocity_x_m_s={}, velocity_y_m_s={}, velocity_z_m_s={}, clock_s={}, clock_rate_s_s={})",
+            self.position_x_m, self.position_y_m, self.position_z_m,
+            self.velocity_x_m_s, self.velocity_y_m_s, self.velocity_z_m_s,
+            self.clock_s, self.clock_rate_s_s
+        )
+    }
+
+    fn __eq__(&self, other: &PySp3RoundingReport) -> bool {
+        self == other
     }
 }
 
@@ -3938,6 +4030,7 @@ fn instant_to_j2000_seconds(epoch: &Instant) -> Option<f64> {
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySp3>()?;
+    m.add_class::<PySp3RoundingReport>()?;
     m.add_class::<PyEphemerisQueryState>()?;
     m.add_class::<PyClockRelativity>()?;
     m.add_class::<PySp3AccuracyValue>()?;

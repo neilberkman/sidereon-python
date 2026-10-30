@@ -284,6 +284,7 @@ __all__ = [
     "sp3_merge_input_identity",
     "verify_merge_report",
     "write_sp3",
+    "write_sp3_with_rounding",
     "DistributionSource",
     "Distribution",
     "ProductIdentity",
@@ -5872,9 +5873,10 @@ def write_sp3(sp3: "sidereon.Sp3", path: str, *, gzip: bool = False) -> str:
 
     Pass ``gzip=True`` to gzip-compress the output (pair it with a ``.gz``
     extension on ``path``). Returns the written path. Raises
-    :class:`sidereon.Sp3WriteError` before anything is written when the
-    product holds a value SP3 text cannot state, such as a mean-merged position
-    finer than a millimetre; ``detail`` names the value.
+    :class:`sidereon.Sp3WriteError` before anything is written when a product
+    holds record values finer than SP3 columns; ``detail`` names the value.
+    Merges from column-grid inputs keep records on that grid, including means.
+    Higher-precision inputs can still require :func:`write_sp3_with_rounding`.
     """
     data = sp3.to_sp3_string().encode("ascii")
     if gzip:
@@ -5888,6 +5890,29 @@ def write_sp3(sp3: "sidereon.Sp3", path: str, *, gzip: bool = False) -> str:
         _silent_remove(tmp)
         raise CacheNotWritable(f"cannot write {path}: {exc}") from exc
     return path
+
+
+def write_sp3_with_rounding(
+    sp3: "sidereon.Sp3", path: str, *, gzip: bool = False
+) -> tuple[str, "sidereon.Sp3RoundingReport"]:
+    """Write rounded SP3 record values atomically and return ``(path, report)``.
+
+    Header fields and epochs retain the exact checks of the strict writer. The
+    immutable report gives maximum absolute changes in SI units for each field.
+    """
+    text, report = sp3.to_sp3_string_with_rounding()
+    data = text.encode("ascii")
+    if gzip:
+        data = _gzip.compress(data)
+    directory = _os.path.dirname(_os.path.abspath(path))
+    _ensure_dir(directory)
+    tmp = _write_temp(directory, data)
+    try:
+        _os.replace(tmp, path)
+    except OSError as exc:
+        _silent_remove(tmp)
+        raise CacheNotWritable(f"cannot write {path}: {exc}") from exc
+    return path, report
 
 
 def fetch_merged_sp3_file(
@@ -5911,10 +5936,11 @@ def fetch_merged_sp3_file(
     path by default. Pass ``return_report=True`` to receive ``(path, report)``
     and retain the exact contributor provenance and stable input identity.
     Nothing is written if the fetch/merge step raises, or if the merged product
-    cannot be written as SP3 text (:class:`sidereon.Sp3WriteError`). A mean or
-    median of positions that differ below the column resolution, or a clock
-    shifted onto the reference clock datum, can be finer than its SP3 column;
-    ``detail`` on the exception names the value.
+    cannot be written as SP3 text (:class:`sidereon.Sp3WriteError`). When
+    contributors are on the SP3 column grid, merge results stay on that grid,
+    including means, medians and clock-datum adjustments. Higher-precision
+    contributor values can still require :func:`write_sp3_with_rounding`;
+    ``detail`` on a strict-writer exception names the value.
     """
     merged, report = fetch_merged_sp3(
         target,

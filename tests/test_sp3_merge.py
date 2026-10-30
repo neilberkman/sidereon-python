@@ -134,11 +134,16 @@ def test_merge_sp3_helmert_frame_reconciliation_reports_table_values():
     merged, report = sidereon.merge_sp3([a, b], options)
 
     got = merged.state("G02", 0).position_m
-    expected = np.array(
+    expected_columns = np.array(
+        [14999.999992 * 1000.0, -19999.999993 * 1000.0, 5000.0 * 1000.0],
+        dtype=np.float64,
+    )
+    analytic = np.array(
         [14_999_999.992_3, -19_999_999.993_048_087, 5_000_000.000_396_175],
         dtype=np.float64,
     )
-    np.testing.assert_allclose(got, expected, rtol=0.0, atol=2.0e-9)
+    np.testing.assert_array_equal(got, expected_columns)
+    np.testing.assert_allclose(got, analytic, rtol=0.0, atol=0.0005)
     reconciliation = report.frame_reconciliations[0]
     assert reconciliation.method == "helmert"
     assert reconciliation.source_frame == "ITRF2020"
@@ -312,3 +317,24 @@ def test_merge_sp3_reports_no_position_spread_where_no_orbit_was_combined():
     assert again.clock_record("G02", 0) == merged.clock_record("G02", 0)
     with pytest.raises(KeyError):
         again.state("G02", 0)
+
+
+def test_opt_in_rounding_writer_preserves_grid_in_mean_merge_and_reports_zero_delta():
+    a = _mini_sp3("IGS14", [("G01", [15000.0, -20000.0, 5000.0], 100.0)])
+    b = _mini_sp3("IGS14", [("G01", [15000.000001, -20000.0, 5000.0], 100.0)])
+    options = sidereon.Sp3MergeOptions(min_agree=1, clock_min_common=1)
+    merged, _merge_report = sidereon.merge_sp3([a, b], options)
+
+    strict_text = merged.to_sp3_string()
+    text, report = merged.to_sp3_string_with_rounding()
+    reread = sidereon.load_sp3(text.encode("ascii"))
+
+    assert text == strict_text
+    # The source columns are 15000.000000 and 15000.000001 km. Parsing scales
+    # them to 15000000.0 and 15000000.001 m; their f64 mean converts back to
+    # just above the 15000.0000005 km midpoint, so the canonical F14.6 column
+    # is 15000.000001 km and parses back as 15000000.001 m.
+    expected_x_m = 15000.000001 * 1000.0
+    assert reread.state("G01", 0).position_m[0] == expected_x_m
+    assert report.position_x_m == 0.0
+    assert report.position_y_m == 0.0

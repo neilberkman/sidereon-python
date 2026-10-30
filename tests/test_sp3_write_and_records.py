@@ -77,6 +77,27 @@ def _write_refusal(sp3):
     return detail
 
 
+def test_rounding_writer_returns_immutable_si_report_and_preserves_strict_writer():
+    sp3 = _load([_G01])
+
+    strict_text = sp3.to_sp3_string()
+    rounded_text, report = sp3.to_sp3_string_with_rounding()
+
+    assert rounded_text == strict_text
+    assert (
+        report.position_x_m,
+        report.position_y_m,
+        report.position_z_m,
+        report.velocity_x_m_s,
+        report.velocity_y_m_s,
+        report.velocity_z_m_s,
+        report.clock_s,
+        report.clock_rate_s_s,
+    ) == (0.0,) * 8
+    with pytest.raises(AttributeError):
+        report.position_x_m = 1.0
+
+
 # --- header ------------------------------------------------------------------
 
 
@@ -265,29 +286,19 @@ def test_writer_refuses_velocity_accuracy_in_a_position_product():
     }
 
 
-def test_writer_refuses_a_mean_merged_position_finer_than_its_column():
+def test_mean_merge_of_grid_inputs_remains_writable_and_roundtrips():
     first = _load([("G01", (15000.000001, -20000.0, 5000.0), 100.0)])
     second = _load([("G01", (15000.000002, -20000.0, 5000.0), 100.0)])
-    merged, report = sidereon.merge_sp3([first, second])
-    assert report.agreement[0].position_members == 2
-    x_m = float(merged.state("G01", 0).position_m[0])
+    merged, merge_report = sidereon.merge_sp3([first, second])
+    assert merge_report.agreement[0].position_members == 2
 
-    detail = _write_refusal(merged)
-    assert detail.kind == "RecordValueNotRepresentable"
-    assert detail.field == "position x"
-    assert detail.satellite == "G01"
-    assert detail.epoch_index == 0
-    assert detail.columns == 14
-    assert detail.decimals == 6
-    details = detail.details()
-    assert details["stored"] == x_m
-    assert details["column_value"] == x_m / 1000.0
-    assert set(details) == {
-        "field",
-        "satellite",
-        "epoch_index",
-        "columns",
-        "decimals",
-        "stored",
-        "column_value",
-    }
+    strict_text = merged.to_sp3_string()
+    rounded_text, rounding_report = merged.to_sp3_string_with_rounding()
+    reread = sidereon.load_sp3(strict_text.encode("ascii"))
+
+    assert rounded_text == strict_text
+    np.testing.assert_array_equal(
+        reread.state("G01", 0).position_m,
+        merged.state("G01", 0).position_m,
+    )
+    assert rounding_report.position_x_m == 0.0

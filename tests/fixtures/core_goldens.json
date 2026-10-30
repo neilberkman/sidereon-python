@@ -1,6 +1,6 @@
 {
   "source": "scripts/core_goldens",
-  "core_revision": "5cfcdf929b57a5998e304df786735b171ba8afaf",
+  "core_revision": "da59d0eba8e273cc37821eac5535662e5d991126",
   "spp_trace_default": {
     "position_m": [
       "0x41511b0a63f49487",
@@ -49260,7 +49260,7 @@
             "mjd_fraction": "0x0000000000000000",
             "seconds_of_week": "0x4115180000000000",
             "declared_start_j2000_s": "0x41c342fe60000000",
-            "text_fnv1a64": null
+            "text_fnv1a64": "07bf19151b0a8b8e"
           },
           "report": {
             "quarantined": [],

@@ -261,7 +261,10 @@ The Python package mirrors the full breadth of the engine.
   defines, including exact validity seconds (see `docs/antex.md`).
 - **Data acquisition:** the `sidereon.data` module downloads and caches GNSS
   products (SP3 and IONEX from IGS/MGEX analysis centers, including merged
-  multi-center SP3) and DTED terrain tiles. Exact-product requests can select
+  multi-center SP3) and DTED terrain tiles. Merges from column-grid inputs
+  retain SP3-writable records; higher-precision inputs can still need the
+  opt-in rounding writer. Agreement metrics use combined values before final
+  column quantization. Exact-product requests can select
   direct archives, NASA CDDIS/Earthdata, local files, or caller-provided bytes
   without changing product identity. `ExactSp3Request` validates the declared
   cadence, regular epoch grid, exact half-open or inclusive coverage, producer,

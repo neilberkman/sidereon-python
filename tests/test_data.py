@@ -70,6 +70,20 @@ def _core_sp3(name):
     return os.path.join(CORE_FIXTURES, "sp3", name)
 
 
+def test_write_sp3_with_rounding_returns_written_path_and_report(tmp_path):
+    sp3 = sidereon.load_sp3(_core_sp3("degenerate_coincident_5sat.sp3"))
+    path = str(tmp_path / "rounded.sp3")
+
+    written, report = data.write_sp3_with_rounding(sp3, path)
+
+    assert written == path
+    assert os.path.isfile(path)
+    with open(path, "rb") as handle:
+        assert handle.read().startswith(b"#")
+    assert report.position_x_m >= 0.0
+    assert report.clock_s >= 0.0
+
+
 def _core_ionex(name):
     return os.path.join(CORE_FIXTURES, "ionex", name)
 
