@@ -22,6 +22,38 @@ def _replace_position_x_exponent(text, satellite, exponent):
     return "\n".join(lines) + "\n"
 
 
+def _replace_codes(text, satellite, *, position=None, velocity=None):
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if position is not None and line.startswith(f"P{satellite}"):
+            lines[index] = (
+                line[:60]
+                + f"{position[0]:2d} {position[1]:2d} "
+                + f"{position[2]:2d} {position[3]:3d}  "
+            )
+        elif velocity is not None and line.startswith(f"V{satellite}"):
+            lines[index] = (
+                line[:60]
+                + f"{velocity[0]:2d} {velocity[1]:2d} "
+                + f"{velocity[2]:2d} {velocity[3]:3d}  "
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _replace_bases(text, *, position=None, clock=None):
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith("%f ") and line.split()[0] == "%f":
+            fields = line.split()
+            if position is not None:
+                fields[1] = f"{position:.7f}"
+            if clock is not None:
+                fields[2] = f"{clock:.9f}"
+            lines[index] = f"%f {fields[1]:>10} {fields[2]:>12} {fields[3]} {fields[4]}"
+            break
+    return "\n".join(lines) + "\n"
+
+
 def _options():
     return sidereon.Sp3MergeOptions(
         combine="precedence",
@@ -90,7 +122,8 @@ def test_accuracy_rounding_writer_preserves_decoded_sigmas_after_merge(order):
     assert reread.record_accuracy("G01", 0).p.position_sigma_m[0].kind == "unknown"
 
 
-def test_accuracy_rounding_reports_a_nonzero_conservative_sigma_increase():
+@pytest.mark.parametrize("reverse", [False, True])
+def test_accuracy_rounding_reports_a_nonzero_conservative_sigma_increase(reverse):
     first = (
         (_FIXTURES / "A.sp3")
         .read_text("ascii")
@@ -99,7 +132,7 @@ def test_accuracy_rounding_reports_a_nonzero_conservative_sigma_increase():
     first = _replace_position_x_exponent(first, "G01", 1)
     a = sidereon.load_sp3(first.encode("ascii"))
     b = _load("B.sp3")
-    merged, _ = sidereon.merge_sp3([a, b], _options())
+    merged, _ = sidereon.merge_sp3([b, a] if reverse else [a, b], _options())
 
     text, report = merged.to_sp3_string_with_accuracy_rounding(
         sidereon.Sp3AccuracyRoundingPolicy.CONSERVATIVE
@@ -107,11 +140,20 @@ def test_accuracy_rounding_reports_a_nonzero_conservative_sigma_increase():
     reread = sidereon.load_sp3(text.encode("ascii"))
     sigma = reread.record_accuracy("G12", 0).p.position_sigma_m[0]
 
-    assert reread.header.pos_vel_base == 2.0
-    assert sigma.value == pytest.approx(0.032, rel=0.0, abs=0.0)
-    assert report.accuracy_sigmas.position_sigma_x_m == pytest.approx(
-        0.013810105964541435, rel=1e-14
-    )
+    if not reverse:
+        assert reread.header.pos_vel_base == 2.0
+        assert sigma.value == pytest.approx(0.032, rel=0.0, abs=0.0)
+        assert report.accuracy_sigmas.position_sigma_x_m == pytest.approx(
+            0.013810105964541435, rel=1e-14
+        )
+    else:
+        before = merged.record_accuracy("G01", 0).p.position_sigma_m[0]
+        after = reread.record_accuracy("G01", 0).p.position_sigma_m[0]
+        assert after.kind == before.kind == "known"
+        assert after.value > before.value
+        assert report.accuracy_sigmas.position_sigma_x_m == pytest.approx(
+            after.value - before.value, rel=1e-14
+        )
 
 
 def test_accuracy_rounding_refuses_when_no_conservative_exponent_fits():
@@ -215,6 +257,111 @@ def test_accuracy_rounding_preserves_clock_anchor_uncertainty():
     assert output_accuracy.value >= source_accuracy.value
     assert reread.state("G12", 0).clock_s == merged.state("G12", 0).clock_s
     assert report.accuracy_sigmas.clock_sigma_m >= 0.0
+
+
+def test_accuracy_rounding_respects_i2_i3_finite_lower_bounds_and_sentinels():
+    a_text = _replace_bases(_load("A.sp3").to_sp3_string(), position=2.0)
+    a_text = _replace_codes(a_text, "G01", position=(-9, 99, 99, 999))
+    b_text = _replace_bases(_load("B.sp3").to_sp3_string(), position=4.0)
+    b_text = _replace_codes(b_text, "G12", position=(-5, 99, 99, 999))
+    lower_axis, _ = sidereon.merge_sp3(
+        [
+            sidereon.load_sp3(a_text.encode("ascii")),
+            sidereon.load_sp3(b_text.encode("ascii")),
+        ],
+        _options(),
+    )
+    axis_text, axis_report = lower_axis.to_sp3_string_with_accuracy_rounding(
+        sidereon.Sp3AccuracyRoundingPolicy.CONSERVATIVE
+    )
+    axis_codes = (
+        sidereon.load_sp3(axis_text.encode("ascii")).record_accuracy_codes("G12", 0).p
+    )
+    assert axis_codes.axis_exponents[0] == -9
+    assert axis_report.accuracy_sigmas.position_sigma_x_m > 0.0
+
+    a_clock = _replace_bases(_load("A-anchor.sp3").to_sp3_string(), clock=2.0)
+    a_clock = _replace_codes(a_clock, "G01", position=(99, 99, 99, -99))
+    b_clock = _replace_bases(_load("B-anchor.sp3").to_sp3_string(), clock=4.0)
+    b_clock = _replace_codes(b_clock, "G12", position=(99, 99, 99, -50))
+    lower_clock, _ = sidereon.merge_sp3(
+        [
+            sidereon.load_sp3(a_clock.encode("ascii")),
+            sidereon.load_sp3(b_clock.encode("ascii")),
+        ],
+        _options(),
+    )
+    clock_text, clock_report = lower_clock.to_sp3_string_with_accuracy_rounding(
+        sidereon.Sp3AccuracyRoundingPolicy.CONSERVATIVE
+    )
+    clock_codes = (
+        sidereon.load_sp3(clock_text.encode("ascii")).record_accuracy_codes("G12", 0).p
+    )
+    assert clock_codes.clock_exponent == -99
+    assert clock_report.accuracy_sigmas.clock_sigma_m > 0.0
+
+    a_clock = _replace_bases(_load("A-anchor.sp3").to_sp3_string(), clock=1.025)
+    a_clock = _replace_codes(a_clock, "G01", position=(99, 99, 99, 1))
+    b_clock = _replace_bases(_load("B-anchor.sp3").to_sp3_string(), clock=2.0)
+    b_clock = _replace_codes(b_clock, "G12", position=(99, 99, 99, 998))
+    upper_clock, _ = sidereon.merge_sp3(
+        [
+            sidereon.load_sp3(a_clock.encode("ascii")),
+            sidereon.load_sp3(b_clock.encode("ascii")),
+        ],
+        _options(),
+    )
+    with pytest.raises(sidereon.Sp3WriteError) as excinfo:
+        upper_clock.to_sp3_string_with_accuracy_rounding(
+            sidereon.Sp3AccuracyRoundingPolicy.CONSERVATIVE
+        )
+    assert excinfo.value.detail.kind == "AccuracyNotRepresentable"
+
+
+def test_accuracy_rounding_preserves_sentinels_and_refuses_invalid_bases():
+    text = _replace_codes(
+        _replace_bases(_load("B.sp3").to_sp3_string(), position=2.0, clock=2.0),
+        "G12",
+        position=(99, 99, 99, 999),
+    )
+    sentinel = sidereon.load_sp3(text.encode("ascii"))
+    rounded, report = sentinel.to_sp3_string_with_accuracy_rounding(
+        sidereon.Sp3AccuracyRoundingPolicy.CONSERVATIVE
+    )
+    codes = sidereon.load_sp3(rounded.encode("ascii")).record_accuracy_codes("G12", 0).p
+    assert tuple(codes.axis_exponents) == (99, 99, 99)
+    assert codes.clock_exponent == 999
+    assert (
+        tuple(
+            getattr(report.accuracy_sigmas, name)
+            for name in (
+                "position_sigma_x_m",
+                "position_sigma_y_m",
+                "position_sigma_z_m",
+                "velocity_sigma_x_m_s",
+                "velocity_sigma_y_m_s",
+                "velocity_sigma_z_m_s",
+                "clock_sigma_m",
+                "clock_rate_sigma_m_s",
+            )
+        )
+        == (0.0,) * 8
+    )
+
+    invalid_text = _replace_codes(
+        _replace_bases(_load("B.sp3").to_sp3_string(), position=0.0),
+        "G12",
+        position=(1, 99, 99, 999),
+    )
+    invalid = sidereon.load_sp3(invalid_text.encode("ascii"))
+    assert (
+        invalid.record_accuracy("G12", 0).p.position_sigma_m[0].kind == "invalid_base"
+    )
+    with pytest.raises(sidereon.Sp3WriteError) as excinfo:
+        invalid.to_sp3_string_with_accuracy_rounding(
+            sidereon.Sp3AccuracyRoundingPolicy.CONSERVATIVE
+        )
+    assert excinfo.value.detail.kind == "AccuracyNotRepresentable"
 
 
 def test_accuracy_rounding_requires_a_known_policy_and_data_writer_is_atomic(tmp_path):
