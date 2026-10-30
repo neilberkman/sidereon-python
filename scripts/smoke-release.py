@@ -202,6 +202,8 @@ def _check_sp3_accuracy_rounding() -> None:
     text, report = merged.to_sp3_string_with_accuracy_rounding(
         sidereon.Sp3AccuracyRoundingPolicy.CONSERVATIVE
     )
+    if not isinstance(report.record_values, sidereon.Sp3RoundingReport):
+        raise SystemExit("SP3 numeric rounding report is not publicly exported")
     reread = _sp3(text)
     source_sigma = merged.record_accuracy("G12", 0).p.position_sigma_m[0].value
     result_sigma = reread.record_accuracy("G12", 0).p.position_sigma_m[0].value

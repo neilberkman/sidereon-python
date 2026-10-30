@@ -123,7 +123,9 @@ def test_accuracy_rounding_writer_preserves_decoded_sigmas_after_merge(order):
     assert restored.kind == original.kind == "known"
     assert original.value == pytest.approx(0.018189894035458565, rel=1e-15)
     assert restored.value >= original.value
-    assert reread.state("G12", 0).position_m == merged.state("G12", 0).position_m
+    assert tuple(reread.state("G12", 0).position_m) == tuple(
+        merged.state("G12", 0).position_m
+    )
     assert reread.record_accuracy("G01", 0).p.position_sigma_m[0].kind == "unknown"
 
 
