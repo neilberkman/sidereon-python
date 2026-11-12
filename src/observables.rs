@@ -793,7 +793,7 @@ impl PyArcEpoch {
 #[pyclass(module = "sidereon._sidereon", name = "CycleSlipOptions")]
 #[derive(Clone, Copy)]
 pub struct PyCycleSlipOptions {
-    inner: CycleSlipOptions,
+    pub(crate) inner: CycleSlipOptions,
 }
 
 #[pymethods]

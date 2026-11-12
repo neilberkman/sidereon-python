@@ -6,6 +6,46 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ### Added
 
+- Add precise-positioning TEC APIs: `PppTecConfig`, `PppTecLevelingSample`,
+  `PppLeveledTecSample`, `PppTecLevelingResult`,
+  `PppIonosphericPiercePoint`, `PppCodeSlantTecEstimate`,
+  `PppPhaseSlantTecEstimate`, `PppTecObservation`, `PppTecEpoch`,
+  `PppTecEstimateSample`, `PppTecSatelliteArc`, and `PppTecEstimate`;
+  `code_geometry_free_m`, `phase_geometry_free_m`, the code/phase slant-TEC
+  functions, `thin_shell_mapping_function`, `vertical_tec_from_slant_tec`,
+  `level_slant_tec_arc`, `ionospheric_pierce_point`, `estimate_tec`, and the
+  `DEFAULT_IONOSPHERIC_SHELL_HEIGHT_M`, `ELECTRONS_PER_TECU_M2`, and
+  `TEC_GROUP_DELAY_COEFFICIENT`.
+- Add dual-frequency cycle-slip and epoch preparation APIs:
+  `PppCycleSlipConfig`, `PppRunningMeanVariance`,
+  `PppSatelliteCycleSlipState`, `PppMelbourneWubbenaUpdate`,
+  `PppGeometryFreeUpdate`, `PppDualFrequencyObservation`,
+  `PppDualFrequencyEpoch`, `PppCycleSlipFlagObservation`,
+  `PppCycleSlipFlagEpoch`, `PppWideLanePrepOptions`,
+  `PppPreparedFloatObservation`, `PppPreparedFloatEpoch`, `PppSplitArc`,
+  `PppWideLanePrepResult`, `PppFloatCycleSlipObservation`,
+  `PppFloatCycleSlipEpoch`, `PppFloatCycleSlipTaggedObservation`,
+  `PppFloatCycleSlipTaggedEpoch`, `melbourne_wubbena_cycles`,
+  `ppp_geometry_free_m`, `update_melbourne_wubbena`, `update_geometry_free`,
+  `ppp_detect_cycle_slips`, `prepare_widelane_fixed_epochs`,
+  `split_float_cycle_slip_epochs`, `DEFAULT_MINIMUM_ARC_LENGTH`, and
+  `DEFAULT_RUNNING_STATISTIC_K_FACTOR`.
+- Add PPP RAIM/FDE APIs: `PppRaimConfig`, `PppRaimStatus`,
+  `PppSatelliteTestStatistic`, `PppRaimResult`, `PppRaimGeometryRow`,
+  `PppRaimIdentification`, `PppProtectionLevels`, `PppRaimFdeStatus`,
+  `PppRaimFdeResult`, `global_test`, `global_test_with_geometry`,
+  `per_satellite_statistics`, `protection_levels`, `fde_float_epoch`, and
+  `solve_float_epoch_with_raim`.
+- Add kinematic PPP APIs: `PppKinematicState`,
+  `PppKinematicPositionProcessNoise`, `PppKinematicMotionModel`,
+  `PppKinematicProcessNoise`, `PppKinematicConfig`,
+  `PppKinematicUpdateSummary`, `PppKinematicEpochStatus`,
+  `PppKinematicEpochSolution`, `predict_kinematic_state`,
+  `correct_kinematic_state`, and `solve_kinematic_ppp`.
+- Name the precise-positioning collision functions `ppp_detect_cycle_slips`
+  and `ppp_geometry_free_m` because the released carrier-phase functions
+  `detect_cycle_slips` and `geometry_free_m` already represent different core
+  operations; the released functions are unchanged.
 - Add `PppAutoInitStrategy` with `solve_ppp_auto_init_float_with_strategy` and
   `solve_ppp_auto_init_fixed_with_strategy`; `solve_float_epoch`,
   `build_ppp_lookup` and `build_ppp_lookup_with_validity`; `PppAmbiguitySearch`

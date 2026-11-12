@@ -81,6 +81,7 @@ mod opm;
 mod orbit_determination;
 mod ppp;
 mod ppp_corrections;
+mod ppp_precise;
 mod products;
 mod propagation;
 mod qc;
@@ -1084,6 +1085,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     spk::register(m)?;
     rtk::register(m)?;
     ppp::register(m)?;
+    ppp_precise::register(m)?;
     propagation::register(m)?;
     frames::register(m)?;
     ionex::register(m)?;

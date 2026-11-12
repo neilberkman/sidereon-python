@@ -54,7 +54,7 @@ fn parse_sat(token: &str) -> PyResult<GnssSatelliteId> {
 #[pyclass(module = "sidereon._sidereon", name = "PppUnplacedObservation", eq)]
 #[derive(Clone, PartialEq)]
 pub struct PppUnplacedObservationRow {
-    inner: UnplacedObservation,
+    pub(crate) inner: UnplacedObservation,
 }
 
 #[pymethods]
@@ -179,11 +179,35 @@ impl PyPppFloatStatus {
 #[pyclass(module = "sidereon._sidereon", name = "PppFloatResidual", eq)]
 #[derive(Clone, PartialEq)]
 pub struct PyPppFloatResidual {
-    inner: FloatResidual,
+    pub(crate) inner: FloatResidual,
 }
 
 #[pymethods]
 impl PyPppFloatResidual {
+    /// Create a residual row for integrity analysis.
+    #[new]
+    #[pyo3(signature = (epoch_index, satellite_id, ambiguity_id, code_m, phase_m, code_weight, phase_weight))]
+    fn new(
+        epoch_index: usize,
+        satellite_id: String,
+        ambiguity_id: String,
+        code_m: f64,
+        phase_m: f64,
+        code_weight: f64,
+        phase_weight: f64,
+    ) -> Self {
+        Self {
+            inner: FloatResidual {
+                epoch_index,
+                satellite_id,
+                ambiguity_id,
+                code_m,
+                phase_m,
+                code_weight,
+                phase_weight,
+            },
+        }
+    }
     /// Input epoch index of the row.
     #[getter]
     fn epoch_index(&self) -> usize {
@@ -629,7 +653,7 @@ impl PyPppSsrObservationApplication {
 #[pyclass(module = "sidereon._sidereon", name = "PppSsrBiasExclusion", eq)]
 #[derive(Clone, PartialEq)]
 pub struct PyPppSsrBiasExclusion {
-    inner: SsrBiasExclusion,
+    pub(crate) inner: SsrBiasExclusion,
 }
 
 #[pymethods]
@@ -926,7 +950,7 @@ impl PyPppObservation {
 #[pyclass(module = "sidereon._sidereon", name = "PppEpoch", eq)]
 #[derive(Clone, PartialEq)]
 pub struct PyPppEpoch {
-    inner: FloatEpoch,
+    pub(crate) inner: FloatEpoch,
 }
 
 #[pymethods]
@@ -996,7 +1020,7 @@ impl PyPppEpoch {
 #[pyclass(module = "sidereon._sidereon", name = "PppFloatState", eq)]
 #[derive(Clone, PartialEq)]
 pub struct PyPppFloatState {
-    inner: FloatState,
+    pub(crate) inner: FloatState,
 }
 
 #[pymethods]
@@ -1084,7 +1108,7 @@ impl PyPppFloatState {
 #[pyclass(module = "sidereon._sidereon", name = "PppMeasurementWeights", eq)]
 #[derive(Clone, Copy, PartialEq)]
 pub struct PyPppMeasurementWeights {
-    inner: MeasurementWeights,
+    pub(crate) inner: MeasurementWeights,
 }
 
 #[pymethods]
@@ -1135,7 +1159,7 @@ impl Default for PyPppMeasurementWeights {
 #[pyclass(module = "sidereon._sidereon", name = "PppTroposphereOptions", eq)]
 #[derive(Clone, Copy, PartialEq)]
 pub struct PyPppTroposphereOptions {
-    inner: TroposphereOptions,
+    pub(crate) inner: TroposphereOptions,
 }
 
 #[pymethods]
@@ -1919,7 +1943,7 @@ impl PyPppRangeCorrections {
 #[pyclass(module = "sidereon._sidereon", name = "PppFloatConfig", eq)]
 #[derive(PartialEq)]
 pub struct PyPppFloatConfig {
-    inner: FloatSolveConfig,
+    pub(crate) inner: FloatSolveConfig,
 }
 
 #[pymethods]
@@ -2296,7 +2320,7 @@ impl PyPppTemporalCorrelationSummary {
 #[pyclass(module = "sidereon._sidereon", name = "PppFloatSolution", eq)]
 #[derive(PartialEq)]
 pub struct PyPppFloatSolution {
-    inner: FloatSolution,
+    pub(crate) inner: FloatSolution,
 }
 
 #[pymethods]

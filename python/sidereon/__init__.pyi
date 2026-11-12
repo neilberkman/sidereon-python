@@ -7073,6 +7073,16 @@ class PppFloatStatus:
 class PppFloatResidual:
     """One residual row of a PPP float or fixed solution."""
 
+    def __init__(
+        self,
+        epoch_index: int,
+        satellite_id: str,
+        ambiguity_id: str,
+        code_m: float,
+        phase_m: float,
+        code_weight: float,
+        phase_weight: float,
+    ) -> None: ...
     @property
     def epoch_index(self) -> int: ...
     @property
@@ -22169,3 +22179,543 @@ def signal_multipath_error_envelope(
 ) -> MultipathEnvelope:
     """Compute one-path early-late multipath error envelopes."""
     ...
+
+# Precise-positioning dual-frequency preparation, cycle-slip detection, and TEC.
+DEFAULT_IONOSPHERIC_SHELL_HEIGHT_M: float
+ELECTRONS_PER_TECU_M2: float
+TEC_GROUP_DELAY_COEFFICIENT: float
+DEFAULT_MINIMUM_ARC_LENGTH: int
+DEFAULT_RUNNING_STATISTIC_K_FACTOR: float
+
+class PppDualFrequencyObservation:
+    def __init__(
+        self,
+        satellite_id: str,
+        ambiguity_id: str,
+        p1_m: float,
+        p2_m: float,
+        phi1_cyc: float,
+        phi2_cyc: float,
+        f1_hz: float,
+        f2_hz: float,
+        lli1: int | None = ...,
+        lli2: int | None = ...,
+    ) -> None: ...
+    satellite_id: str
+    ambiguity_id: str
+    p1_m: float
+    p2_m: float
+    phi1_cyc: float
+    phi2_cyc: float
+    f1_hz: float
+    f2_hz: float
+    lli1: int | None
+    lli2: int | None
+
+class PppDualFrequencyEpoch:
+    def __init__(
+        self,
+        observations: Sequence[PppDualFrequencyObservation],
+        gap_time_s: float | None = ...,
+        gap_epoch: ExactEpoch | None = ...,
+    ) -> None: ...
+    gap_time_s: float | None
+    gap_epoch: ExactEpoch | None
+    observations: list[PppDualFrequencyObservation]
+
+class PppCycleSlipConfig:
+    def __init__(
+        self,
+        melbourne_wubbena_threshold_cycles: float = ...,
+        geometry_free_threshold_m: float = ...,
+        minimum_arc_length: int = ...,
+        running_statistic_k_factor: float = ...,
+        maximum_gap_s: float = ...,
+    ) -> None: ...
+    @staticmethod
+    def default() -> PppCycleSlipConfig: ...
+    def validate(self) -> None: ...
+    melbourne_wubbena_threshold_cycles: float
+    geometry_free_threshold_m: float
+    minimum_arc_length: int
+    running_statistic_k_factor: float
+    maximum_gap_s: float
+
+class PppRunningMeanVariance:
+    def __init__(self) -> None: ...
+    @staticmethod
+    def default() -> PppRunningMeanVariance: ...
+    def push(self, value: float) -> None: ...
+    def standard_deviation(self) -> float | None: ...
+    sample_count: int
+    mean: float
+    variance: float
+
+class PppSatelliteCycleSlipState:
+    def __init__(self) -> None: ...
+    @staticmethod
+    def default() -> PppSatelliteCycleSlipState: ...
+    def reset_arc(self) -> None: ...
+    previous_epoch_time_s: float | None
+    previous_epoch: ExactEpoch | None
+    previous_melbourne_wubbena_cycles: float | None
+    melbourne_wubbena: PppRunningMeanVariance
+    previous_geometry_free_m: float | None
+
+class PppMelbourneWubbenaUpdate:
+    melbourne_wubbena_cycles: float
+    slip: bool
+
+class PppGeometryFreeUpdate:
+    geometry_free_m: float
+    slip: bool
+    reset: bool
+
+class PppCycleSlipFlagObservation:
+    satellite_id: str
+    slip: bool
+    reasons: list[str]
+
+class PppCycleSlipFlagEpoch:
+    gap_time_s: float | None
+    gap_epoch: ExactEpoch | None
+    observations: list[PppCycleSlipFlagObservation]
+
+class PppWideLanePrepOptions:
+    def __init__(self, min_epochs: int, tolerance_cycles: float) -> None: ...
+    min_epochs: int
+    tolerance_cycles: float
+
+class PppPreparedFloatObservation:
+    satellite_id: str
+    ambiguity_id: str
+    code_m: float
+    phase_m: float
+
+class PppPreparedFloatEpoch:
+    epoch_index: int
+    observations: list[PppPreparedFloatObservation]
+
+class PppSplitArc:
+    satellite_id: str
+    ambiguity_id: str
+    start_epoch_index: int
+    end_epoch_index: int
+    n_epochs: int
+
+class PppWideLanePrepResult:
+    epochs: list[PppPreparedFloatEpoch]
+    wavelengths_m: dict[str, float]
+    offsets_m: dict[str, float]
+    wide_lane_cycles: dict[str, int]
+    dropped_sats: list[str]
+    split_arcs: list[PppSplitArc]
+
+class PppFloatCycleSlipObservation:
+    def __init__(
+        self,
+        satellite_id: str,
+        ambiguity_id: str,
+        raw: PppDualFrequencyObservation | None = ...,
+    ) -> None: ...
+    satellite_id: str
+    ambiguity_id: str
+    raw: PppDualFrequencyObservation | None
+
+class PppFloatCycleSlipEpoch:
+    def __init__(
+        self,
+        observations: Sequence[PppFloatCycleSlipObservation],
+        gap_time_s: float | None = ...,
+        gap_epoch: ExactEpoch | None = ...,
+    ) -> None: ...
+    gap_time_s: float | None
+    gap_epoch: ExactEpoch | None
+    observations: list[PppFloatCycleSlipObservation]
+
+class PppFloatCycleSlipTaggedObservation:
+    satellite_id: str
+    ambiguity_id: str
+
+class PppFloatCycleSlipTaggedEpoch:
+    observations: list[PppFloatCycleSlipTaggedObservation]
+
+class PppTecConfig:
+    def __init__(
+        self, shell_height_m: float = ..., earth_radius_m: float = ...
+    ) -> None: ...
+    @staticmethod
+    def default() -> PppTecConfig: ...
+    def validate(self) -> None: ...
+    shell_height_m: float
+    earth_radius_m: float
+
+class PppTecLevelingSample:
+    def __init__(
+        self,
+        code_slant_tec_tecu: float,
+        phase_slant_tec_tecu: float,
+        elevation_rad: float,
+    ) -> None: ...
+    code_slant_tec_tecu: float
+    phase_slant_tec_tecu: float
+    elevation_rad: float
+
+class PppLeveledTecSample:
+    code_slant_tec_tecu: float
+    phase_slant_tec_tecu: float
+    leveled_slant_tec_tecu: float
+    mapping_function: float
+    vertical_tec_tecu: float
+
+class PppTecLevelingResult:
+    phase_bias_tecu: float
+    samples: list[PppLeveledTecSample]
+
+class PppIonosphericPiercePoint:
+    latitude_rad: float
+    longitude_rad: float
+    latitude_deg: float
+    longitude_deg: float
+    earth_central_angle_rad: float
+    shell_height_m: float
+
+class PppCodeSlantTecEstimate:
+    satellite_id: str
+    ambiguity_id: str
+    code_geometry_free_m: float
+    slant_tec_tecu: float
+
+class PppPhaseSlantTecEstimate:
+    satellite_id: str
+    ambiguity_id: str
+    phase_geometry_free_m: float
+    slant_tec_tecu: float
+
+class PppTecObservation:
+    def __init__(
+        self,
+        observation: PppDualFrequencyObservation,
+        elevation_rad: float,
+        azimuth_rad: float,
+    ) -> None: ...
+    observation: PppDualFrequencyObservation
+    elevation_rad: float
+    azimuth_rad: float
+
+class PppTecEpoch:
+    def __init__(
+        self,
+        time_s: float,
+        receiver_latitude_rad: float,
+        receiver_longitude_rad: float,
+        observations: Sequence[PppTecObservation],
+    ) -> None: ...
+    time_s: float
+    receiver_latitude_rad: float
+    receiver_longitude_rad: float
+    observations: list[PppTecObservation]
+
+class PppTecEstimateSample:
+    time_s: float
+    elevation_rad: float
+    azimuth_rad: float
+    code_geometry_free_m: float
+    phase_geometry_free_m: float
+    code_slant_tec_tecu: float
+    phase_slant_tec_tecu: float
+    leveled_slant_tec_tecu: float
+    mapping_function: float
+    vertical_tec_tecu: float
+    pierce_point: PppIonosphericPiercePoint
+
+class PppTecSatelliteArc:
+    satellite_id: str
+    ambiguity_id: str
+    phase_bias_tecu: float
+    samples: list[PppTecEstimateSample]
+
+class PppTecEstimate:
+    arcs: list[PppTecSatelliteArc]
+
+def melbourne_wubbena_cycles(observation: PppDualFrequencyObservation) -> float: ...
+def ppp_geometry_free_m(observation: PppDualFrequencyObservation) -> float: ...
+def update_melbourne_wubbena(
+    state: PppSatelliteCycleSlipState,
+    observation: PppDualFrequencyObservation,
+    config: PppCycleSlipConfig,
+) -> PppMelbourneWubbenaUpdate: ...
+def update_geometry_free(
+    state: PppSatelliteCycleSlipState,
+    observation: PppDualFrequencyObservation,
+    config: PppCycleSlipConfig,
+    epoch_time_s: float | None = ...,
+    epoch: ExactEpoch | None = ...,
+) -> PppGeometryFreeUpdate: ...
+def ppp_detect_cycle_slips(
+    epochs: Sequence[PppDualFrequencyEpoch], config: PppCycleSlipConfig
+) -> list[PppCycleSlipFlagEpoch]: ...
+def prepare_widelane_fixed_epochs(
+    epochs: Sequence[PppDualFrequencyEpoch],
+    wide_lane: PppWideLanePrepOptions,
+    cycle_slip_policy_label: str,
+    cycle_slip_options: CycleSlipOptions,
+) -> PppWideLanePrepResult: ...
+def split_float_cycle_slip_epochs(
+    epochs: Sequence[PppFloatCycleSlipEpoch], cycle_slip_options: CycleSlipOptions
+) -> list[PppFloatCycleSlipTaggedEpoch]: ...
+def code_geometry_free_m(observation: PppDualFrequencyObservation) -> float: ...
+def phase_geometry_free_m(observation: PppDualFrequencyObservation) -> float: ...
+def slant_tec_from_code_geometry_free_m(
+    value: float, f1_hz: float, f2_hz: float
+) -> float: ...
+def slant_tec_from_phase_geometry_free_m(
+    value: float, f1_hz: float, f2_hz: float
+) -> float: ...
+def estimate_code_slant_tec(
+    observation: PppDualFrequencyObservation,
+) -> PppCodeSlantTecEstimate: ...
+def estimate_phase_slant_tec(
+    observation: PppDualFrequencyObservation,
+) -> PppPhaseSlantTecEstimate: ...
+def thin_shell_mapping_function(
+    elevation_rad: float, config: PppTecConfig
+) -> float: ...
+def vertical_tec_from_slant_tec(
+    slant_tec_tecu: float, elevation_rad: float, config: PppTecConfig
+) -> float: ...
+def level_slant_tec_arc(
+    samples: Sequence[PppTecLevelingSample], config: PppTecConfig
+) -> PppTecLevelingResult: ...
+def ionospheric_pierce_point(
+    receiver_latitude_rad: float,
+    receiver_longitude_rad: float,
+    elevation_rad: float,
+    azimuth_rad: float,
+    config: PppTecConfig,
+) -> PppIonosphericPiercePoint: ...
+def estimate_tec(
+    epochs: Sequence[PppTecEpoch], config: PppTecConfig
+) -> PppTecEstimate: ...
+
+class PppRaimConfig:
+    def __init__(
+        self,
+        false_alarm_probability: float = ...,
+        missed_detection_probability: float = ...,
+        measurement_sigma_m: float = ...,
+        chi_square_threshold: float | None = ...,
+    ) -> None: ...
+    @staticmethod
+    def default() -> PppRaimConfig: ...
+    false_alarm_probability: float
+    missed_detection_probability: float
+    measurement_sigma_m: float
+    chi_square_threshold: float | None
+
+class PppRaimStatus:
+    PASSED = ...
+    FAULT_DETECTED = ...
+    NOT_ENOUGH_REDUNDANCY = ...
+    label: str
+
+class PppSatelliteTestStatistic:
+    satellite_id: str
+    code: float
+    phase: float
+    statistic: float
+    code_testable: bool
+    phase_testable: bool
+
+class PppRaimResult:
+    status: PppRaimStatus
+    detected: bool
+    test_statistic: float
+    threshold: float | None
+    redundancy: int
+    satellite_statistics: list[PppSatelliteTestStatistic]
+    most_likely_fault: str | None
+    hpl_m: float | None
+    vpl_m: float | None
+
+class PppRaimGeometryRow:
+    def __init__(self, satellite_id: str, line_of_sight: Sequence[float]) -> None: ...
+    satellite_id: str
+    line_of_sight: tuple[float, float, float]
+
+class PppRaimIdentification:
+    statistics: list[PppSatelliteTestStatistic]
+    most_likely_fault: str | None
+
+class PppProtectionLevels:
+    hpl_m: float
+    vpl_m: float
+
+class PppRaimFdeStatus:
+    CLEAN = ...
+    RESTORED = ...
+    CANNOT_EXCLUDE = ...
+    INTEGRITY_NOT_RESTORED = ...
+    label: str
+
+class PppRaimFdeResult:
+    solution: PppFloatSolution
+    raim: PppRaimResult
+    excluded_sats: list[str]
+    status: PppRaimFdeStatus
+
+def global_test(
+    residuals: Sequence[PppFloatResidual], n_states: int, config: PppRaimConfig
+) -> PppRaimResult: ...
+def global_test_with_geometry(
+    residuals: Sequence[PppFloatResidual],
+    geometry: Sequence[PppRaimGeometryRow],
+    config: PppRaimConfig,
+) -> PppRaimResult: ...
+def per_satellite_statistics(
+    residuals: Sequence[PppFloatResidual],
+    geometry: Sequence[PppRaimGeometryRow],
+    config: PppRaimConfig,
+) -> PppRaimIdentification: ...
+def protection_levels(
+    geometry: Sequence[PppRaimGeometryRow],
+    receiver: Wgs84Geodetic,
+    config: PppRaimConfig,
+) -> PppProtectionLevels: ...
+def fde_float_epoch(
+    source: Sp3,
+    epoch: PppEpoch,
+    initial_state: PppFloatState,
+    solve_config: PppFloatConfig,
+    raim_config: PppRaimConfig,
+) -> PppRaimFdeResult: ...
+def solve_float_epoch_with_raim(
+    source: Sp3,
+    epoch: PppEpoch,
+    initial_state: PppFloatState,
+    solve_config: PppFloatConfig,
+    raim_config: PppRaimConfig,
+) -> PppRaimFdeResult: ...
+
+class PppKinematicState:
+    def __init__(
+        self,
+        position_m: Sequence[float] = ...,
+        clock_m: float = ...,
+        ztd_residual_m: float = ...,
+        ambiguities_m: Mapping[str, float] | None = ...,
+    ) -> None: ...
+    @staticmethod
+    def default() -> PppKinematicState: ...
+    def dimension(self) -> int: ...
+    position_m: list[float]
+    clock_m: float
+    ztd_residual_m: float
+    ambiguities_m: dict[str, float]
+
+class PppKinematicPositionProcessNoise:
+    @staticmethod
+    def random_walk(
+        spectral_density_m2_s: float,
+    ) -> PppKinematicPositionProcessNoise: ...
+    @staticmethod
+    def white_noise_acceleration(
+        spectral_density_m2_s3: float,
+    ) -> PppKinematicPositionProcessNoise: ...
+    @staticmethod
+    def default() -> PppKinematicPositionProcessNoise: ...
+    kind: str
+    spectral_density_m2_s: float | None
+    spectral_density_m2_s3: float | None
+
+class PppKinematicMotionModel:
+    @staticmethod
+    def hold() -> PppKinematicMotionModel: ...
+    @staticmethod
+    def constant_velocity(velocity_m_s: Sequence[float]) -> PppKinematicMotionModel: ...
+    @staticmethod
+    def default() -> PppKinematicMotionModel: ...
+    kind: str
+    velocity_m_s: list[float] | None
+
+class PppKinematicProcessNoise:
+    def __init__(
+        self,
+        position: PppKinematicPositionProcessNoise,
+        clock_white_m2_s: float,
+        ztd_random_walk_m2_s: float,
+        ambiguity_hold_m2_s: float,
+    ) -> None: ...
+    @staticmethod
+    def default() -> PppKinematicProcessNoise: ...
+    position: PppKinematicPositionProcessNoise
+    clock_white_m2_s: float
+    ztd_random_walk_m2_s: float
+    ambiguity_hold_m2_s: float
+
+class PppKinematicConfig:
+    def __init__(
+        self,
+        initial_state: PppKinematicState | None = ...,
+        initial_covariance_m2: Sequence[Sequence[float]] | None = ...,
+        motion: PppKinematicMotionModel | None = ...,
+        process_noise: PppKinematicProcessNoise | None = ...,
+        new_ambiguity_variance_m2: float | None = ...,
+        weights: PppMeasurementWeights | None = ...,
+        tropo: PppTroposphereOptions | None = ...,
+        corrections: PppRangeCorrections | None = ...,
+    ) -> None: ...
+    @staticmethod
+    def default() -> PppKinematicConfig: ...
+    initial_state: PppKinematicState
+    initial_covariance_m2: list[list[float]]
+    motion: PppKinematicMotionModel
+    process_noise: PppKinematicProcessNoise
+    new_ambiguity_variance_m2: float
+    weights: PppMeasurementWeights
+    tropo: PppTroposphereOptions
+    corrections: PppRangeCorrections
+
+class PppKinematicUpdateSummary:
+    innovation_rms_m: float
+    used_sats: list[str]
+    ssr_bias_exclusions: list[PppSsrBiasExclusion]
+    unplaced_observations: list[PppUnplacedObservation]
+
+class PppKinematicEpochStatus:
+    UPDATED = ...
+    PREDICTED_ONLY = ...
+    label: str
+
+class PppKinematicEpochSolution:
+    position_m: list[float]
+    clock_m: float
+    ztd_residual_m: float
+    ambiguities_m: dict[str, float]
+    position_covariance_m2: list[list[float]]
+    used_sats: list[str]
+    innovation_rms_m: float
+    ssr_bias_exclusions: list[PppSsrBiasExclusion]
+    unplaced_observations: list[PppUnplacedObservation]
+    status: PppKinematicEpochStatus
+
+def predict_kinematic_state(
+    state: PppKinematicState,
+    covariance_m2: Sequence[Sequence[float]],
+    dt_s: float,
+    active_ambiguity_ids: Sequence[str],
+    config: PppKinematicConfig,
+) -> list[list[float]]: ...
+def correct_kinematic_state(
+    source: Sp3,
+    epoch_index: int,
+    epoch: PppEpoch,
+    state: PppKinematicState,
+    covariance_m2: Sequence[Sequence[float]],
+    config: PppKinematicConfig,
+) -> tuple[PppKinematicUpdateSummary, list[list[float]]]: ...
+def solve_kinematic_ppp(
+    source: Sp3,
+    epochs: Sequence[PppEpoch],
+    config: PppKinematicConfig,
+) -> list[PppKinematicEpochSolution]: ...
