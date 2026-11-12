@@ -1455,6 +1455,64 @@ def test_tdm_input_error_kind_unknown_variant_contract():
     assert unknown.kind == "unknown"
     assert getattr(unknown, "name", "UNKNOWN") == "UNKNOWN"
     assert repr(unknown) == "TdmInputErrorKind.UNKNOWN"
+    assert str(unknown) == "unknown"
+
+
+def test_tdm_input_error_kind_display_texts_match_core():
+    expected = [
+        (sidereon.TdmInputErrorKind.MISSING, "missing"),
+        (sidereon.TdmInputErrorKind.FLOAT_PARSE, "invalid float"),
+        (sidereon.TdmInputErrorKind.NON_FINITE, "not finite"),
+        (sidereon.TdmInputErrorKind.NOT_POSITIVE, "not positive"),
+        (sidereon.TdmInputErrorKind.OUT_OF_RANGE, "out of range"),
+        (sidereon.TdmInputErrorKind.INVALID_INDEX, "invalid index"),
+        (sidereon.TdmInputErrorKind.UNKNOWN_KEYWORD, "unknown keyword"),
+        (sidereon.TdmInputErrorKind.UNEXPECTED_UNIT, "unexpected unit"),
+        (sidereon.TdmInputErrorKind.NON_INTEGER, "not an integer"),
+        (sidereon.TdmInputErrorKind.NEGATIVE, "negative"),
+        (sidereon.TdmInputErrorKind.NEGATIVE_ZERO, "negative zero"),
+        (sidereon.TdmInputErrorKind.UNIT_MISMATCH, "unit mismatch"),
+        (sidereon.TdmInputErrorKind.DECIMAL_MISMATCH, "decimal mismatch"),
+        (sidereon.TdmInputErrorKind.UNKNOWN, "unknown"),
+    ]
+
+    assert [str(kind) for kind, _ in expected] == [text for _, text in expected]
+
+
+def test_tdm_policy_result_classes_have_value_equality():
+    text = (FIXTURES / "tdm" / "annex_e_01.kvn").read_text()
+    parsed_left = sidereon.parse_tdm_kvn_with_policy(text)
+    parsed_right = sidereon.parse_tdm_kvn_with_policy(text)
+    different_text = text.replace("CCSDS_TDM_VERS = 2.0", "CCSDS_TDM_VERS = 2.1", 1)
+    parsed_different = sidereon.parse_tdm_kvn_with_policy(different_text)
+    assert parsed_left == parsed_right
+    assert parsed_left != parsed_different
+
+    written_left = sidereon.encode_tdm_kvn_with_policy(parsed_left.message)
+    written_right = sidereon.encode_tdm_kvn_with_policy(parsed_right.message)
+    written_different = sidereon.encode_tdm_kvn_with_policy(parsed_different.message)
+    assert written_left == written_right
+    assert written_left != written_different
+
+    fields = [
+        sidereon.TdmField("TIME_SYSTEM", "UTC"),
+        sidereon.TdmField("PARTICIPANT_1", "DSS-25"),
+    ]
+    metadata_left = sidereon.TdmMetadata.from_raw_with_policy(fields)
+    metadata_right = sidereon.TdmMetadata.from_raw_with_policy(
+        [
+            sidereon.TdmField("TIME_SYSTEM", "UTC"),
+            sidereon.TdmField("PARTICIPANT_1", "DSS-25"),
+        ]
+    )
+    metadata_different = sidereon.TdmMetadata.from_raw_with_policy(
+        [
+            sidereon.TdmField("TIME_SYSTEM", "TAI"),
+            sidereon.TdmField("PARTICIPANT_1", "DSS-25"),
+        ]
+    )
+    assert metadata_left == metadata_right
+    assert metadata_left != metadata_different
 
 
 def test_tdm_error_detail_values_are_preserved_on_public_exceptions():

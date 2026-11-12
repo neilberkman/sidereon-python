@@ -2,6 +2,13 @@
 
 All notable changes to the Sidereon Python interface are documented here.
 
+## Unreleased
+
+### Added
+
+- Expose core display text through `str(TdmInputErrorKind)` and value equality
+  for policy-aware TDM result objects.
+
 ## [3.0.6] - 2026-10-30
 
 ### Added

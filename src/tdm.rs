@@ -1572,6 +1572,27 @@ impl From<TdmInputErrorKind> for PyTdmInputErrorKind {
     }
 }
 
+impl PyTdmInputErrorKind {
+    fn core_kind(self) -> Option<TdmInputErrorKind> {
+        match self {
+            Self::MISSING => Some(TdmInputErrorKind::Missing),
+            Self::FLOAT_PARSE => Some(TdmInputErrorKind::FloatParse),
+            Self::NON_FINITE => Some(TdmInputErrorKind::NonFinite),
+            Self::NOT_POSITIVE => Some(TdmInputErrorKind::NotPositive),
+            Self::OUT_OF_RANGE => Some(TdmInputErrorKind::OutOfRange),
+            Self::INVALID_INDEX => Some(TdmInputErrorKind::InvalidIndex),
+            Self::UNKNOWN_KEYWORD => Some(TdmInputErrorKind::UnknownKeyword),
+            Self::UNEXPECTED_UNIT => Some(TdmInputErrorKind::UnexpectedUnit),
+            Self::NON_INTEGER => Some(TdmInputErrorKind::NonInteger),
+            Self::NEGATIVE => Some(TdmInputErrorKind::Negative),
+            Self::NEGATIVE_ZERO => Some(TdmInputErrorKind::NegativeZero),
+            Self::UNIT_MISMATCH => Some(TdmInputErrorKind::UnitMismatch),
+            Self::DECIMAL_MISMATCH => Some(TdmInputErrorKind::DecimalMismatch),
+            Self::UNKNOWN => None,
+        }
+    }
+}
+
 #[pymethods]
 impl PyTdmInputErrorKind {
     #[getter]
@@ -1596,6 +1617,13 @@ impl PyTdmInputErrorKind {
 
     fn __repr__(&self) -> String {
         format!("TdmInputErrorKind.{}", self.kind().to_uppercase())
+    }
+
+    /// Core display text, or `"unknown"` for the forward-compatible fallback.
+    fn __str__(&self) -> String {
+        self.core_kind()
+            .map(|kind| kind.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
     }
 }
 
@@ -1916,6 +1944,10 @@ impl PyTdmParseResult {
             self.warnings.len()
         )
     }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.message == other.message && self.warnings == other.warnings
+    }
 }
 
 /// Result of policy-aware TDM serialization.
@@ -1972,6 +2004,10 @@ impl PyTdmWriteResult {
             self.departures.len()
         )
     }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.text == other.text && self.departures == other.departures
+    }
 }
 
 /// Result of policy-aware TDM metadata construction or replacement.
@@ -2027,6 +2063,10 @@ impl PyTdmMetadataResult {
             self.metadata.inner.fields.len(),
             self.departures.len()
         )
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.metadata == other.metadata && self.departures == other.departures
     }
 }
 
