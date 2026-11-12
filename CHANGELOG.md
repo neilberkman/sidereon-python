@@ -6,8 +6,33 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ### Added
 
+- Add `PppAutoInitStrategy` with `solve_ppp_auto_init_float_with_strategy` and
+  `solve_ppp_auto_init_fixed_with_strategy`; `solve_float_epoch`,
+  `build_ppp_lookup` and `build_ppp_lookup_with_validity`; `PppAmbiguitySearch`
+  with the integer candidate scores on `PppFixedSolution`; the range-rate
+  velocity model (`PppVelocityConfig`, `PppVelocityRobustConfig`,
+  `PppReceiverVelocityState`, `PppVelocityObservation`,
+  `PppRangeRatePrediction`, `PppVelocitySolution`, `predict_range_rate_m_s`,
+  `solve_velocity_least_squares`); `VMF_SITE_MAX_SAMPLES` and
+  `VMF_SITE_SINGLE_SAMPLE_CLAMP_DAYS`. Solve-error detail dicts, including the
+  new velocity errors, compare by value.
 - Expose core display text through `str(TdmInputErrorKind)` and value equality
   for policy-aware TDM result objects.
+
+### Changed
+
+- The PPP value, configuration and result classes now compare by engine value
+  with `==` instead of by identity, which makes them unhashable, as Python
+  requires for mutable value types: `PppAutoInitOptions`,
+  `PppCorrectionLookup`, `PppEpoch`, `PppFixedAmbiguityOptions`,
+  `PppFixedConfig`, `PppFixedSolution`, `PppFloatConfig`, `PppFloatOptions`,
+  `PppFloatSolution`, `PppFloatState`, `PppMeasurementWeights`,
+  `PppObservation`, `PppPcvSample`, `PppRangeCorrections`,
+  `PppReceiverAntennaFrequency`, `PppReceiverAntennaOptions`,
+  `PppSatelliteClockCorrections`, `PppSsrBiasExclusion`,
+  `PppSsrObservationApplication`, `PppSsrSignalReport`,
+  `PppSsrTransmitTimeFailure`, `PppTemporalCorrelationSummary`,
+  `PppTroposphereOptions` and `PppUnplacedObservation`.
 
 ## [3.0.6] - 2026-10-30
 

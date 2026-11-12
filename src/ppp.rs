@@ -23,15 +23,17 @@ use sidereon_core::precise_positioning::defaults::{
 };
 use sidereon_core::precise_positioning::{
     solve_ppp_auto_init_fixed as core_solve_ppp_auto_init_fixed,
-    solve_ppp_auto_init_float as core_solve_ppp_auto_init_float, FixedAmbiguityOptions,
-    FixedSolution, FixedSolveConfig, FloatEpoch, FloatObservation, FloatObservationSignals,
-    FloatResidual, FloatSolution, FloatSolveConfig, FloatSolveOptions, FloatState, FloatStatus,
-    IntegerStatus as PppIntegerStatus, MeasurementWeights, PcvSample, PppAutoInitOptions,
-    PppCorrectionLookup, PppInitialGuess, RangeCorrections, ReceiverAntennaFrequency,
-    ReceiverAntennaOptions, SatelliteClockCorrections, SsrBiasExclusion, SsrIfCombinationStatus,
+    solve_ppp_auto_init_float as core_solve_ppp_auto_init_float, AmbiguitySearch,
+    FixedAmbiguityOptions, FixedSolution, FixedSolveConfig, FloatEpoch, FloatObservation,
+    FloatObservationSignals, FloatResidual, FloatSolution, FloatSolveConfig, FloatSolveOptions,
+    FloatState, FloatStatus, IntegerStatus as PppIntegerStatus, MeasurementWeights, PcvSample,
+    PppAutoInitOptions, PppAutoInitStrategy, PppCorrectionLookup, PppInitialGuess,
+    RangeCorrections, RangeRatePrediction, ReceiverAntennaFrequency, ReceiverAntennaOptions,
+    ReceiverVelocityState, SatelliteClockCorrections, SsrBiasExclusion, SsrIfCombinationStatus,
     SsrObsApplicationReport, SsrObsSignalReport, SsrTransmitTimeFailure,
     TemporalCorrelationSummary, TropoMapping, TroposphereOptions, UnplacedObservation,
-    UnplacedObservationReason, VmfSiteSample, VmfSiteSeries,
+    UnplacedObservationReason, VelocityConfig, VelocityObservation, VelocityRobustConfig,
+    VelocitySolution, VmfSiteSample, VmfSiteSeries,
 };
 use sidereon_core::ssr::{
     SignalCode, SsrCodeBiasQueryResult, SsrPhaseBiasQueryResult, SsrSolution,
@@ -49,8 +51,8 @@ fn parse_sat(token: &str) -> PyResult<GnssSatelliteId> {
 
 /// A PPP observation left out before the solve because no transmission epoch
 /// can be placed from it.
-#[pyclass(module = "sidereon._sidereon", name = "PppUnplacedObservation")]
-#[derive(Clone)]
+#[pyclass(module = "sidereon._sidereon", name = "PppUnplacedObservation", eq)]
+#[derive(Clone, PartialEq)]
 pub struct PppUnplacedObservationRow {
     inner: UnplacedObservation,
 }
@@ -241,8 +243,8 @@ fn residual_rows(rows: &[FloatResidual]) -> Vec<PyPppFloatResidual> {
 
 /// Why the SSR/HAS biases recorded for an observation do not hold at its
 /// transmission time.
-#[pyclass(module = "sidereon._sidereon", name = "PppSsrTransmitTimeFailure")]
-#[derive(Clone)]
+#[pyclass(module = "sidereon._sidereon", name = "PppSsrTransmitTimeFailure", eq)]
+#[derive(Clone, PartialEq)]
 pub struct PyPppSsrTransmitTimeFailure {
     inner: SsrTransmitTimeFailure,
 }
@@ -328,8 +330,8 @@ impl PyPppSsrTransmitTimeFailure {
 }
 
 /// The query of one signal's SSR/HAS bias for an observation.
-#[pyclass(module = "sidereon._sidereon", name = "PppSsrSignalReport")]
-#[derive(Clone)]
+#[pyclass(module = "sidereon._sidereon", name = "PppSsrSignalReport", eq)]
+#[derive(Clone, PartialEq)]
 pub struct PyPppSsrSignalReport {
     epoch_index: usize,
     satellite_id: String,
@@ -486,8 +488,12 @@ fn combination_status_ut1_reason(status: &SsrIfCombinationStatus) -> Option<&'st
 }
 
 /// How SSR/HAS biases were applied to one observation.
-#[pyclass(module = "sidereon._sidereon", name = "PppSsrObservationApplication")]
-#[derive(Clone)]
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "PppSsrObservationApplication",
+    eq
+)]
+#[derive(Clone, PartialEq)]
 pub struct PyPppSsrObservationApplication {
     inner: SsrObsApplicationReport,
 }
@@ -620,8 +626,8 @@ impl PyPppSsrObservationApplication {
 
 /// An observation left out of a PPP solve because an SSR/HAS bias its
 /// corrections require was not resolved.
-#[pyclass(module = "sidereon._sidereon", name = "PppSsrBiasExclusion")]
-#[derive(Clone)]
+#[pyclass(module = "sidereon._sidereon", name = "PppSsrBiasExclusion", eq)]
+#[derive(Clone, PartialEq)]
 pub struct PyPppSsrBiasExclusion {
     inner: SsrBiasExclusion,
 }
@@ -802,8 +808,8 @@ impl PyPppCivilDateTime {
 }
 
 /// One ionosphere-free code/phase observation in a PPP epoch.
-#[pyclass(module = "sidereon._sidereon", name = "PppObservation")]
-#[derive(Clone)]
+#[pyclass(module = "sidereon._sidereon", name = "PppObservation", eq)]
+#[derive(Clone, PartialEq)]
 pub struct PyPppObservation {
     inner: FloatObservation,
 }
@@ -917,8 +923,8 @@ impl PyPppObservation {
 }
 
 /// One static PPP epoch.
-#[pyclass(module = "sidereon._sidereon", name = "PppEpoch")]
-#[derive(Clone)]
+#[pyclass(module = "sidereon._sidereon", name = "PppEpoch", eq)]
+#[derive(Clone, PartialEq)]
 pub struct PyPppEpoch {
     inner: FloatEpoch,
 }
@@ -987,8 +993,8 @@ impl PyPppEpoch {
 }
 
 /// Initial PPP state.
-#[pyclass(module = "sidereon._sidereon", name = "PppFloatState")]
-#[derive(Clone)]
+#[pyclass(module = "sidereon._sidereon", name = "PppFloatState", eq)]
+#[derive(Clone, PartialEq)]
 pub struct PyPppFloatState {
     inner: FloatState,
 }
@@ -1075,8 +1081,8 @@ impl PyPppFloatState {
 }
 
 /// PPP measurement weights.
-#[pyclass(module = "sidereon._sidereon", name = "PppMeasurementWeights")]
-#[derive(Clone, Copy)]
+#[pyclass(module = "sidereon._sidereon", name = "PppMeasurementWeights", eq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct PyPppMeasurementWeights {
     inner: MeasurementWeights,
 }
@@ -1126,8 +1132,8 @@ impl Default for PyPppMeasurementWeights {
 }
 
 /// PPP troposphere controls.
-#[pyclass(module = "sidereon._sidereon", name = "PppTroposphereOptions")]
-#[derive(Clone, Copy)]
+#[pyclass(module = "sidereon._sidereon", name = "PppTroposphereOptions", eq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct PyPppTroposphereOptions {
     inner: TroposphereOptions,
 }
@@ -1244,8 +1250,8 @@ impl Default for PyPppTroposphereOptions {
 }
 
 /// Iteration and convergence controls for PPP.
-#[pyclass(module = "sidereon._sidereon", name = "PppFloatOptions")]
-#[derive(Clone, Copy)]
+#[pyclass(module = "sidereon._sidereon", name = "PppFloatOptions", eq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct PyPppFloatOptions {
     inner: FloatSolveOptions,
 }
@@ -1323,8 +1329,8 @@ impl Default for PyPppFloatOptions {
 }
 
 /// One ANTEX PCV sample.
-#[pyclass(module = "sidereon._sidereon", name = "PppPcvSample")]
-#[derive(Clone)]
+#[pyclass(module = "sidereon._sidereon", name = "PppPcvSample", eq)]
+#[derive(Clone, PartialEq)]
 pub struct PyPppPcvSample {
     pub(crate) inner: PcvSample,
 }
@@ -1370,8 +1376,12 @@ impl PyPppPcvSample {
 }
 
 /// Receiver antenna calibration at one frequency.
-#[pyclass(module = "sidereon._sidereon", name = "PppReceiverAntennaFrequency")]
-#[derive(Clone)]
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "PppReceiverAntennaFrequency",
+    eq
+)]
+#[derive(Clone, PartialEq)]
 pub struct PyPppReceiverAntennaFrequency {
     pub(crate) inner: ReceiverAntennaFrequency,
 }
@@ -1424,8 +1434,8 @@ impl PyPppReceiverAntennaFrequency {
 }
 
 /// Receiver antenna correction options.
-#[pyclass(module = "sidereon._sidereon", name = "PppReceiverAntennaOptions")]
-#[derive(Clone)]
+#[pyclass(module = "sidereon._sidereon", name = "PppReceiverAntennaOptions", eq)]
+#[derive(Clone, PartialEq)]
 pub struct PyPppReceiverAntennaOptions {
     pub(crate) inner: ReceiverAntennaOptions,
 }
@@ -1500,8 +1510,12 @@ impl PyPppReceiverAntennaOptions {
 }
 
 /// Fine satellite clock series, keyed by satellite token.
-#[pyclass(module = "sidereon._sidereon", name = "PppSatelliteClockCorrections")]
-#[derive(Clone)]
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "PppSatelliteClockCorrections",
+    eq
+)]
+#[derive(Clone, PartialEq)]
 pub struct PyPppSatelliteClockCorrections {
     pub(crate) inner: SatelliteClockCorrections,
 }
@@ -1509,14 +1523,16 @@ pub struct PyPppSatelliteClockCorrections {
 #[pymethods]
 impl PyPppSatelliteClockCorrections {
     #[new]
-    #[pyo3(signature = (series))]
-    fn new(series: &Bound<'_, PyDict>) -> PyResult<Self> {
+    #[pyo3(signature = (series=None))]
+    fn new(series: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
         let mut core_series = BTreeMap::new();
-        for (key, val) in series.iter() {
-            let token: String = key.extract()?;
-            let sat = parse_sat(&token)?;
-            let records: Vec<(f64, f64)> = val.extract()?;
-            core_series.insert(sat, records);
+        if let Some(series) = series {
+            for (key, val) in series.iter() {
+                let token: String = key.extract()?;
+                let sat = parse_sat(&token)?;
+                let records: Vec<(f64, f64)> = val.extract()?;
+                core_series.insert(sat, records);
+            }
         }
         Ok(Self {
             inner: SatelliteClockCorrections {
@@ -1544,8 +1560,8 @@ impl PyPppSatelliteClockCorrections {
 }
 
 /// Indexed static PPP correction lookup tables.
-#[pyclass(module = "sidereon._sidereon", name = "PppCorrectionLookup")]
-#[derive(Clone)]
+#[pyclass(module = "sidereon._sidereon", name = "PppCorrectionLookup", eq)]
+#[derive(Clone, PartialEq)]
 pub struct PyPppCorrectionLookup {
     pub(crate) inner: PppCorrectionLookup,
 }
@@ -1820,8 +1836,8 @@ impl PyPppCorrectionLookup {
 }
 
 /// Range-correction options and precomputed correction tables.
-#[pyclass(module = "sidereon._sidereon", name = "PppRangeCorrections")]
-#[derive(Clone)]
+#[pyclass(module = "sidereon._sidereon", name = "PppRangeCorrections", eq)]
+#[derive(Clone, PartialEq)]
 pub struct PyPppRangeCorrections {
     pub(crate) inner: RangeCorrections,
 }
@@ -1900,7 +1916,8 @@ impl PyPppRangeCorrections {
 }
 
 /// Complete typed configuration for a PPP float solve.
-#[pyclass(module = "sidereon._sidereon", name = "PppFloatConfig")]
+#[pyclass(module = "sidereon._sidereon", name = "PppFloatConfig", eq)]
+#[derive(PartialEq)]
 pub struct PyPppFloatConfig {
     inner: FloatSolveConfig,
 }
@@ -2028,7 +2045,8 @@ impl PyPppFloatConfig {
 }
 
 /// Integer ambiguity controls for PPP fixed solving.
-#[pyclass(module = "sidereon._sidereon", name = "PppFixedAmbiguityOptions")]
+#[pyclass(module = "sidereon._sidereon", name = "PppFixedAmbiguityOptions", eq)]
+#[derive(PartialEq)]
 pub struct PyPppFixedAmbiguityOptions {
     inner: FixedAmbiguityOptions,
 }
@@ -2075,7 +2093,8 @@ impl PyPppFixedAmbiguityOptions {
 }
 
 /// Complete typed configuration for a PPP fixed solve.
-#[pyclass(module = "sidereon._sidereon", name = "PppFixedConfig")]
+#[pyclass(module = "sidereon._sidereon", name = "PppFixedConfig", eq)]
+#[derive(PartialEq)]
 pub struct PyPppFixedConfig {
     inner: FixedSolveConfig,
 }
@@ -2209,8 +2228,12 @@ impl PyPppFixedConfig {
 // --- result object ---------------------------------------------------------
 
 /// Temporal-correlation summary for a static PPP residual sequence.
-#[pyclass(module = "sidereon._sidereon", name = "PppTemporalCorrelationSummary")]
-#[derive(Clone, Copy)]
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "PppTemporalCorrelationSummary",
+    eq
+)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct PyPppTemporalCorrelationSummary {
     inner: TemporalCorrelationSummary,
 }
@@ -2270,7 +2293,8 @@ impl PyPppTemporalCorrelationSummary {
 ///
 /// `position` is the receiver ECEF position as a numpy `float64` array of shape
 /// `(3,)`, metres. Float ambiguities and residual RMS values are in metres.
-#[pyclass(module = "sidereon._sidereon", name = "PppFloatSolution")]
+#[pyclass(module = "sidereon._sidereon", name = "PppFloatSolution", eq)]
+#[derive(PartialEq)]
 pub struct PyPppFloatSolution {
     inner: FloatSolution,
 }
@@ -2505,7 +2529,38 @@ impl PyPppFloatSolution {
 ///
 /// `position` is the receiver ECEF position as a numpy `float64` array of shape
 /// `(3,)`, metres. Fixed ambiguities are exposed in cycles and metres.
-#[pyclass(module = "sidereon._sidereon", name = "PppFixedSolution")]
+#[pyclass(module = "sidereon._sidereon", name = "PppAmbiguitySearch", eq)]
+#[derive(Clone, PartialEq)]
+pub struct PyPppAmbiguitySearch {
+    inner: AmbiguitySearch,
+}
+
+#[pymethods]
+impl PyPppAmbiguitySearch {
+    /// Ambiguity ids in integer-search order.
+    #[getter]
+    fn order(&self) -> Vec<String> {
+        self.inner.order.clone()
+    }
+    /// Float ambiguity estimates converted to cycles.
+    #[getter]
+    fn float_cycles(&self) -> BTreeMap<String, f64> {
+        self.inner.float_cycles.clone()
+    }
+    /// Ambiguity covariance in cycles squared.
+    #[getter]
+    fn covariance_cycles(&self) -> Vec<Vec<f64>> {
+        self.inner.covariance_cycles.clone()
+    }
+    /// Inverse ambiguity covariance in cycles.
+    #[getter]
+    fn covariance_inverse_cycles(&self) -> Vec<Vec<f64>> {
+        self.inner.covariance_inverse_cycles.clone()
+    }
+}
+
+#[pyclass(module = "sidereon._sidereon", name = "PppFixedSolution", eq)]
+#[derive(PartialEq)]
 pub struct PyPppFixedSolution {
     inner: FixedSolution,
 }
@@ -2702,6 +2757,26 @@ impl PyPppFixedSolution {
         self.inner.integer.integer_candidates
     }
 
+    /// Score of the best integer candidate.
+    #[getter]
+    fn integer_best_score(&self) -> f64 {
+        self.inner.integer.integer_best_score
+    }
+
+    /// Score of the second integer candidate, when one was evaluated.
+    #[getter]
+    fn integer_second_best_score(&self) -> Option<f64> {
+        self.inner.integer.integer_second_best_score
+    }
+
+    /// Frozen inputs and covariance matrices from the integer search.
+    #[getter]
+    fn ambiguity_search(&self) -> PyPppAmbiguitySearch {
+        PyPppAmbiguitySearch {
+            inner: self.inner.integer.ambiguity_search.clone(),
+        }
+    }
+
     #[getter]
     fn code_rms_m(&self) -> f64 {
         self.inner.code_rms_m
@@ -2751,10 +2826,288 @@ impl PyPppFixedSolution {
 /// troposphere) using `spp_initial_guess` as the cold start. Supplying
 /// `initial_guess_position_m` skips the SPP/mean stages and uses that position
 /// (with `initial_guess_clock_m`, duplicated across epochs) directly.
-#[pyclass(module = "sidereon._sidereon", name = "PppAutoInitOptions")]
-#[derive(Clone, Copy, Default)]
+#[pyclass(module = "sidereon._sidereon", name = "PppAutoInitOptions", eq)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub struct PyPppAutoInitOptions {
     inner: PppAutoInitOptions,
+}
+
+/// Runtime strategy for the auto-initialized PPP drivers.
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "PppAutoInitStrategy",
+    eq,
+    eq_int,
+    hash,
+    frozen
+)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[allow(non_camel_case_types)]
+pub enum PyPppAutoInitStrategy {
+    /// Reference static PPP implementation.
+    #[default]
+    REFERENCE,
+    /// Canonical estimator implementation.
+    CANONICAL,
+}
+
+impl From<PyPppAutoInitStrategy> for PppAutoInitStrategy {
+    fn from(value: PyPppAutoInitStrategy) -> Self {
+        match value {
+            PyPppAutoInitStrategy::REFERENCE => Self::Reference,
+            PyPppAutoInitStrategy::CANONICAL => Self::Canonical,
+        }
+    }
+}
+
+#[pymethods]
+impl PyPppAutoInitStrategy {
+    /// Return the core strategy default.
+    #[staticmethod]
+    fn default() -> Self {
+        <Self as Default>::default()
+    }
+}
+
+/// Robust Huber/MAD controls for the precise-positioning velocity solve.
+#[pyclass(module = "sidereon._sidereon", name = "PppVelocityRobustConfig", eq)]
+#[derive(Clone, Copy, PartialEq)]
+pub struct PyPppVelocityRobustConfig {
+    inner: VelocityRobustConfig,
+}
+
+#[pymethods]
+impl PyPppVelocityRobustConfig {
+    /// Create robust controls, using core defaults for omitted values.
+    #[new]
+    #[pyo3(signature = (huber_k=None, scale_floor_m_s=None, max_outer=None, outer_tol_m_s=None))]
+    fn new(
+        huber_k: Option<f64>,
+        scale_floor_m_s: Option<f64>,
+        max_outer: Option<usize>,
+        outer_tol_m_s: Option<f64>,
+    ) -> Self {
+        let mut inner = VelocityRobustConfig::default();
+        inner.huber_k = huber_k.unwrap_or(inner.huber_k);
+        inner.scale_floor_m_s = scale_floor_m_s.unwrap_or(inner.scale_floor_m_s);
+        inner.max_outer = max_outer.unwrap_or(inner.max_outer);
+        inner.outer_tol_m_s = outer_tol_m_s.unwrap_or(inner.outer_tol_m_s);
+        Self { inner }
+    }
+
+    #[getter]
+    fn huber_k(&self) -> f64 {
+        self.inner.huber_k
+    }
+    #[getter]
+    fn scale_floor_m_s(&self) -> f64 {
+        self.inner.scale_floor_m_s
+    }
+    #[getter]
+    fn max_outer(&self) -> usize {
+        self.inner.max_outer
+    }
+    #[getter]
+    fn outer_tol_m_s(&self) -> f64 {
+        self.inner.outer_tol_m_s
+    }
+}
+
+/// Configuration for a precise-positioning velocity solve.
+#[pyclass(module = "sidereon._sidereon", name = "PppVelocityConfig", eq)]
+#[derive(Clone, Copy, PartialEq)]
+pub struct PyPppVelocityConfig {
+    inner: VelocityConfig,
+}
+
+#[pymethods]
+impl PyPppVelocityConfig {
+    /// Create velocity controls, using the core minimum when omitted.
+    #[new]
+    #[pyo3(signature = (minimum_observations=None, robust=None))]
+    fn new(
+        minimum_observations: Option<usize>,
+        robust: Option<&PyPppVelocityRobustConfig>,
+    ) -> Self {
+        let mut inner = VelocityConfig::default();
+        inner.minimum_observations = minimum_observations.unwrap_or(inner.minimum_observations);
+        inner.robust = robust.map(|value| value.inner);
+        Self { inner }
+    }
+    #[getter]
+    fn minimum_observations(&self) -> usize {
+        self.inner.minimum_observations
+    }
+    #[getter]
+    fn robust(&self) -> Option<PyPppVelocityRobustConfig> {
+        self.inner
+            .robust
+            .map(|inner| PyPppVelocityRobustConfig { inner })
+    }
+}
+
+/// Receiver state for precise-positioning range-rate prediction.
+#[pyclass(module = "sidereon._sidereon", name = "PppReceiverVelocityState", eq)]
+#[derive(Clone, Copy, PartialEq)]
+pub struct PyPppReceiverVelocityState {
+    inner: ReceiverVelocityState,
+}
+
+#[pymethods]
+impl PyPppReceiverVelocityState {
+    /// Create a receiver position, velocity and clock-drift state.
+    #[new]
+    #[pyo3(signature = (position_m, velocity_m_s=[0.0; 3], clock_drift_m_s=0.0))]
+    fn new(position_m: [f64; 3], velocity_m_s: [f64; 3], clock_drift_m_s: f64) -> Self {
+        Self {
+            inner: ReceiverVelocityState {
+                position_m,
+                velocity_m_s,
+                clock_drift_m_s,
+            },
+        }
+    }
+    /// Construct a stationary receiver at an ECEF position.
+    #[staticmethod]
+    fn stationary_at(position_m: [f64; 3]) -> Self {
+        Self {
+            inner: ReceiverVelocityState::stationary_at(position_m),
+        }
+    }
+    #[getter]
+    fn position_m(&self) -> [f64; 3] {
+        self.inner.position_m
+    }
+    #[getter]
+    fn velocity_m_s(&self) -> [f64; 3] {
+        self.inner.velocity_m_s
+    }
+    #[getter]
+    fn clock_drift_m_s(&self) -> f64 {
+        self.inner.clock_drift_m_s
+    }
+}
+
+/// One satellite range-rate row for the precise-positioning velocity model.
+#[pyclass(module = "sidereon._sidereon", name = "PppVelocityObservation", eq)]
+#[derive(Clone, Copy, PartialEq)]
+pub struct PyPppVelocityObservation {
+    inner: VelocityObservation,
+}
+
+#[pymethods]
+impl PyPppVelocityObservation {
+    /// Create a range-rate observation.
+    #[new]
+    fn new(
+        satellite_id: &str,
+        satellite_position_m: [f64; 3],
+        satellite_velocity_m_s: [f64; 3],
+        measured_range_rate_m_s: f64,
+        sigma_m_s: f64,
+        satellite_clock_drift_m_s: f64,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: VelocityObservation {
+                sat: parse_sat(satellite_id)?,
+                satellite_position_m,
+                satellite_velocity_m_s,
+                measured_range_rate_m_s,
+                sigma_m_s,
+                satellite_clock_drift_m_s,
+            },
+        })
+    }
+    #[getter]
+    fn satellite_id(&self) -> String {
+        self.inner.sat.to_string()
+    }
+    #[getter]
+    fn satellite_position_m(&self) -> [f64; 3] {
+        self.inner.satellite_position_m
+    }
+    #[getter]
+    fn satellite_velocity_m_s(&self) -> [f64; 3] {
+        self.inner.satellite_velocity_m_s
+    }
+    #[getter]
+    fn measured_range_rate_m_s(&self) -> f64 {
+        self.inner.measured_range_rate_m_s
+    }
+    #[getter]
+    fn sigma_m_s(&self) -> f64 {
+        self.inner.sigma_m_s
+    }
+    #[getter]
+    fn satellite_clock_drift_m_s(&self) -> f64 {
+        self.inner.satellite_clock_drift_m_s
+    }
+}
+
+/// Predicted line of sight and range rate.
+#[pyclass(module = "sidereon._sidereon", name = "PppRangeRatePrediction", eq)]
+#[derive(Clone, Copy, PartialEq)]
+pub struct PyPppRangeRatePrediction {
+    inner: RangeRatePrediction,
+}
+
+#[pymethods]
+impl PyPppRangeRatePrediction {
+    #[getter]
+    fn los_unit(&self) -> [f64; 3] {
+        self.inner.los_unit
+    }
+    #[getter]
+    fn range_rate_m_s(&self) -> f64 {
+        self.inner.range_rate_m_s
+    }
+}
+
+/// Result of a precise-positioning velocity least-squares solve.
+#[pyclass(module = "sidereon._sidereon", name = "PppVelocitySolution", eq)]
+#[derive(Clone, PartialEq)]
+pub struct PyPppVelocitySolution {
+    inner: VelocitySolution,
+}
+
+#[pymethods]
+impl PyPppVelocitySolution {
+    #[getter]
+    fn velocity_m_s(&self) -> [f64; 3] {
+        self.inner.velocity_m_s
+    }
+    #[getter]
+    fn clock_drift_m_s(&self) -> f64 {
+        self.inner.clock_drift_m_s
+    }
+    #[getter]
+    fn residual_rms_m_s(&self) -> f64 {
+        self.inner.residual_rms_m_s
+    }
+    #[getter]
+    fn used_sats(&self) -> Vec<String> {
+        self.inner
+            .used_sats
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+    #[getter]
+    fn downweighted_sats(&self) -> Vec<String> {
+        self.inner
+            .downweighted_sats
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+    #[getter]
+    fn robust_iterations(&self) -> usize {
+        self.inner.robust_iterations
+    }
+    #[getter]
+    fn robust_scale_m_s(&self) -> Option<f64> {
+        self.inner.robust_scale_m_s
+    }
 }
 
 #[pymethods]
@@ -2826,6 +3179,90 @@ impl PyPppAutoInitOptions {
 
 // --- solve entry points ----------------------------------------------------
 
+/// Predict one satellite range rate with the core precise-positioning model.
+#[pyfunction]
+fn predict_range_rate_m_s(
+    observation: &PyPppVelocityObservation,
+    receiver: &PyPppReceiverVelocityState,
+) -> PyResult<PyPppRangeRatePrediction> {
+    sidereon_core::precise_positioning::predict_range_rate_m_s(&observation.inner, receiver.inner)
+        .map(|inner| PyPppRangeRatePrediction { inner })
+        .ok_or_else(|| PyValueError::new_err("receiver and satellite positions coincide"))
+}
+
+/// Solve receiver velocity and clock drift from satellite range-rate rows.
+#[pyfunction]
+#[pyo3(signature = (observations, receiver_position_m, config=None))]
+fn solve_velocity_least_squares(
+    py: Python<'_>,
+    observations: Vec<PyPppVelocityObservation>,
+    receiver_position_m: [f64; 3],
+    config: Option<&PyPppVelocityConfig>,
+) -> PyResult<PyPppVelocitySolution> {
+    let observations = observations
+        .into_iter()
+        .map(|row| row.inner)
+        .collect::<Vec<_>>();
+    let config = config.map_or_else(VelocityConfig::default, |value| value.inner);
+    sidereon_core::precise_positioning::solve_velocity(&observations, receiver_position_m, config)
+        .map(|inner| PyPppVelocitySolution { inner })
+        .map_err(|error| crate::solve_error_detail::ppp_velocity_error(py, error))
+}
+
+/// Build indexed PPP correction lookups at the static receiver position.
+#[pyfunction]
+fn build_ppp_lookup(
+    py: Python<'_>,
+    sp3: &PySp3,
+    epochs: Vec<Py<PyPppEpoch>>,
+    receiver_ecef_m: [f64; 3],
+    options: &PyPppCorrectionsOptions,
+) -> PyResult<PyPppCorrectionLookup> {
+    let epochs = epochs
+        .iter()
+        .map(|epoch| epoch.borrow(py).to_core())
+        .collect::<Vec<_>>();
+    let inner = sidereon_core::precise_positioning::build_ppp_lookup(
+        &sp3.inner,
+        &epochs,
+        receiver_ecef_m,
+        &options.inner,
+    )
+    .map_err(|error| crate::ppp_corrections::ppp_corrections_error(py, error))?;
+    Ok(PyPppCorrectionLookup { inner })
+}
+
+/// Build indexed PPP correction lookups under an explicit UT1 validity mode.
+#[pyfunction]
+fn build_ppp_lookup_with_validity(
+    py: Python<'_>,
+    sp3: &PySp3,
+    epochs: Vec<Py<PyPppEpoch>>,
+    receiver_ecef_m: [f64; 3],
+    options: &PyPppCorrectionsOptions,
+    validity: crate::PyValidityMode,
+) -> PyResult<(PyPppCorrectionLookup, Option<&'static str>)> {
+    let epochs = epochs
+        .iter()
+        .map(|epoch| epoch.borrow(py).to_core())
+        .collect::<Vec<_>>();
+    let validated = sidereon_core::precise_positioning::build_ppp_lookup_with_validity(
+        &sp3.inner,
+        &epochs,
+        receiver_ecef_m,
+        &options.inner,
+        validity.into(),
+    )
+    .map_err(|error| crate::ppp_corrections::ppp_corrections_error(py, error))?;
+    let degraded = validated.degraded.map(crate::degrade_reason_label);
+    Ok((
+        PyPppCorrectionLookup {
+            inner: validated.value,
+        },
+        degraded,
+    ))
+}
+
 #[pyfunction]
 #[pyo3(signature = (sp3, epochs, initial_state, config))]
 fn solve_ppp_float(
@@ -2842,6 +3279,26 @@ fn solve_ppp_float(
     let inner = sidereon_core::precise_positioning::solve_float_epochs(
         &sp3.inner,
         &epochs,
+        initial_state.inner.clone(),
+        config.inner.clone(),
+    )
+    .map_err(|error| crate::solve_error_detail::ppp_float_error(py, error))?;
+    Ok(PyPppFloatSolution { inner })
+}
+
+/// Solve one float PPP epoch with the core single-epoch state shape.
+#[pyfunction]
+#[pyo3(signature = (sp3, epoch, initial_state, config))]
+fn solve_float_epoch(
+    py: Python<'_>,
+    sp3: &PySp3,
+    epoch: &PyPppEpoch,
+    initial_state: &PyPppFloatState,
+    config: &PyPppFloatConfig,
+) -> PyResult<PyPppFloatSolution> {
+    let inner = sidereon_core::precise_positioning::solve_float_epoch(
+        &sp3.inner,
+        epoch.to_core(),
         initial_state.inner.clone(),
         config.inner.clone(),
     )
@@ -2942,6 +3399,72 @@ fn solve_ppp_auto_init_fixed(
     Ok(PyPppFixedSolution { inner })
 }
 
+/// Solve auto-initialized float PPP with an explicit engine strategy.
+#[pyfunction]
+#[pyo3(signature = (sp3, epochs, config, strategy, options=None))]
+fn solve_ppp_auto_init_float_with_strategy(
+    py: Python<'_>,
+    sp3: &PySp3,
+    epochs: Vec<Py<PyPppEpoch>>,
+    config: &PyPppFloatConfig,
+    strategy: PyPppAutoInitStrategy,
+    options: Option<Py<PyPppAutoInitOptions>>,
+) -> PyResult<PyPppFloatSolution> {
+    let epochs = epochs
+        .iter()
+        .map(|epoch| epoch.borrow(py).to_core())
+        .collect::<Vec<_>>();
+    let options = option_py_or_default(
+        py,
+        options.as_ref(),
+        |value| value.inner,
+        PppAutoInitOptions::default,
+    );
+    let inner = sidereon_core::precise_positioning::solve_ppp_auto_init_float_with_strategy(
+        &sp3.inner,
+        &epochs,
+        options,
+        config.inner.clone(),
+        strategy.into(),
+    )
+    .map_err(|error| crate::solve_error_detail::ppp_auto_init_error(py, error))?;
+    Ok(PyPppFloatSolution { inner })
+}
+
+/// Solve auto-initialized fixed PPP with an explicit engine strategy.
+#[pyfunction]
+#[pyo3(signature = (sp3, epochs, float_config, fixed_config, strategy, options=None))]
+fn solve_ppp_auto_init_fixed_with_strategy(
+    py: Python<'_>,
+    sp3: &PySp3,
+    epochs: Vec<Py<PyPppEpoch>>,
+    float_config: &PyPppFloatConfig,
+    fixed_config: &PyPppFixedConfig,
+    strategy: PyPppAutoInitStrategy,
+    options: Option<Py<PyPppAutoInitOptions>>,
+) -> PyResult<PyPppFixedSolution> {
+    let epochs = epochs
+        .iter()
+        .map(|epoch| epoch.borrow(py).to_core())
+        .collect::<Vec<_>>();
+    let options = option_py_or_default(
+        py,
+        options.as_ref(),
+        |value| value.inner,
+        PppAutoInitOptions::default,
+    );
+    let inner = sidereon_core::precise_positioning::solve_ppp_auto_init_fixed_with_strategy(
+        &sp3.inner,
+        &epochs,
+        options,
+        float_config.inner.clone(),
+        fixed_config.inner.clone(),
+        strategy.into(),
+    )
+    .map_err(|error| crate::solve_error_detail::ppp_auto_init_error(py, error))?;
+    Ok(PyPppFixedSolution { inner })
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPppFloatSolution>()?;
     m.add_class::<PppUnplacedObservationRow>()?;
@@ -2953,6 +3476,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPppSsrBiasExclusion>()?;
     m.add_class::<PyPppTemporalCorrelationSummary>()?;
     m.add_function(wrap_pyfunction!(solve_ppp_float, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_float_epoch, m)?)?;
     m.add_class::<PyPppCivilDateTime>()?;
     m.add_class::<PyPppObservation>()?;
     m.add_class::<PyPppEpoch>()?;
@@ -2970,9 +3494,37 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPppFixedAmbiguityOptions>()?;
     m.add_class::<PyPppFixedConfig>()?;
     m.add_class::<PyPppFixedSolution>()?;
+    m.add_class::<PyPppAmbiguitySearch>()?;
     m.add_function(wrap_pyfunction!(solve_ppp_fixed, m)?)?;
     m.add_class::<PyPppAutoInitOptions>()?;
+    m.add_class::<PyPppAutoInitStrategy>()?;
     m.add_function(wrap_pyfunction!(solve_ppp_auto_init_float, m)?)?;
     m.add_function(wrap_pyfunction!(solve_ppp_auto_init_fixed, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        solve_ppp_auto_init_float_with_strategy,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        solve_ppp_auto_init_fixed_with_strategy,
+        m
+    )?)?;
+    m.add_class::<PyPppVelocityRobustConfig>()?;
+    m.add_class::<PyPppVelocityConfig>()?;
+    m.add_class::<PyPppReceiverVelocityState>()?;
+    m.add_class::<PyPppVelocityObservation>()?;
+    m.add_class::<PyPppRangeRatePrediction>()?;
+    m.add_class::<PyPppVelocitySolution>()?;
+    m.add_function(wrap_pyfunction!(predict_range_rate_m_s, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_velocity_least_squares, m)?)?;
+    m.add_function(wrap_pyfunction!(build_ppp_lookup, m)?)?;
+    m.add_function(wrap_pyfunction!(build_ppp_lookup_with_validity, m)?)?;
+    m.add(
+        "VMF_SITE_MAX_SAMPLES",
+        sidereon_core::precise_positioning::VMF_SITE_MAX_SAMPLES,
+    )?;
+    m.add(
+        "VMF_SITE_SINGLE_SAMPLE_CLAMP_DAYS",
+        sidereon_core::precise_positioning::VMF_SITE_SINGLE_SAMPLE_CLAMP_DAYS,
+    )?;
     Ok(())
 }

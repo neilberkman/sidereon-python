@@ -657,10 +657,27 @@ from ._sidereon import (
     PppFixedAmbiguityOptions,
     PppFixedConfig,
     PppFixedSolution,
+    PppAmbiguitySearch,
     solve_ppp_fixed,
+    solve_float_epoch,
     PppAutoInitOptions,
+    PppAutoInitStrategy,
     solve_ppp_auto_init_float,
     solve_ppp_auto_init_fixed,
+    solve_ppp_auto_init_float_with_strategy,
+    solve_ppp_auto_init_fixed_with_strategy,
+    PppVelocityRobustConfig,
+    PppVelocityConfig,
+    PppReceiverVelocityState,
+    PppVelocityObservation,
+    PppRangeRatePrediction,
+    PppVelocitySolution,
+    predict_range_rate_m_s,
+    solve_velocity_least_squares,
+    build_ppp_lookup,
+    build_ppp_lookup_with_validity,
+    VMF_SITE_MAX_SAMPLES,
+    VMF_SITE_SINGLE_SAMPLE_CLAMP_DAYS,
     PcMethod,
     ConjunctionState,
     EncounterFrame,
@@ -1442,7 +1459,6 @@ from ._sidereon import (
     signal_multipath_error_envelope,
 )
 
-
 from .exact_sp3 import (
     ExactSp3Coverage,
     ExactSp3Request,
@@ -1655,6 +1671,7 @@ class Sp3AccuracyRoundingPolicy(str, Enum):
 
 
 OCEAN_LOADING_CONSTITUENTS = tuple(ocean_loading_constituents())
+
 
 __all__ = [
     "SidereonError",
@@ -2245,10 +2262,27 @@ __all__ = [
     "PppFixedAmbiguityOptions",
     "PppFixedConfig",
     "PppAutoInitOptions",
+    "PppAutoInitStrategy",
     "PppFixedSolution",
+    "PppAmbiguitySearch",
     "solve_ppp_fixed",
+    "solve_float_epoch",
     "solve_ppp_auto_init_float",
     "solve_ppp_auto_init_fixed",
+    "solve_ppp_auto_init_float_with_strategy",
+    "solve_ppp_auto_init_fixed_with_strategy",
+    "PppVelocityRobustConfig",
+    "PppVelocityConfig",
+    "PppReceiverVelocityState",
+    "PppVelocityObservation",
+    "PppRangeRatePrediction",
+    "PppVelocitySolution",
+    "predict_range_rate_m_s",
+    "solve_velocity_least_squares",
+    "build_ppp_lookup",
+    "build_ppp_lookup_with_validity",
+    "VMF_SITE_MAX_SAMPLES",
+    "VMF_SITE_SINGLE_SAMPLE_CLAMP_DAYS",
     "PcMethod",
     "ConjunctionState",
     "EncounterFrame",
