@@ -181,11 +181,59 @@ The Python package mirrors the full breadth of the engine.
   RINEX observation assembly and solve helpers (`spp_inputs_from_rinex_obs`
   and `solve_spp_from_rinex_obs`), leave-one-out redundancy diagnostics, and
   robust weighting, RTK (float and fixed), PPP (float and fixed), static PPP
-  temporal-correlation covariance, selectable PPP estimator strategies, and
-  precise range-rate velocity prediction and solving
+  temporal-correlation covariance, selectable PPP estimator strategies,
+  dual-frequency TEC estimation and cycle-slip-aware epoch preparation,
+  snapshot PPP RAIM/FDE and protection levels, and precise range-rate solving
   with calibrated day-length bounds, optional elevation cutoff, optional
   tropospheric-gradient estimation, DGNSS, a Huber-reweighted solve driver, and
   DOP.
+
+  The precise-positioning extensions expose the engine records and operations
+  directly:
+
+  - TEC: `PppTecConfig`, `PppTecLevelingSample`, `PppLeveledTecSample`,
+    `PppTecLevelingResult`, `PppIonosphericPiercePoint`,
+    `PppCodeSlantTecEstimate`, `PppPhaseSlantTecEstimate`, `PppTecObservation`,
+    `PppTecEpoch`, `PppTecEstimateSample`, `PppTecSatelliteArc`,
+    `PppTecEstimate`, `code_geometry_free_m`, `phase_geometry_free_m`,
+    `slant_tec_from_code_geometry_free_m`,
+    `slant_tec_from_phase_geometry_free_m`, `estimate_code_slant_tec`,
+    `estimate_phase_slant_tec`, `thin_shell_mapping_function`,
+    `vertical_tec_from_slant_tec`, `level_slant_tec_arc`,
+    `ionospheric_pierce_point`, `estimate_tec`,
+    `DEFAULT_IONOSPHERIC_SHELL_HEIGHT_M`, `ELECTRONS_PER_TECU_M2`, and
+    `TEC_GROUP_DELAY_COEFFICIENT`.
+  - Cycle-slip and preparation: `PppCycleSlipConfig`,
+    `PppRunningMeanVariance`, `PppSatelliteCycleSlipState`,
+    `PppMelbourneWubbenaUpdate`, `PppGeometryFreeUpdate`,
+    `PppDualFrequencyObservation`, `PppDualFrequencyEpoch`,
+    `PppCycleSlipFlagObservation`, `PppCycleSlipFlagEpoch`,
+    `PppWideLanePrepOptions`, `PppPreparedFloatObservation`,
+    `PppPreparedFloatEpoch`, `PppSplitArc`, `PppWideLanePrepResult`,
+    `PppFloatCycleSlipObservation`, `PppFloatCycleSlipEpoch`,
+    `PppFloatCycleSlipTaggedObservation`, `PppFloatCycleSlipTaggedEpoch`,
+    `melbourne_wubbena_cycles`, `ppp_geometry_free_m`,
+    `update_melbourne_wubbena`, `update_geometry_free`,
+    `ppp_detect_cycle_slips`, `prepare_widelane_fixed_epochs`,
+    `split_float_cycle_slip_epochs`, `DEFAULT_MINIMUM_ARC_LENGTH`, and
+    `DEFAULT_RUNNING_STATISTIC_K_FACTOR`.
+  - RAIM/FDE: `PppRaimConfig`, `PppRaimStatus`,
+    `PppSatelliteTestStatistic`, `PppRaimResult`, `PppRaimGeometryRow`,
+    `PppRaimIdentification`, `PppProtectionLevels`, `PppRaimFdeStatus`,
+    `PppRaimFdeResult`, `global_test`, `global_test_with_geometry`,
+    `per_satellite_statistics`, `protection_levels`, `fde_float_epoch`, and
+    `solve_float_epoch_with_raim`.
+  - Kinematic PPP: `PppKinematicState`,
+    `PppKinematicPositionProcessNoise`, `PppKinematicMotionModel`,
+    `PppKinematicProcessNoise`, `PppKinematicConfig`,
+    `PppKinematicUpdateSummary`, `PppKinematicEpochStatus`,
+    `PppKinematicEpochSolution`, `predict_kinematic_state`,
+    `correct_kinematic_state`, and `solve_kinematic_ppp`.
+
+  The names `ppp_detect_cycle_slips` and `ppp_geometry_free_m` carry a `ppp_`
+  prefix because the released carrier-phase API already uses
+  `detect_cycle_slips` and `geometry_free_m` for different engine functions;
+  the released functions retain their original signatures and behavior.
 - **Integrity and error bounds:** RAIM fault detection and exclusion,
   multi-constellation ARAIM protection levels, SBAS protection levels
   (DO-229), per-observation reliability (minimal detectable bias,
