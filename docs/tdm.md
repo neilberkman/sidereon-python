@@ -251,3 +251,13 @@ except sidereon.TdmParseError as err:
     if detail.kind == "conflicting_keyword":
         print(f"Conflict: first={detail.first}, second={detail.second}")
 ```
+
+`TdmInputErrorKind.kind` is the stable snake-case category name, while
+`str(TdmInputErrorKind)` returns the core engine's human-readable display text.
+The `UNKNOWN` member is reserved as a forward-compatible fallback for a core
+category added after this binding was built; because it has no corresponding
+core variant, its display text is `"unknown"`.
+
+TDM value objects compare by value. This includes the policy-aware
+`TdmParseResult`, `TdmWriteResult`, and `TdmMetadataResult` containers, so two
+independent operations producing the same core values compare equal.

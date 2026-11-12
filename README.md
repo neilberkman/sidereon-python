@@ -258,7 +258,9 @@ The Python package mirrors the full breadth of the engine.
   ocean-loading BLQ. A RINEX clock product keeps the text it was read from,
   restates it byte for byte and is edited through validated setters (see
   `docs/rinex-clock.md`); an ANTEX product keeps every record the format
-  defines, including exact validity seconds (see `docs/antex.md`).
+  defines, including exact validity seconds (see `docs/antex.md`). TDM includes
+  policy-aware operations, typed diagnostics, core-derived validation display
+  text, and value-comparable result objects (see `docs/tdm.md`).
 - **Data acquisition:** the `sidereon.data` module downloads and caches GNSS
   products (SP3 and IONEX from IGS/MGEX analysis centers, including merged
   multi-center SP3) and DTED terrain tiles. Merges from column-grid inputs
