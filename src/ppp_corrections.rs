@@ -457,7 +457,7 @@ pub struct PyPppCorrections {
     degraded_reason: Option<&'static str>,
 }
 
-fn ppp_corrections_error(py: Python<'_>, error: PppCorrectionsError) -> PyErr {
+pub(crate) fn ppp_corrections_error(py: Python<'_>, error: PppCorrectionsError) -> PyErr {
     use sidereon_core::astro::time::{CoverageError, DegradeReason};
 
     let details = PyDict::new(py);

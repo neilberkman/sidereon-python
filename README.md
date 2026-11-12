@@ -180,7 +180,9 @@ The Python package mirrors the full breadth of the engine.
   `solve_static` multi-epoch static positioning with covariance,
   RINEX observation assembly and solve helpers (`spp_inputs_from_rinex_obs`
   and `solve_spp_from_rinex_obs`), leave-one-out redundancy diagnostics, and
-  robust weighting, RTK (float and fixed), PPP (float and fixed), static PPP temporal-correlation covariance
+  robust weighting, RTK (float and fixed), PPP (float and fixed), static PPP
+  temporal-correlation covariance, selectable PPP estimator strategies, and
+  precise range-rate velocity prediction and solving
   with calibrated day-length bounds, optional elevation cutoff, optional
   tropospheric-gradient estimation, DGNSS, a Huber-reweighted solve driver, and
   DOP.

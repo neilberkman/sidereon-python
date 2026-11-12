@@ -11,6 +11,7 @@ use pyo3::types::PyDict;
 use sidereon_core::dgnss::DgnssError;
 use sidereon_core::precise_positioning::{
     FixedSolveError as PppFixedSolveError, FloatSolveError as PppFloatSolveError, PppAutoInitError,
+    VelocitySolveError,
 };
 use sidereon_core::rtk::{
     CodeSmoothingError, CycleSlipPrepError, DoubleDifferenceError, IonosphereFreeBaselineError,
@@ -273,6 +274,29 @@ pub(crate) fn ppp_fixed_error(py: Python<'_>, error: PppFixedSolveError) -> PyEr
 pub(crate) fn ppp_auto_init_error(py: Python<'_>, error: PppAutoInitError) -> PyErr {
     let message = error.to_string();
     solve_error(py, message, ppp_auto_init_detail(py, &error))
+}
+
+pub(crate) fn ppp_velocity_error(py: Python<'_>, error: VelocitySolveError) -> PyErr {
+    let payload = (|| {
+        let result = detail(py, "VelocitySolveError", &error.to_string())?;
+        match &error {
+            VelocitySolveError::TooFewObservations { required, actual } => {
+                result.set_item("kind", "too_few_observations")?;
+                result.set_item("required", required)?;
+                result.set_item("actual", actual)?;
+            }
+            VelocitySolveError::InvalidInput { field, reason } => {
+                result.set_item("kind", "invalid_input")?;
+                result.set_item("field", field)?;
+                result.set_item("reason", reason)?;
+            }
+            VelocitySolveError::SingularGeometry => {
+                result.set_item("kind", "singular_geometry")?;
+            }
+        }
+        Ok(result)
+    })();
+    solve_error(py, error.to_string(), payload)
 }
 
 fn dgnss_detail<'py>(py: Python<'py>, error: &DgnssError) -> PyResult<Bound<'py, PyDict>> {
