@@ -4,6 +4,8 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## Unreleased
 
+## [4.0.0] - 2026-11-16
+
 ### Added
 
 - Expose Brown snapshot RAIM fault protection levels, weighted levels, separate
@@ -75,6 +77,14 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ### Changed
 
+- **Breaking:** PPP protection levels use Brown snapshot RAIM fault bounds and
+  require positive redundancy; use `fault_free_accuracy_bounds` for fault-free
+  accuracy bounds.
+- **Breaking:** Carried RTK states require complete fixed-cycle and ambiguity
+  data; invalid states are refused with typed errors.
+- **Breaking:** Non-default fusion options require their matching filter kind;
+  per-row and joint innovation gates are mutually exclusive.
+
 - Tight EKF joint innovation gates now report acceptance and rejection and coast on rejection.
 - Rejected loose updates preserve tight filter cross-covariance.
 - Loose updates with all rows removed by IGG III coast and report gate outcomes.
@@ -83,10 +93,10 @@ All notable changes to the Sidereon Python interface are documented here.
 - Deprecate `CoverageGrid.visible_mask` and `access_counts` in favor of their
   checked forms.
 
-- OMM KVN and XML writers require the CCSDS header and mandatory fields; use
+- **Breaking:** OMM KVN and XML writers require the CCSDS header and mandatory fields; use
   the explicit lenient writers for partial records.
-- `OmmArray` and `OmmSkippedRecord` compare by value and are unhashable.
-- The PPP value, configuration and result classes now compare by engine value
+- **Breaking:** `OmmArray` and `OmmSkippedRecord` compare by value and are unhashable.
+- **Breaking:** The PPP value, configuration and result classes now compare by engine value
   with `==` instead of by identity, which makes them unhashable, as Python
   requires for mutable value types: `PppAutoInitOptions`,
   `PppCorrectionLookup`, `PppEpoch`, `PppFixedAmbiguityOptions`,

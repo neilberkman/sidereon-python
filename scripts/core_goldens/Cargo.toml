@@ -10,10 +10,6 @@ description = "Writes tests/fixtures/core_goldens.json, the core results several
 [dependencies]
 flate2 = "1"
 sha2 = "0.10"
-sidereon = { version = "=3.0.6" }
-sidereon-core = { version = "=3.0.6" }
+sidereon = { version = "=4.0.0" }
+sidereon-core = { version = "=4.0.0" }
 serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
-
-[patch.crates-io]
-sidereon-core = { path = "/Volumes/ExternalSSD/sidereon-oracle-20261114/sidereon-merged/crates/sidereon-core" }
-trust-region-least-squares = { path = "/Volumes/ExternalSSD/sidereon-oracle-20261114/sidereon-merged/crates/trust-region-least-squares" }

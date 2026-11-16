@@ -3450,4 +3450,4 @@ try:
 
     __version__ = _pkg_version("sidereon")
 except Exception:  # package metadata unavailable (e.g. running from a source tree)
-    __version__ = "3.0.1"
+    __version__ = "4.0.0"
