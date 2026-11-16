@@ -75,6 +75,11 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ### Changed
 
+- Tight EKF joint innovation gates now report acceptance and rejection and coast on rejection.
+- Rejected loose updates preserve tight filter cross-covariance.
+- Loose updates with all rows removed by IGG III coast and report gate outcomes.
+- Filter configurations reject options for a different filter kind, invalid gate probabilities, and simultaneous row and joint gates.
+
 - Deprecate `CoverageGrid.visible_mask` and `access_counts` in favor of their
   checked forms.
 

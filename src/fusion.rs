@@ -2636,7 +2636,7 @@ impl PyInertialFilterConfig {
         }
     }
 
-    /// Loose GNSS update options.
+    /// Loose GNSS update options; EKF correction options require the EKF filter.
     #[getter]
     fn loose(&self) -> PyLooseCouplingConfig {
         PyLooseCouplingConfig {
@@ -2644,7 +2644,7 @@ impl PyInertialFilterConfig {
         }
     }
 
-    /// Tight raw GNSS update options.
+    /// Tight raw GNSS update options; EKF correction options require the EKF filter.
     #[getter]
     fn tight(&self) -> PyTightCouplingConfig {
         PyTightCouplingConfig {
@@ -2652,7 +2652,7 @@ impl PyInertialFilterConfig {
         }
     }
 
-    /// UKF correction options used when the filter kind is UKF.
+    /// UKF correction options; non-default options require the UKF filter.
     #[getter]
     fn ukf_update_options(&self) -> PyUkfUpdateOptions {
         PyUkfUpdateOptions {
