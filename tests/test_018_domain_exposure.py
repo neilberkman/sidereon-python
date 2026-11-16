@@ -580,13 +580,17 @@ def test_igg_joint_gate_uses_raw_covariance_core_oracle(kind):
         sidereon.ImuSpec.mems(),
         filter_kind=kind,
         loose=sidereon.LooseCouplingConfig(
-            update_options=sidereon.EkfUpdateOptions(
-                joint_innovation_gate_probability=0.01
+            update_options=(
+                sidereon.EkfUpdateOptions(joint_innovation_gate_probability=0.01)
+                if kind == sidereon.FusionFilterKind.EKF
+                else None
             ),
             measurement_reweighting=sidereon.IggIiiMeasurementReweighting.standard(),
         ),
-        ukf_update_options=sidereon.UkfUpdateOptions(
-            joint_innovation_gate_probability=0.01
+        ukf_update_options=(
+            sidereon.UkfUpdateOptions(joint_innovation_gate_probability=0.01)
+            if kind == sidereon.FusionFilterKind.UKF
+            else None
         ),
     )
     update = sidereon.InertialFilter.with_config(_filter_state(), config).update_loose(
@@ -622,3 +626,250 @@ def test_loose_innovation_covariance_and_nis_from_literal_matrices():
     assert report.ekf.innovation_gate.max_abs_normalized_innovation == pytest.approx(
         np.max(np.abs(innovation) / np.sqrt(np.diag(expected_s))), rel=1e-15
     )
+
+
+@pytest.mark.parametrize(
+    "kind", [sidereon.FusionFilterKind.EKF, sidereon.FusionFilterKind.UKF]
+)
+@pytest.mark.parametrize("gate_kind", ["joint", "row"])
+def test_igg_all_rows_removed_coasts(kind, gate_kind):
+    row = sidereon.InnovationGate(3.0, 1) if gate_kind == "row" else None
+    probability = 0.01 if gate_kind == "joint" else None
+    ekf = sidereon.EkfUpdateOptions(row, probability)
+    ukf = sidereon.UkfUpdateOptions(
+        innovation_gate=row, joint_innovation_gate_probability=probability
+    )
+    config = sidereon.InertialFilterConfig(
+        sidereon.ImuSpec.mems(),
+        filter_kind=kind,
+        loose=sidereon.LooseCouplingConfig(
+            update_options=ekf if kind == sidereon.FusionFilterKind.EKF else None,
+            measurement_reweighting=sidereon.IggIiiMeasurementReweighting.standard(),
+        ),
+        ukf_update_options=ukf if kind == sidereon.FusionFilterKind.UKF else None,
+    )
+    filt = sidereon.InertialFilter.with_config(_filter_state(), config)
+    before = filt.state.covariance.copy()
+    measurement = sidereon.GnssFixMeasurement.position_velocity(
+        0.0, [6_378_187.0, 50.0, 50.0], [50.0] * 3, np.eye(6), 8
+    )
+    update = filt.update_loose(measurement)
+    assert (update.applied, update.accepted_rows, update.rejected_rows) == (False, 0, 6)
+    assert update.ekf.joint_innovation_gate is None
+    if gate_kind == "row":
+        gate = update.ekf.innovation_gate
+        assert (
+            gate.input_rows,
+            gate.accepted_rows,
+            gate.rejected_rows,
+            gate.coasted,
+        ) == (6, 0, 6, True)
+        assert gate.max_abs_normalized_innovation is None
+    np.testing.assert_array_equal(filt.state.covariance, before)
+
+
+@pytest.mark.parametrize("field", ["ukf", "loose", "tight"])
+@pytest.mark.parametrize("gate_kind", ["row", "joint"])
+def test_options_for_other_filter_kind_are_refused(field, gate_kind):
+    gate = sidereon.InnovationGate(3.0, 1) if gate_kind == "row" else None
+    probability = 0.01 if gate_kind == "joint" else None
+    kwargs = {}
+    if field == "ukf":
+        kwargs["ukf_update_options"] = sidereon.UkfUpdateOptions(
+            innovation_gate=gate, joint_innovation_gate_probability=probability
+        )
+        expected = "ukf_update_options"
+    else:
+        kwargs["filter_kind"] = sidereon.FusionFilterKind.UKF
+        options = sidereon.EkfUpdateOptions(gate, probability)
+        kwargs[field] = (
+            sidereon.LooseCouplingConfig
+            if field == "loose"
+            else sidereon.TightCouplingConfig
+        )(update_options=options)
+        expected = field + ".update_options"
+    with pytest.raises(ValueError) as exc:
+        sidereon.InertialFilterConfig(sidereon.ImuSpec.mems(), **kwargs)
+    assert exc.value.detail["kind"] == "invalid_input"
+    assert exc.value.detail["field"] == expected
+
+
+@pytest.mark.parametrize("area", ["loose", "tight", "ukf"])
+@pytest.mark.parametrize("probability", [0.0, 1.0, -0.1, float("inf"), float("nan")])
+def test_invalid_joint_gate_probability_refused(area, probability):
+    with pytest.raises(ValueError) as exc:
+        if area != "ukf":
+            options = sidereon.EkfUpdateOptions(
+                joint_innovation_gate_probability=probability
+            )
+            config_type = (
+                sidereon.LooseCouplingConfig
+                if area == "loose"
+                else sidereon.TightCouplingConfig
+            )
+            config = config_type(update_options=options)
+            sidereon.InertialFilterConfig(sidereon.ImuSpec.mems(), **{area: config})
+        else:
+            sidereon.InertialFilterConfig(
+                sidereon.ImuSpec.mems(),
+                filter_kind=sidereon.FusionFilterKind.UKF,
+                ukf_update_options=sidereon.UkfUpdateOptions(
+                    joint_innovation_gate_probability=probability
+                ),
+            )
+    assert exc.value.detail["kind"] == "invalid_input"
+    assert exc.value.detail["field"] == "joint_innovation_gate_probability"
+
+
+def _tight_source():
+    return sidereon.PreciseEphemerisInterpolant.from_samples(
+        [
+            sidereon.PreciseEphemerisSample(
+                "G01", float(t), [6_378_169.0, 0.0, 0.0], 0.0
+            )
+            for t in range(-8, 9)
+        ]
+    )
+
+
+def _tight_epoch(code_innovation, rate_innovation, time=0.0):
+    return sidereon.TightGnssEpoch(
+        time,
+        [
+            sidereon.TightGnssObservation(
+                "G01",
+                32.0 + code_innovation,
+                1.0,
+                range_rate=sidereon.TightRangeRateObservation(
+                    rate_innovation, 2.0, 0.0
+                ),
+            )
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "kind", [sidereon.FusionFilterKind.EKF, sidereon.FusionFilterKind.UKF]
+)
+@pytest.mark.parametrize(
+    "innovation,accepted", [([1.0, 2.0], True), ([8.0, 9.0], False)]
+)
+def test_tight_joint_gate_matches_literal_clock_model(kind, innovation, accepted):
+    h = np.eye(2)
+    p = np.diag([2.0, 3.0])
+    r = np.diag([1.0, 4.0])
+    expected_s = h @ p @ h.T + r
+    expected_nis = np.array(innovation) @ np.linalg.solve(expected_s, innovation)
+    state = sidereon.InsFilterState.from_diagonal(
+        sidereon.NavState(0.0, [6_378_137.0, 0.0, 0.0], [0.0] * 3),
+        sidereon.ErrorStateLayout.FIFTEEN,
+        [0.0] * 15,
+    )
+    tight = sidereon.TightCouplingConfig(
+        light_time=False,
+        sagnac=False,
+        initial_clock_bias_variance_m2=2.0,
+        initial_clock_drift_variance_m2_s2=3.0,
+        update_options=sidereon.EkfUpdateOptions(joint_innovation_gate_probability=0.01)
+        if kind == sidereon.FusionFilterKind.EKF
+        else None,
+    )
+    config = sidereon.InertialFilterConfig(
+        sidereon.ImuSpec.mems(),
+        filter_kind=kind,
+        tight=tight,
+        ukf_update_options=sidereon.UkfUpdateOptions(
+            joint_innovation_gate_probability=0.01
+        )
+        if kind == sidereon.FusionFilterKind.UKF
+        else None,
+    )
+    filt = sidereon.InertialFilter.with_config(state, config)
+    before = filt.state.covariance.copy()
+    before_position = filt.state.nominal.position_ecef_m.copy()
+    before_velocity = filt.state.nominal.velocity_ecef_mps.copy()
+    before_clock = filt.tight_clock_state().covariance.copy()
+    update = filt.update_tight(_tight_source(), _tight_epoch(*innovation))
+    gate = update.ekf.joint_innovation_gate
+    assert gate.statistic == pytest.approx(expected_nis, rel=1e-7, abs=1e-7)
+    assert gate.degrees_of_freedom == 2
+    assert gate.threshold == pytest.approx(9.21034037197618, rel=1e-14)
+    assert gate.false_alarm_probability == 0.01
+    assert gate.accepted is accepted
+    assert update.applied is accepted
+    assert (update.accepted_rows, update.rejected_rows) == (
+        (2, 0) if accepted else (0, 2)
+    )
+    if not accepted:
+        np.testing.assert_array_equal(filt.state.covariance, before)
+        np.testing.assert_array_equal(
+            filt.state.nominal.position_ecef_m, before_position
+        )
+        np.testing.assert_array_equal(
+            filt.state.nominal.velocity_ecef_mps, before_velocity
+        )
+        np.testing.assert_array_equal(filt.tight_clock_state().covariance, before_clock)
+
+
+def test_rejected_loose_update_preserves_tight_cross_covariance():
+    config = sidereon.InertialFilterConfig(
+        sidereon.ImuSpec.mems(),
+        loose=sidereon.LooseCouplingConfig(
+            update_options=sidereon.EkfUpdateOptions(
+                joint_innovation_gate_probability=0.01
+            )
+        ),
+        tight=sidereon.TightCouplingConfig(
+            light_time=False,
+            sagnac=False,
+            initial_clock_bias_variance_m2=2.0,
+            initial_clock_drift_variance_m2_s2=3.0,
+        ),
+    )
+    source = _tight_source()
+    reference = sidereon.InertialFilter.with_config(_filter_state(), config)
+    subject = sidereon.InertialFilter.with_config(_filter_state(), config)
+    for filt in (reference, subject):
+        assert filt.update_tight(source, _tight_epoch(1.0, 2.0)).applied
+    for filt in (reference, subject):
+        filt.propagate(sidereon.ImuSample.rate(0.5, [0.0] * 3, [0.0] * 3))
+    rejected = subject.update_loose(
+        sidereon.GnssFixMeasurement.position(
+            0.5, [6_378_237.0, 100.0, 100.0], np.eye(3), 8
+        )
+    )
+    assert not rejected.applied
+    assert not rejected.ekf.joint_innovation_gate.accepted
+    for filt in (reference, subject):
+        filt.propagate(sidereon.ImuSample.rate(1.0, [0.0] * 3, [0.0] * 3))
+    reference_update = reference.update_tight(source, _tight_epoch(1.0, 2.0, 1.0))
+    subject_update = subject.update_tight(source, _tight_epoch(1.0, 2.0, 1.0))
+    np.testing.assert_array_equal(subject_update.ekf.dx, reference_update.ekf.dx)
+    np.testing.assert_array_equal(subject.state.covariance, reference.state.covariance)
+    np.testing.assert_array_equal(
+        subject.tight_clock_state().covariance, reference.tight_clock_state().covariance
+    )
+
+
+@pytest.mark.parametrize("area", ["loose", "tight", "ukf"])
+def test_row_and_joint_gates_are_mutually_exclusive(area):
+    row = sidereon.InnovationGate(3.0, 1)
+    with pytest.raises(ValueError) as exc:
+        if area == "ukf":
+            options = sidereon.UkfUpdateOptions(
+                innovation_gate=row, joint_innovation_gate_probability=0.01
+            )
+            sidereon.InertialFilterConfig(
+                sidereon.ImuSpec.mems(),
+                filter_kind=sidereon.FusionFilterKind.UKF,
+                ukf_update_options=options,
+            )
+        else:
+            options = sidereon.EkfUpdateOptions(row, 0.01)
+            (
+                sidereon.LooseCouplingConfig
+                if area == "loose"
+                else sidereon.TightCouplingConfig
+            )(update_options=options)
+    assert exc.value.detail["kind"] == "invalid_input"
+    assert exc.value.detail["field"] == "innovation_gate"
