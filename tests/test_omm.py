@@ -82,6 +82,26 @@ def _assert_omm(omm, ref):
     assert "Omm" in repr(omm)
 
 
+def test_partial_omm_writers_and_header():
+    omm = sidereon.parse_omm_json(_load(_path(FX["fixtures"][0]["json_fixture"])))
+    with pytest.raises(sidereon.OmmParseError) as exc:
+        omm.to_kvn_string()
+    assert exc.value.detail["kind"] == "MissingField"
+    assert exc.value.detail["field"] == "CCSDS_OMM_VERS"
+    with pytest.raises(sidereon.OmmParseError) as xml_exc:
+        omm.to_xml_string()
+    assert xml_exc.value.detail["kind"] == "MissingField"
+    assert xml_exc.value.detail["field"] == "CCSDS_OMM_VERS"
+    assert sidereon.parse_omm_kvn(omm.encode_kvn_lenient()) == omm
+    assert sidereon.parse_omm_xml(omm.encode_xml_lenient()) == omm
+    header = omm.with_ccsds_header("3.0", "2026-06-17T05:00:00", "TEST")
+    assert header.ccsds_omm_vers == "3.0"
+    assert header.creation_date == "2026-06-17T05:00:00"
+    assert header.originator == "TEST"
+    with pytest.raises(sidereon.OmmParseError):
+        omm.with_ccsds_header("invalid", "2026-06-17T05:00:00", "TEST")
+
+
 def test_parse_omm_kvn_xml_json_match_reference_fields_and_encode():
     for fixture in FX["fixtures"]:
         kvn = sidereon.parse_omm_kvn(_load(_path(fixture["kvn_fixture"])))
@@ -92,14 +112,14 @@ def test_parse_omm_kvn_xml_json_match_reference_fields_and_encode():
         _assert_omm(xml, fixture["from_xml"])
         _assert_omm(json_omm, fixture["from_json"])
 
-        assert kvn.to_kvn_string() == fixture["encoded_kvn"]
-        assert xml.to_xml_string() == fixture["encoded_xml"]
+        assert kvn.encode_kvn_lenient() == fixture["encoded_kvn"]
+        assert xml.encode_xml_lenient() == fixture["encoded_xml"]
         assert json.loads(json_omm.to_json_string()) == json.loads(
             fixture["encoded_json"]
         )
 
-        assert sidereon.parse_omm_kvn(kvn.to_kvn_string()) == kvn
-        assert sidereon.parse_omm_xml(xml.to_xml_string()) == xml
+        assert sidereon.parse_omm_kvn(kvn.encode_kvn_lenient()) == kvn
+        assert sidereon.parse_omm_xml(xml.encode_xml_lenient()) == xml
         assert sidereon.parse_omm_json(json_omm.to_json_string()) == json_omm
 
 
@@ -215,7 +235,7 @@ def test_constructed_omm_value_matches_parsed_kvn():
     )
     parsed = sidereon.parse_omm_kvn(_load(_path(FX["fixtures"][0]["kvn_fixture"])))
     assert omm == parsed
-    assert omm.to_kvn_string() == FX["fixtures"][0]["encoded_kvn"]
+    assert omm.encode_kvn_lenient() == FX["fixtures"][0]["encoded_kvn"]
 
 
 @pytest.mark.parametrize(
@@ -350,3 +370,55 @@ def test_omm_parse_and_constructor_errors_are_typed():
             0.0,
             1,
         )
+
+
+def test_json_array_spans_record_exact_offsets():
+    text = _load(_path(FX["fixtures"][0]["json_fixture"]))
+    parsed = sidereon.parse_omm_json_array(text)
+    assert parsed == sidereon.parse_omm_json_array(text)
+    assert parsed != sidereon.parse_omm_json_array("\n" + text)
+    span = parsed.spans[0]
+    assert span.index == 0
+    assert span.byte_start == 1
+    assert span.byte_end == 418
+    assert span.line == 1
+    assert span == sidereon.parse_omm_json_array(text).spans[0]
+    shifted = sidereon.parse_omm_json_array("\n" + text).spans[0]
+    assert span != shifted
+    skipped = sidereon.parse_omm_json_array("[{},{}]").skipped
+    assert skipped[0] == sidereon.parse_omm_json_array("[{},{}]").skipped[0]
+    assert skipped[0] != skipped[1]
+
+
+def test_missing_one_of_and_malformed_document_detail():
+    document = json.loads(_load(_path("25544.json")))[0]
+    del document["MEAN_MOTION"]
+    with pytest.raises(sidereon.OmmParseError) as missing:
+        sidereon.parse_omm_json(json.dumps(document))
+    assert missing.value.detail["kind"] == "MissingOneOf"
+    assert missing.value.detail["fields"] == ["SEMI_MAJOR_AXIS", "MEAN_MOTION"]
+    with pytest.raises(sidereon.OmmParseError) as malformed:
+        sidereon.parse_omm_json("{bad")
+    assert malformed.value.detail["kind"] == "MalformedDocument"
+    assert malformed.value.detail["format"] == "JSON"
+    assert malformed.value.detail["byte_offset"] == 1
+    assert (
+        malformed.value.detail["message"] == "key must be a string at line 1 column 2"
+    )
+
+
+def test_xml_and_csv_array_spans():
+    xml = sidereon.parse_omm_xml_all(_load(_path("25544.xml")))
+    assert [(s.index, s.byte_start, s.byte_end, s.line) for s in xml.spans] == [
+        (0, 205, 1191, 3)
+    ]
+    csv = (
+        "EPOCH,MEAN_MOTION,ECCENTRICITY,INCLINATION,RA_OF_ASC_NODE,"
+        "ARG_OF_PERICENTER,MEAN_ANOMALY\n"
+        "2026-06-17T04:32:52,15.49273435,.0004737,51.6332,300.0813,"
+        "195.1146,164.9702\n"
+    )
+    array = sidereon.parse_omm_csv_array(csv)
+    assert [(s.index, s.byte_start, s.byte_end, s.line) for s in array.spans] == [
+        (0, 89, 164, 2)
+    ]

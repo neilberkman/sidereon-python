@@ -158,11 +158,11 @@ def _copy_omm(base, *, object_name=None, comments=None):
 def test_omm_writer_text_and_nested_csv_errors_keep_exact_payloads():
     path = os.path.join(CORE_FIXTURES, "omm", "25544.kvn")
     base = sidereon.parse_omm_kvn(_read(path))
-    assert sidereon.parse_omm_kvn(base.to_kvn_string()).epoch == base.epoch
+    assert sidereon.parse_omm_kvn(base.encode_kvn_lenient()).epoch == base.epoch
 
     bad_text = _copy_omm(base, object_name="object\nname")
     with pytest.raises(sidereon.OmmParseError) as text_refused:
-        bad_text.to_kvn_string()
+        bad_text.encode_kvn_lenient()
     text_detail = text_refused.value.detail
     assert text_detail["family"] == "omm"
     assert text_detail["kind"] == "UnwritableText"

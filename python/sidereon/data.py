@@ -67,6 +67,13 @@ from sidereon._compression import gunzip_members as _gunzip_members
 from sidereon._ingress import _STREAM_CHUNK_BYTES as _STREAM_CHUNK_BYTES
 from sidereon._ingress import append_bounded as _append_bounded
 from sidereon._sidereon import (
+    CelestrakGpRecord,
+    CelestrakGpRejectedRecord,
+    CelestrakGpRejectionReason,
+    CelestrakGpResponse,
+    CelestrakTleRecord,
+)
+from sidereon._sidereon import (
     data_allowed_hosts as _core_data_allowed_hosts,
 )
 from sidereon._sidereon import (
@@ -77,6 +84,30 @@ from sidereon._sidereon import (
 )
 from sidereon._sidereon import (
     data_canonical_filename as _core_data_canonical_filename,
+)
+from sidereon._sidereon import (
+    data_celestrak_constellation_url as _gp_constellation_url,
+)
+from sidereon._sidereon import (
+    data_celestrak_gp_format_as_str as _gp_format_as_str,
+)
+from sidereon._sidereon import (
+    data_celestrak_gp_format_values as _gp_format_values,
+)
+from sidereon._sidereon import (
+    data_celestrak_gp_source_entry as _gp_source,
+)
+from sidereon._sidereon import (
+    data_celestrak_gp_special_as_str as _gp_special_as_str,
+)
+from sidereon._sidereon import (
+    data_celestrak_gp_special_values as _gp_special_values,
+)
+from sidereon._sidereon import (
+    data_celestrak_gp_url as _gp_url,
+)
+from sidereon._sidereon import (
+    data_celestrak_group as _gp_group,
 )
 from sidereon._sidereon import (
     data_center_entry as _core_data_center_entry,
@@ -115,6 +146,12 @@ from sidereon._sidereon import (
     data_hgt_to_dted as _core_data_hgt_to_dted,
 )
 from sidereon._sidereon import (
+    data_navcen_constellation_url as _navcen_url,
+)
+from sidereon._sidereon import (
+    data_navcen_source_entry as _navcen_source,
+)
+from sidereon._sidereon import (
     data_newest_published_product as _core_data_newest_published_product,
 )
 from sidereon._sidereon import (
@@ -122,6 +159,9 @@ from sidereon._sidereon import (
 )
 from sidereon._sidereon import (
     data_parse_archive_listing as _core_data_parse_archive_listing,
+)
+from sidereon._sidereon import (
+    data_parse_celestrak_gp_response as _parse_gp_response,
 )
 from sidereon._sidereon import (
     data_parse_skadi_tile_id as _core_data_parse_skadi_tile_id,
@@ -233,6 +273,33 @@ __all__ = [
     "centers",
     "content_types",
     "allowed_hosts",
+    "CelestrakGpError",
+    "InvalidCelestrakGpSelector",
+    "CelestrakGpNotModified",
+    "CelestrakGpDataNotFound",
+    "EmptyCelestrakGpResponse",
+    "CelestrakGpHtmlResponse",
+    "InvalidCelestrakGpResponse",
+    "CelestrakGpResponse",
+    "CelestrakGpRecord",
+    "CelestrakGpRejectedRecord",
+    "CelestrakGpRejectionReason",
+    "CelestrakTleRecord",
+    "parse_celestrak_gp_response",
+    "fetch_celestrak_gp",
+    "fetch_constellation",
+    "CelestrakGpFormat",
+    "CelestrakGpSpecial",
+    "CelestrakGpQuery",
+    "CelestrakGpSourceEntry",
+    "NavcenSourceEntry",
+    "celestrak_gp_source_entry",
+    "navcen_source_entry",
+    "navcen_constellation_url",
+    "fetch_navcen_constellation_status",
+    "celestrak_group",
+    "celestrak_gp_url",
+    "celestrak_constellation_url",
     "gps_week",
     "day_of_year",
     "default_sample_for_date",
@@ -332,6 +399,226 @@ class DataError(Exception):
     """Base class for every fetch/cache failure in :mod:`sidereon.data`."""
 
     detail: Optional[dict[str, object]] = None
+
+
+class CelestrakGpError(DataError):
+    """A GP catalog or response error, with HTTP status and URL when fetched."""
+
+    status: Optional[int] = None
+    url: Optional[str] = None
+
+
+class InvalidCelestrakGpSelector(CelestrakGpError):
+    """A GP selector or selector value is invalid."""
+
+    def __init__(self, message: str, selector: str, value: str) -> None:
+        super().__init__(message)
+        self.selector = selector
+        self.value = value
+
+
+class CelestrakGpNotModified(CelestrakGpError):
+    """A repeat download was refused; ``cache_path`` identifies a verified copy."""
+
+    cache_path: Optional[str] = None
+
+    def __init__(
+        self,
+        message: str,
+        query: Optional[str],
+        last_successful_download: Optional[str],
+    ) -> None:
+        super().__init__(message)
+        self.query = query
+        self.last_successful_download = last_successful_download
+
+
+class CelestrakGpDataNotFound(CelestrakGpError):
+    """The GP service reported no data."""
+
+
+class EmptyCelestrakGpResponse(CelestrakGpError):
+    """The GP response was empty."""
+
+
+class CelestrakGpHtmlResponse(CelestrakGpError):
+    """The GP response was an HTML page."""
+
+
+class InvalidCelestrakGpResponse(CelestrakGpError):
+    """The GP response was malformed."""
+
+    def __init__(
+        self, message: str, reason: str, line: Optional[int], column: Optional[int]
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.line = line
+        self.column = column
+
+
+def _gp_error(exc: Exception) -> CelestrakGpError:
+    detail = getattr(exc, "detail", None) or {}
+    kind = detail.get("kind")
+    if kind == "celestrak_gp_not_modified":
+        error = CelestrakGpNotModified(
+            str(exc), detail["query"], detail["last_successful_download"]
+        )
+    elif kind == "invalid_celestrak_gp_response":
+        error = InvalidCelestrakGpResponse(
+            str(exc), detail["reason"], detail["line"], detail["column"]
+        )
+    elif kind == "celestrak_gp_data_not_found":
+        error = CelestrakGpDataNotFound(str(exc))
+    elif kind == "empty_celestrak_gp_response":
+        error = EmptyCelestrakGpResponse(str(exc))
+    elif kind == "celestrak_gp_html_response":
+        error = CelestrakGpHtmlResponse(str(exc))
+    elif kind in {
+        "invalid_celestrak_gp_selector",
+        "invalid_celestrak_gp_query_kind",
+        "invalid_celestrak_gp_special",
+        "invalid_celestrak_gp_format",
+    }:
+        error = InvalidCelestrakGpSelector(
+            str(exc), detail["selector"], detail["value"]
+        )
+    else:
+        error = CelestrakGpError(str(exc))
+    _copy_catalog_detail(error, exc)
+    return error
+
+
+def parse_celestrak_gp_response(
+    body: bytes, format: CelestrakGpFormat
+) -> CelestrakGpResponse:
+    """Parse GP response bytes using the core parser."""
+    try:
+        return _parse_gp_response(body, format.value)
+    except ValueError as exc:
+        raise _gp_error(exc) from None
+
+
+_GP_FORMAT_VALUES = _gp_format_values()
+_GP_SPECIAL_VALUES = _gp_special_values()
+
+
+class CelestrakGpFormat(str, Enum):
+    """CelesTrak GP output formats."""
+
+    TLE = _GP_FORMAT_VALUES[0]
+    THREE_LINE = _GP_FORMAT_VALUES[1]
+    TWO_LINE = _GP_FORMAT_VALUES[2]
+    XML = _GP_FORMAT_VALUES[3]
+    KVN = _GP_FORMAT_VALUES[4]
+    JSON = _GP_FORMAT_VALUES[5]
+    JSON_PRETTY = _GP_FORMAT_VALUES[6]
+    CSV = _GP_FORMAT_VALUES[7]
+
+    def as_str(self) -> str:
+        """Return the GP wire-format token."""
+        return _gp_format_as_str(self.value)
+
+
+class CelestrakGpSpecial(str, Enum):
+    """Named special GP data sets."""
+
+    GPZ = _GP_SPECIAL_VALUES[0]
+    GPZ_PLUS = _GP_SPECIAL_VALUES[1]
+    DECAYING = _GP_SPECIAL_VALUES[2]
+
+    def as_str(self) -> str:
+        """Return the GP special-selector token."""
+        return _gp_special_as_str(self.value)
+
+
+@dataclass(frozen=True)
+class CelestrakGpQuery:
+    """GP selector, with a kind and its corresponding value."""
+
+    kind: str
+    value: Union[str, int, CelestrakGpSpecial]
+
+    @classmethod
+    def group(cls, value: str) -> CelestrakGpQuery:
+        """Select a CelesTrak group."""
+        return cls("group", value)
+
+    @classmethod
+    def catalog_number(cls, value: int) -> CelestrakGpQuery:
+        """Select a catalog number."""
+        return cls("catalog_number", value)
+
+    @classmethod
+    def international_designator(cls, value: str) -> CelestrakGpQuery:
+        """Select an international launch designator."""
+        return cls("international_designator", value)
+
+    @classmethod
+    def name(cls, value: str) -> CelestrakGpQuery:
+        """Select a partial object name."""
+        return cls("name", value)
+
+    @classmethod
+    def special(cls, value: CelestrakGpSpecial) -> CelestrakGpQuery:
+        """Select a named special data set."""
+        return cls("special", value)
+
+
+@dataclass(frozen=True)
+class CelestrakGpSourceEntry:
+    """CelesTrak GP endpoint metadata."""
+
+    protocol: str
+    host: str
+    root_url: str
+
+
+@dataclass(frozen=True)
+class NavcenSourceEntry:
+    """NAVCEN constellation-status page metadata."""
+
+    protocol: str
+    host: str
+    root_url: str
+
+
+def celestrak_gp_source_entry() -> CelestrakGpSourceEntry:
+    """Return the CelesTrak GP endpoint metadata."""
+    return CelestrakGpSourceEntry(*_gp_source())
+
+
+def navcen_source_entry() -> NavcenSourceEntry:
+    """Return the NAVCEN endpoint metadata."""
+    return NavcenSourceEntry(*_navcen_source())
+
+
+def navcen_constellation_url() -> str:
+    """Return the NAVCEN constellation-status page URL."""
+    return _navcen_url()
+
+
+def celestrak_group(system: sidereon.GnssSystem) -> str:
+    """Return the GP group for a GNSS constellation."""
+    return _gp_group(system)
+
+
+def celestrak_gp_url(query: CelestrakGpQuery, format: CelestrakGpFormat) -> str:
+    """Build a validated GP query URL."""
+    try:
+        return _gp_url(query.kind, query.value, format.value)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise _gp_error(exc) from None
+
+
+def celestrak_constellation_url(
+    system: sidereon.GnssSystem, format: CelestrakGpFormat
+) -> str:
+    """Build a GP URL for a GNSS constellation."""
+    try:
+        return _gp_constellation_url(system, format.value)
+    except ValueError as exc:
+        raise _gp_error(exc) from None
 
 
 class UnknownCenter(DataError):
@@ -1909,6 +2196,212 @@ def _download_space_weather_and_cache(
         url, source.protocol, source.compression, downloaded, downloaded
     )
     return _commit(path, downloaded, provenance)
+
+
+def fetch_navcen_constellation_status(
+    *,
+    cache_dir: Optional[str] = None,
+    offline: bool = False,
+    sha256: Optional[str] = None,
+    max_age_s: float = 86_400.0,
+    timeout_s: float = _DEFAULT_TIMEOUT_S,
+    retries: int = _DEFAULT_RETRIES,
+    backoff_s: float = _DEFAULT_BACKOFF_S,
+    max_compressed_bytes: int = _DEFAULT_MAX_COMPRESSED_BYTES,
+) -> bytes:
+    """Fetch the NAVCEN status page as bytes, using the verified cache."""
+    if not _math.isfinite(max_age_s) or max_age_s < 0.0:
+        raise UnsupportedProduct("max_age_s must be finite and non-negative")
+    path = _catalog_rel_cache_path(
+        _resolve_cache_dir(cache_dir), "navcen/constellation.html"
+    )
+    state, detail = _classify(path, sha256)
+    if state == "hit" and (
+        offline or sha256 is not None or _fresh_enough(path, max_age_s)
+    ):
+        with open(path, "rb") as handle:
+            return handle.read()
+    if offline:
+        if state == "stale":
+            raise detail
+        raise OfflineCacheMiss(f"not cached: {path}")
+    if state == "stale" and sha256 is not None:
+        raise detail
+    source = navcen_source_entry()
+    url = navcen_constellation_url()
+    downloaded = _download(
+        url,
+        source.protocol,
+        dict(
+            timeout_s=timeout_s,
+            retries=retries,
+            backoff_s=backoff_s,
+            max_compressed_bytes=max_compressed_bytes,
+        ),
+    )
+    if sha256 is not None and _sha256(downloaded) != sha256.lower():
+        raise ChecksumMismatch(sha256.lower(), _sha256(downloaded))
+    _commit(
+        path,
+        downloaded,
+        _provenance(url, source.protocol, "none", downloaded, downloaded),
+    )
+    return downloaded
+
+
+def _download_gp(
+    url: str, format: CelestrakGpFormat, opts: dict, cache_path: Optional[str]
+) -> tuple[bytes, CelestrakGpResponse]:
+    """Read and classify each GP response before deciding whether to retry."""
+    _check_host(url, celestrak_gp_source_entry().protocol)
+    retries = opts["retries"]
+    for attempt in range(1, max(1, retries) + 1):
+        try:
+            with httpx.stream(
+                "GET", url, follow_redirects=False, timeout=opts["timeout_s"]
+            ) as response:
+                status = response.status_code
+                buf = bytearray()
+                for chunk in response.iter_bytes(chunk_size=_STREAM_CHUNK_BYTES):
+                    if _append_bounded(buf, chunk, opts["max_compressed_bytes"]):
+                        response.close()
+                        raise DownloadSizeExceeded(
+                            "GP response exceeded the buffered-bytes cap"
+                        )
+                body = bytes(buf)
+            try:
+                parsed = parse_celestrak_gp_response(body, format)
+            except CelestrakGpError as error:
+                if not 200 <= status < 300 and not isinstance(
+                    error, (CelestrakGpNotModified, CelestrakGpDataNotFound)
+                ):
+                    raise HttpStatusError(status, url) from None
+                error.status = status
+                error.url = url
+                if error.detail is None:
+                    error.detail = {}
+                error.detail.update(status=status, url=url)
+                if isinstance(error, CelestrakGpNotModified):
+                    error.cache_path = cache_path
+                    error.detail["cache_path"] = cache_path
+                raise
+            if not 200 <= status < 300:
+                raise HttpStatusError(status, url)
+            return body, parsed
+        except HttpStatusError as error:
+            if (
+                error.status in (408, 429) or error.status >= 500
+            ) and attempt < retries:
+                _sleep(opts["backoff_s"] * (2 ** (attempt - 1)))
+                continue
+            raise
+        except httpx.HTTPError as exc:
+            if attempt < retries:
+                _sleep(opts["backoff_s"] * (2 ** (attempt - 1)))
+                continue
+            raise NetworkError(f"network error for {url}: {exc}") from exc
+    raise AssertionError("unreachable GP download state")
+
+
+def _fetch_celestrak_gp_url(
+    url: str,
+    format: CelestrakGpFormat,
+    *,
+    cache_dir: Optional[str],
+    offline: bool,
+    sha256: Optional[str],
+    max_age_s: float,
+    timeout_s: float,
+    retries: int,
+    backoff_s: float,
+    max_compressed_bytes: int,
+) -> CelestrakGpResponse:
+    if not _math.isfinite(max_age_s) or max_age_s < 0.0:
+        raise UnsupportedProduct("max_age_s must be finite and non-negative")
+    key = _hashlib.sha256(url.encode("utf-8")).hexdigest()
+    path = _catalog_rel_cache_path(_resolve_cache_dir(cache_dir), f"celestrak-gp/{key}")
+    state, detail = _classify(path, sha256)
+    if state == "hit" and (
+        offline or sha256 is not None or _fresh_enough(path, max_age_s)
+    ):
+        with open(path, "rb") as handle:
+            return parse_celestrak_gp_response(handle.read(), format)
+    if state == "stale" and (offline or sha256 is not None):
+        raise detail
+    if offline:
+        raise OfflineCacheMiss(f"not cached: {url}")
+    source = celestrak_gp_source_entry()
+    body, response = _download_gp(
+        url,
+        format,
+        dict(
+            timeout_s=timeout_s,
+            retries=retries,
+            backoff_s=backoff_s,
+            max_compressed_bytes=max_compressed_bytes,
+        ),
+        path if state == "hit" else None,
+    )
+    if sha256 is not None and _sha256(body) != sha256.lower():
+        raise ChecksumMismatch(sha256.lower(), _sha256(body))
+    _commit(path, body, _provenance(url, source.protocol, "none", body, body))
+    return response
+
+
+def fetch_celestrak_gp(
+    query: CelestrakGpQuery,
+    format: CelestrakGpFormat = CelestrakGpFormat.JSON,
+    *,
+    cache_dir: Optional[str] = None,
+    offline: bool = False,
+    sha256: Optional[str] = None,
+    max_age_s: float = 7_200.0,
+    timeout_s: float = _DEFAULT_TIMEOUT_S,
+    retries: int = _DEFAULT_RETRIES,
+    backoff_s: float = _DEFAULT_BACKOFF_S,
+    max_compressed_bytes: int = _DEFAULT_MAX_COMPRESSED_BYTES,
+) -> CelestrakGpResponse:
+    """Fetch GP data, reusing verified cached responses for 7,200 seconds."""
+    return _fetch_celestrak_gp_url(
+        celestrak_gp_url(query, format),
+        format,
+        cache_dir=cache_dir,
+        offline=offline,
+        sha256=sha256,
+        max_age_s=max_age_s,
+        timeout_s=timeout_s,
+        retries=retries,
+        backoff_s=backoff_s,
+        max_compressed_bytes=max_compressed_bytes,
+    )
+
+
+def fetch_constellation(
+    system: sidereon.GnssSystem,
+    format: CelestrakGpFormat = CelestrakGpFormat.JSON,
+    *,
+    cache_dir: Optional[str] = None,
+    offline: bool = False,
+    sha256: Optional[str] = None,
+    max_age_s: float = 7_200.0,
+    timeout_s: float = _DEFAULT_TIMEOUT_S,
+    retries: int = _DEFAULT_RETRIES,
+    backoff_s: float = _DEFAULT_BACKOFF_S,
+    max_compressed_bytes: int = _DEFAULT_MAX_COMPRESSED_BYTES,
+) -> CelestrakGpResponse:
+    """Fetch the GNSS GP group, reusing verified cache entries for 7,200 seconds."""
+    return _fetch_celestrak_gp_url(
+        celestrak_constellation_url(system, format),
+        format,
+        cache_dir=cache_dir,
+        offline=offline,
+        sha256=sha256,
+        max_age_s=max_age_s,
+        timeout_s=timeout_s,
+        retries=retries,
+        backoff_s=backoff_s,
+        max_compressed_bytes=max_compressed_bytes,
+    )
 
 
 # --- terrain -------------------------------------------------------------

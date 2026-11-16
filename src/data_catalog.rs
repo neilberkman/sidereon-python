@@ -4,11 +4,173 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyModule};
 
+use crate::sgp4_elements::{PyElementSet, PyTleElements};
+
 use sidereon_core::data as core;
 use sidereon_core::data::{
     AnalysisCenter, ProductDate, ProductDateTime, ProductIdentity, ProductType,
     SpaceWeatherProduct, UltraIssue,
 };
+
+const GP_FORMATS: [core::CelestrakGpFormat; 8] = [
+    core::CelestrakGpFormat::Tle,
+    core::CelestrakGpFormat::ThreeLine,
+    core::CelestrakGpFormat::TwoLine,
+    core::CelestrakGpFormat::Xml,
+    core::CelestrakGpFormat::Kvn,
+    core::CelestrakGpFormat::Json,
+    core::CelestrakGpFormat::JsonPretty,
+    core::CelestrakGpFormat::Csv,
+];
+const GP_SPECIALS: [core::CelestrakGpSpecial; 3] = [
+    core::CelestrakGpSpecial::Gpz,
+    core::CelestrakGpSpecial::GpzPlus,
+    core::CelestrakGpSpecial::Decaying,
+];
+
+fn gp_format(value: &str) -> PyResult<core::CelestrakGpFormat> {
+    GP_FORMATS
+        .into_iter()
+        .find(|format| format.as_str() == value)
+        .ok_or_else(|| gp_boundary_error("invalid_celestrak_gp_format", "FORMAT", value))
+}
+
+fn gp_special(value: &str) -> PyResult<core::CelestrakGpSpecial> {
+    GP_SPECIALS
+        .into_iter()
+        .find(|special| special.as_str() == value)
+        .ok_or_else(|| gp_boundary_error("invalid_celestrak_gp_special", "SPECIAL", value))
+}
+
+#[pyfunction]
+fn data_celestrak_gp_format_values() -> Vec<&'static str> {
+    GP_FORMATS.into_iter().map(|value| value.as_str()).collect()
+}
+
+#[pyfunction]
+fn data_celestrak_gp_special_values() -> Vec<&'static str> {
+    GP_SPECIALS
+        .into_iter()
+        .map(|value| value.as_str())
+        .collect()
+}
+
+fn gp_boundary_error(kind: &str, selector: &str, value: &str) -> PyErr {
+    Python::with_gil(|py| {
+        let message = format!("invalid CelesTrak GP {selector}: {value}");
+        let error = PyValueError::new_err(message.clone());
+        let detail = PyDict::new(py);
+        let result = (|| -> PyResult<()> {
+            detail.set_item("family", "DataCatalogError")?;
+            detail.set_item("kind", kind)?;
+            detail.set_item("selector", selector)?;
+            detail.set_item("value", value)?;
+            detail.set_item("message", message)?;
+            error.value(py).setattr("detail", detail)
+        })();
+        match result {
+            Ok(()) => error,
+            Err(error) => error,
+        }
+    })
+}
+
+#[pyfunction]
+fn data_celestrak_gp_format_as_str(value: &str) -> PyResult<&'static str> {
+    Ok(gp_format(value)?.as_str())
+}
+
+#[pyfunction]
+fn data_celestrak_gp_special_as_str(value: &str) -> PyResult<&'static str> {
+    Ok(gp_special(value)?.as_str())
+}
+
+#[pyfunction]
+fn data_celestrak_gp_source_entry() -> (&'static str, &'static str, &'static str) {
+    let e = core::celestrak_gp_source_entry();
+    (e.protocol.as_str(), e.host, e.root_url)
+}
+
+#[pyfunction]
+fn data_navcen_source_entry() -> (&'static str, &'static str, &'static str) {
+    let e = core::navcen_source_entry();
+    (e.protocol.as_str(), e.host, e.root_url)
+}
+
+#[pyfunction]
+fn data_navcen_constellation_url() -> &'static str {
+    core::navcen_constellation_url()
+}
+
+#[pyfunction]
+fn data_celestrak_group(system: crate::marshal::PyGnssSystem) -> &'static str {
+    sidereon_core::constellation::celestrak_group(system.into())
+}
+
+#[pyfunction]
+fn data_celestrak_constellation_url(
+    system: crate::marshal::PyGnssSystem,
+    format: &str,
+) -> PyResult<String> {
+    core::celestrak_constellation_url(system.into(), gp_format(format)?).map_err(data_catalog_err)
+}
+
+#[pyfunction]
+fn data_celestrak_gp_url(
+    kind: &str,
+    value: &Bound<'_, pyo3::types::PyAny>,
+    format: &str,
+) -> PyResult<String> {
+    use core::CelestrakGpQuery as Q;
+    let format = gp_format(format)?;
+    let string_value;
+    let query = match kind {
+        "group" | "international_designator" | "name" => {
+            string_value = value.extract::<String>().map_err(|_| {
+                let selector = match kind {
+                    "group" => "GROUP",
+                    "name" => "NAME",
+                    _ => "INTDES",
+                };
+                let display = value.str().map(|s| s.to_string()).unwrap_or_default();
+                gp_boundary_error("invalid_celestrak_gp_selector", selector, &display)
+            })?;
+            match kind {
+                "group" => Q::Group(&string_value),
+                "name" => Q::Name(&string_value),
+                _ => Q::InternationalDesignator(&string_value),
+            }
+        }
+        "catalog_number" => {
+            let invalid = || {
+                let display = value
+                    .str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|_| "<unprintable>".to_string());
+                gp_boundary_error("invalid_celestrak_gp_selector", "CATNR", &display)
+            };
+            if value.is_instance_of::<pyo3::types::PyBool>() {
+                return Err(invalid());
+            }
+            Q::CatalogNumber(value.extract().map_err(|_| invalid())?)
+        }
+        "special" => Q::Special(gp_special(&value.extract::<String>().map_err(|_| {
+            gp_boundary_error(
+                "invalid_celestrak_gp_special",
+                "SPECIAL",
+                &value.str().map(|s| s.to_string()).unwrap_or_default(),
+            )
+        })?)?),
+        _ => {
+            return Err(gp_boundary_error(
+                "invalid_celestrak_gp_query_kind",
+                "QUERY",
+                kind,
+            ))
+        }
+    };
+    core::celestrak_gp_url(query, format).map_err(data_catalog_err)
+}
 
 fn data_catalog_err(err: core::DataCatalogError) -> PyErr {
     use core::DataCatalogError as E;
@@ -17,6 +179,32 @@ fn data_catalog_err(err: core::DataCatalogError) -> PyErr {
         let result = (|| -> PyResult<PyErr> {
             let detail = PyDict::new(py);
             let kind = match &err {
+                E::InvalidCelestrakGpSelector { selector, value } => {
+                    detail.set_item("selector", selector)?;
+                    detail.set_item("value", value)?;
+                    "invalid_celestrak_gp_selector"
+                }
+                E::EmptyCelestrakGpResponse => "empty_celestrak_gp_response",
+                E::CelestrakGpDataNotFound => "celestrak_gp_data_not_found",
+                E::CelestrakGpNotModified {
+                    query,
+                    last_successful_download,
+                } => {
+                    detail.set_item("query", query)?;
+                    detail.set_item("last_successful_download", last_successful_download)?;
+                    "celestrak_gp_not_modified"
+                }
+                E::CelestrakGpHtmlResponse => "celestrak_gp_html_response",
+                E::InvalidCelestrakGpResponse {
+                    reason,
+                    line,
+                    column,
+                } => {
+                    detail.set_item("reason", reason)?;
+                    detail.set_item("line", line)?;
+                    detail.set_item("column", column)?;
+                    "invalid_celestrak_gp_response"
+                }
                 E::UnknownCenter(value) => {
                     detail.set_item("value", value)?;
                     "unknown_center"
@@ -895,7 +1083,258 @@ fn data_gim_date_candidates(
         .map_err(data_catalog_err)
 }
 
+/// Native TLE payload of a GP record.
+#[pyclass(module = "sidereon._sidereon", name = "CelestrakTleRecord")]
+#[derive(Clone)]
+pub struct PyCelestrakTleRecord {
+    inner: core::CelestrakTleRecord,
+}
+#[pymethods]
+impl PyCelestrakTleRecord {
+    /// Parsed fixed-column elements.
+    #[getter]
+    fn elements(&self) -> PyTleElements {
+        PyTleElements {
+            inner: self.inner.elements.clone(),
+        }
+    }
+    /// Line 1 as received, without its line ending.
+    #[getter]
+    fn line1(&self) -> &str {
+        &self.inner.line1
+    }
+    /// Line 2 as received, without its line ending.
+    #[getter]
+    fn line2(&self) -> &str {
+        &self.inner.line2
+    }
+    /// Checksum findings accepted by the TLE reader.
+    #[getter]
+    fn checksum_warnings(&self) -> Vec<crate::propagation::PyChecksumWarning> {
+        self.inner
+            .checksum_warnings
+            .iter()
+            .map(Into::into)
+            .collect()
+    }
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+/// A GP record with exact source bytes.
+#[pyclass(module = "sidereon._sidereon", name = "CelestrakGpRecord")]
+#[derive(Clone)]
+pub struct PyCelestrakGpRecord {
+    inner: core::CelestrakGpRecord,
+}
+#[pymethods]
+impl PyCelestrakGpRecord {
+    /// One-based position among accepted and rejected records.
+    #[getter]
+    fn record_index(&self) -> usize {
+        self.inner.record_index
+    }
+    /// One-based source line, when available.
+    #[getter]
+    fn line_number(&self) -> Option<usize> {
+        self.inner.line_number
+    }
+    /// Exact source bytes assigned to this record.
+    #[getter]
+    fn raw<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, self.inner.raw.as_bytes())
+    }
+    /// Object name carried by the native record, when present.
+    #[getter]
+    fn object_name(&self) -> Option<String> {
+        self.inner.object_name.clone()
+    }
+    /// Native TLE record or OMM.
+    #[getter]
+    fn payload(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match &self.inner.payload {
+            core::CelestrakGpPayload::Tle(tle) => Ok(Py::new(
+                py,
+                PyCelestrakTleRecord {
+                    inner: (**tle).clone(),
+                },
+            )?
+            .into_any()),
+            core::CelestrakGpPayload::Omm(omm) => {
+                Ok(Py::new(py, crate::omm::PyOmm::from_inner((**omm).clone()))?.into_any())
+            }
+        }
+    }
+    /// Convert the native payload to an SGP4 element set.
+    fn to_element_set(&self, py: Python<'_>) -> PyResult<PyElementSet> {
+        self.inner
+            .to_element_set()
+            .map(|inner| PyElementSet { inner })
+            .map_err(|e| gp_record_error(py, e))
+    }
+    /// Convert the native payload to an OMM.
+    fn to_omm(&self, py: Python<'_>) -> PyResult<crate::omm::PyOmm> {
+        self.inner
+            .to_omm()
+            .map(crate::omm::PyOmm::from_inner)
+            .map_err(|e| gp_record_error(py, e))
+    }
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+fn gp_record_error(py: Python<'_>, error: core::CelestrakGpRecordError) -> PyErr {
+    match error {
+        core::CelestrakGpRecordError::Tle(e) => crate::tle_fit_error_detail::tle_parse_error(e),
+        core::CelestrakGpRecordError::Omm(e) => crate::omm::to_omm_err(py, e),
+    }
+}
+
+/// The reason an individual GP record was rejected.
+#[pyclass(module = "sidereon._sidereon", name = "CelestrakGpRejectionReason")]
+#[derive(Clone)]
+pub struct PyCelestrakGpRejectionReason {
+    inner: core::CelestrakGpRejectionReason,
+}
+#[pymethods]
+impl PyCelestrakGpRejectionReason {
+    /// Native error family: `tle`, `omm`, or `structural`.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match &self.inner {
+            core::CelestrakGpRejectionReason::Tle(_) => "tle",
+            core::CelestrakGpRejectionReason::Omm(_) => "omm",
+            core::CelestrakGpRejectionReason::Structural(_) => "structural",
+        }
+    }
+    /// Structured variant fields, including nested causes.
+    #[getter]
+    fn detail<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        use core::CelestrakGpStructuralError as S;
+        match &self.inner {
+            core::CelestrakGpRejectionReason::Tle(e) => {
+                crate::tle_fit_error_detail::tle_detail(py, e)
+            }
+            core::CelestrakGpRejectionReason::Omm(e) => crate::omm::omm_detail(py, e),
+            core::CelestrakGpRejectionReason::Structural(e) => {
+                let d = PyDict::new(py);
+                d.set_item("family", "CelestrakGpStructuralError")?;
+                d.set_item("message", format!("{e:?}"))?;
+                match e {
+                    S::UnexpectedContent => d.set_item("kind", "unexpected_content")?,
+                    S::IncompleteRecord => d.set_item("kind", "incomplete_record")?,
+                    S::InvalidTleStructure => d.set_item("kind", "invalid_tle_structure")?,
+                    S::InvalidElementSet(cause) => {
+                        d.set_item("kind", "invalid_element_set")?;
+                        d.set_item(
+                            "cause",
+                            crate::tle_fit_error_detail::sgp4_detail(py, cause)?,
+                        )?;
+                    }
+                }
+                Ok(d)
+            }
+        }
+    }
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+/// A rejected GP record with exact source bytes.
+#[pyclass(module = "sidereon._sidereon", name = "CelestrakGpRejectedRecord")]
+#[derive(Clone)]
+pub struct PyCelestrakGpRejectedRecord {
+    inner: core::CelestrakGpRejectedRecord,
+}
+#[pymethods]
+impl PyCelestrakGpRejectedRecord {
+    /// One-based position among accepted and rejected records.
+    #[getter]
+    fn record_index(&self) -> usize {
+        self.inner.record_index
+    }
+    /// One-based source line, when available.
+    #[getter]
+    fn line_number(&self) -> Option<usize> {
+        self.inner.line_number
+    }
+    /// Exact source bytes assigned to this rejection.
+    #[getter]
+    fn raw<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, self.inner.raw.as_bytes())
+    }
+    /// Typed reason the source record was rejected.
+    #[getter]
+    fn reason(&self) -> PyCelestrakGpRejectionReason {
+        PyCelestrakGpRejectionReason {
+            inner: self.inner.reason.clone(),
+        }
+    }
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+/// Accepted and rejected records from a GP response.
+#[pyclass(module = "sidereon._sidereon", name = "CelestrakGpResponse")]
+#[derive(Clone)]
+pub struct PyCelestrakGpResponse {
+    inner: core::CelestrakGpResponse,
+}
+#[pymethods]
+impl PyCelestrakGpResponse {
+    /// Accepted records in source order.
+    #[getter]
+    fn records(&self) -> Vec<PyCelestrakGpRecord> {
+        self.inner
+            .records
+            .iter()
+            .cloned()
+            .map(|inner| PyCelestrakGpRecord { inner })
+            .collect()
+    }
+    /// Rejected records in source order.
+    #[getter]
+    fn rejected(&self) -> Vec<PyCelestrakGpRejectedRecord> {
+        self.inner
+            .rejected
+            .iter()
+            .cloned()
+            .map(|inner| PyCelestrakGpRejectedRecord { inner })
+            .collect()
+    }
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+#[pyfunction]
+fn data_parse_celestrak_gp_response(body: &[u8], format: &str) -> PyResult<PyCelestrakGpResponse> {
+    core::parse_celestrak_gp_response(body, gp_format(format)?)
+        .map(|inner| PyCelestrakGpResponse { inner })
+        .map_err(data_catalog_err)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(data_celestrak_gp_format_values, m)?)?;
+    m.add_function(wrap_pyfunction!(data_celestrak_gp_special_values, m)?)?;
+    m.add_function(wrap_pyfunction!(data_celestrak_gp_format_as_str, m)?)?;
+    m.add_function(wrap_pyfunction!(data_celestrak_gp_special_as_str, m)?)?;
+    m.add_class::<PyCelestrakTleRecord>()?;
+    m.add_class::<PyCelestrakGpRecord>()?;
+    m.add_class::<PyCelestrakGpRejectionReason>()?;
+    m.add_class::<PyCelestrakGpRejectedRecord>()?;
+    m.add_class::<PyCelestrakGpResponse>()?;
+    m.add_function(wrap_pyfunction!(data_parse_celestrak_gp_response, m)?)?;
+
+    m.add_function(wrap_pyfunction!(data_celestrak_gp_source_entry, m)?)?;
+    m.add_function(wrap_pyfunction!(data_navcen_source_entry, m)?)?;
+    m.add_function(wrap_pyfunction!(data_navcen_constellation_url, m)?)?;
+    m.add_function(wrap_pyfunction!(data_celestrak_group, m)?)?;
+    m.add_function(wrap_pyfunction!(data_celestrak_constellation_url, m)?)?;
+    m.add_function(wrap_pyfunction!(data_celestrak_gp_url, m)?)?;
     m.add_function(wrap_pyfunction!(data_centers, m)?)?;
     m.add_function(wrap_pyfunction!(data_content_types, m)?)?;
     m.add_function(wrap_pyfunction!(data_allowed_hosts, m)?)?;

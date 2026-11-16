@@ -313,7 +313,17 @@ The Python package mirrors the full breadth of the engine.
   text, and value-comparable result objects (see `docs/tdm.md`).
 - **Data acquisition:** the `sidereon.data` module downloads and caches GNSS
   products (SP3 and IONEX from IGS/MGEX analysis centers, including merged
-  multi-center SP3) and DTED terrain tiles. Merges from column-grid inputs
+  multi-center SP3) and DTED terrain tiles. CelesTrak GP catalog functions
+  build validated URLs for groups, catalog numbers, launch designators, names,
+  and special datasets. `parse_celestrak_gp_response` preserves accepted and
+  rejected records and their source bytes; `fetch_celestrak_gp` and
+  `fetch_constellation` download and parse GP data with the verified cache,
+  whose default freshness period is 7,200 seconds.
+  QZSS and NavIC use the combined GNSS group. A repeat-download response raises
+  `CelestrakGpNotModified` with the query and last successful download time;
+  its `cache_path` identifies any verified cached copy.
+  NAVCEN source metadata and a cached constellation-status page fetch are also
+  available. Merges from column-grid inputs
   retain SP3-writable records; higher-precision inputs can still need the
   opt-in record rounding writer. The accuracy-aware writer requires an
   explicit conservative policy when encoded standard deviations need column

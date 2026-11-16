@@ -83,6 +83,7 @@ def test_fit_tle_round_trips_arc_and_omm_json():
             international_designator="98067A",
             object_name="ISS",
         ),
+        omm_header=sidereon.FitOmmHeader("2026-06-17T05:00:00", "TEST"),
     )
 
     # A fit with `fit_bstar=False` holds a zero B* and second derivative, which
@@ -93,6 +94,8 @@ def test_fit_tle_round_trips_arc_and_omm_json():
         "2 25544  51.6414 295.8524 0003435 262.6273 204.2861 15.54005769    06",
     )
     assert fit.catalog_number == 25544
+    assert fit.omm.creation_date == "2026-06-17T05:00:00"
+    assert fit.omm.originator == "TEST"
     assert fit.omm_epoch_days is None
     assert fit.mean_motion_rev_per_day == pytest.approx(15.540057693132342)
     assert fit.eccentricity == pytest.approx(0.00034349193678013374)
@@ -187,3 +190,68 @@ def test_fit_epoch_and_xscale_selectors_are_exposed():
     assert sidereon.XScale.jac().kind == "jac"
     assert sidereon.XScale.values([1.0, 2.0]).scale_values == [1.0, 2.0]
     assert sidereon.Loss.SOFT_L1.label == "soft_l1"
+
+
+def test_fit_omm_header_validation_and_equality():
+    header = sidereon.FitOmmHeader("2026-06-17T05:00:00", "TEST")
+    assert header.creation_date == "2026-06-17T05:00:00"
+    assert header.originator == "TEST"
+    assert header == sidereon.FitOmmHeader("2026-06-17T05:00:00", "TEST")
+    assert header != sidereon.FitOmmHeader("2026-06-17T05:00:00", "OTHER")
+    with pytest.raises(sidereon.SolveError) as exc:
+        sidereon.fit_tle([], omm_header=sidereon.FitOmmHeader("yesterday", "TEST"))
+    assert exc.value.detail["kind"] == "omm_header"
+    assert exc.value.detail["cause"] == {
+        "family": "omm",
+        "field": "CREATION_DATE",
+        "validation_kind": "InvalidCivilDate",
+        "kind": "InvalidField",
+    }
+
+
+def test_omm_from_tle_fields():
+    omm = sidereon.Omm.from_tle(sidereon.Tle(LINE1, LINE2).elements, "ISS")
+    assert (
+        sidereon.Omm.from_tle(
+            elements=sidereon.Tle(LINE1, LINE2).elements, object_name="ISS"
+        ).norad_cat_id
+        == 25544
+    )
+    assert omm.object_name == "ISS"
+    assert omm.norad_cat_id == 25544
+    assert omm.object_id == "1998-067A"
+    assert omm.epoch.iso8601 == "2018-07-03T19:25:57.304128"
+
+
+def test_omm_from_tle_refuses_invalid_epoch_with_detail():
+    valid = sidereon.Tle(LINE1, LINE2).elements
+    names = (
+        "catalog_number",
+        "classification",
+        "international_designator",
+        "epoch_year",
+        "epoch_day_of_year",
+        "mean_motion_dot",
+        "mean_motion_double_dot",
+        "mean_motion_double_dot_text",
+        "bstar",
+        "bstar_text",
+        "ephemeris_type",
+        "elset_number",
+        "inclination_deg",
+        "raan_deg",
+        "eccentricity",
+        "arg_perigee_deg",
+        "mean_anomaly_deg",
+        "mean_motion",
+        "rev_number",
+    )
+    fields = {name: getattr(valid, name) for name in names}
+    assert sidereon.TleElements(**fields) == valid
+    assert valid.to_element_set().catalog_number == 25544
+    fields["epoch_day_of_year"] = -1.0
+    assert sidereon.TleElements(**fields) != valid
+    with pytest.raises(sidereon.TleParseError) as exc:
+        sidereon.Omm.from_tle(sidereon.TleElements(**fields))
+    assert exc.value.detail["kind"] == "invalid_field"
+    assert exc.value.detail["field"] == "epoch_day_of_year"

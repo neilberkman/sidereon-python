@@ -13,10 +13,11 @@ use sidereon::sgp4::Satellite;
 use sidereon_core::astro::ndm::TextIssue;
 use sidereon_core::astro::omm::{
     encode_csv, encode_csv_discarding_comments, encode_json, encode_json_array,
-    encode_json_array_discarding_comments, encode_json_discarding_comments, encode_kvn, encode_xml,
-    parse_csv, parse_csv_array, parse_epoch as parse_core_epoch, parse_json, parse_json_array,
-    parse_kvn, parse_xml, parse_xml_all, Omm, OmmArray, OmmComments, OmmCovariance, OmmEpoch,
-    OmmError, OmmInputErrorKind, OmmSpacecraft, OmmUserDefined,
+    encode_json_array_discarding_comments, encode_json_discarding_comments, encode_kvn,
+    encode_kvn_lenient, encode_xml, encode_xml_lenient, parse_csv, parse_csv_array,
+    parse_epoch as parse_core_epoch, parse_json, parse_json_array, parse_kvn, parse_xml,
+    parse_xml_all, Omm, OmmArray, OmmComments, OmmCovariance, OmmEpoch, OmmError,
+    OmmInputErrorKind, OmmSpacecraft, OmmUserDefined,
 };
 
 use crate::OmmParseError;
@@ -55,6 +56,20 @@ fn omm_detail_into<'py>(
     err: &OmmError,
 ) -> PyResult<&'static str> {
     let kind = match err {
+        OmmError::MalformedDocument {
+            format,
+            message,
+            byte_offset,
+        } => {
+            detail.set_item("format", format)?;
+            detail.set_item("message", message)?;
+            detail.set_item("byte_offset", byte_offset)?;
+            "MalformedDocument"
+        }
+        OmmError::MissingOneOf(fields) => {
+            detail.set_item("fields", *fields)?;
+            "MissingOneOf"
+        }
         OmmError::MissingField(field) => {
             detail.set_item("field", field)?;
             "MissingField"
@@ -147,7 +162,7 @@ fn omm_detail_into<'py>(
     Ok(kind)
 }
 
-fn omm_detail<'py>(py: Python<'py>, err: &OmmError) -> PyResult<Bound<'py, PyDict>> {
+pub(crate) fn omm_detail<'py>(py: Python<'py>, err: &OmmError) -> PyResult<Bound<'py, PyDict>> {
     let detail = PyDict::new(py);
     detail.set_item("family", "omm")?;
     let kind = omm_detail_into(py, &detail, err)?;
@@ -155,7 +170,7 @@ fn omm_detail<'py>(py: Python<'py>, err: &OmmError) -> PyResult<Bound<'py, PyDic
     Ok(detail)
 }
 
-fn to_omm_err(py: Python<'_>, err: OmmError) -> PyErr {
+pub(crate) fn to_omm_err(py: Python<'_>, err: OmmError) -> PyErr {
     let py_err = OmmParseError::new_err(err.to_string());
     let detail = match omm_detail(py, &err) {
         Ok(value) => value,
@@ -569,6 +584,18 @@ impl PyOmm {
 
 #[pymethods]
 impl PyOmm {
+    /// Convert the parsed elements of a TLE to an OMM.
+    #[staticmethod]
+    #[pyo3(signature = (elements, object_name=None))]
+    fn from_tle(
+        elements: &crate::sgp4_elements::PyTleElements,
+        object_name: Option<String>,
+    ) -> PyResult<Self> {
+        Omm::from_tle(&elements.inner, object_name)
+            .map(Self::from_inner)
+            .map_err(crate::tle_fit_error_detail::tle_parse_error)
+    }
+
     #[new]
     #[pyo3(signature = (
         epoch,
@@ -896,16 +923,41 @@ impl PyOmm {
         }
     }
 
-    /// Encode this OMM to CCSDS OMM KVN text. Raises `OmmParseError` for a
-    /// value the KVN reader would not read back unchanged.
+    /// Encode CCSDS OMM KVN, requiring the mandatory header and fields.
+    /// Raises `OmmParseError` for missing or unwritable values.
     fn to_kvn_string(&self, py: Python<'_>) -> PyResult<String> {
         encode_kvn(&self.inner).map_err(|err| to_omm_err(py, err))
     }
 
-    /// Encode this OMM to CCSDS OMM XML text. Raises `OmmParseError` for a
-    /// value the XML reader would not return unchanged.
+    /// Encode CCSDS OMM XML, requiring the mandatory header and fields.
+    /// Raises `OmmParseError` for missing or unwritable values.
     fn to_xml_string(&self, py: Python<'_>) -> PyResult<String> {
         encode_xml(&self.inner).map_err(|err| to_omm_err(py, err))
+    }
+
+    /// Encode a partial OMM as KVN without requiring a CCSDS header.
+    fn encode_kvn_lenient(&self, py: Python<'_>) -> PyResult<String> {
+        encode_kvn_lenient(&self.inner).map_err(|err| to_omm_err(py, err))
+    }
+
+    /// Encode a partial OMM as XML without requiring a CCSDS header.
+    fn encode_xml_lenient(&self, py: Python<'_>) -> PyResult<String> {
+        encode_xml_lenient(&self.inner).map_err(|err| to_omm_err(py, err))
+    }
+
+    /// Return a copy with validated CCSDS header fields.
+    fn with_ccsds_header(
+        &self,
+        py: Python<'_>,
+        version: &str,
+        creation_date: &str,
+        originator: &str,
+    ) -> PyResult<Self> {
+        self.inner
+            .clone()
+            .with_ccsds_header(version, creation_date, originator)
+            .map(Self::from_inner)
+            .map_err(|err| to_omm_err(py, err))
     }
 
     /// Encode this OMM to CCSDS/CelesTrak GP JSON text. GP JSON carries one
@@ -988,6 +1040,10 @@ impl PyOmmSkippedRecord {
             self.index, self.reason
         )
     }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.index == other.index && self.error == other.error
+    }
 }
 
 /// The OMMs a multi-record reader read, and the records it skipped.
@@ -996,12 +1052,14 @@ impl PyOmmSkippedRecord {
 pub struct PyOmmArray {
     omms: Vec<Omm>,
     skipped: Vec<PyOmmSkippedRecord>,
+    spans: Vec<sidereon_core::astro::omm::OmmRecordSpan>,
 }
 
 impl From<OmmArray> for PyOmmArray {
     fn from(array: OmmArray) -> Self {
         Self {
             omms: array.omms,
+            spans: array.spans,
             skipped: array
                 .skipped
                 .into_iter()
@@ -1020,6 +1078,15 @@ impl From<OmmArray> for PyOmmArray {
 
 #[pymethods]
 impl PyOmmArray {
+    /// Source spans for all records, including skipped records.
+    #[getter]
+    fn spans(&self) -> Vec<PyOmmRecordSpan> {
+        self.spans
+            .iter()
+            .cloned()
+            .map(|inner| PyOmmRecordSpan { inner })
+            .collect()
+    }
     /// The records read, in input order.
     #[getter]
     fn omms(&self) -> Vec<PyOmm> {
@@ -1036,12 +1103,57 @@ impl PyOmmArray {
         self.omms.len()
     }
 
+    fn __eq__(&self, other: &Self) -> bool {
+        self.omms == other.omms
+            && self.spans == other.spans
+            && self.skipped.len() == other.skipped.len()
+            && self
+                .skipped
+                .iter()
+                .zip(&other.skipped)
+                .all(|(a, b)| a.__eq__(b))
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "OmmArray(omms={}, skipped={})",
             self.omms.len(),
             self.skipped.len()
         )
+    }
+}
+
+/// A record's exact source byte range and line.
+#[pyclass(module = "sidereon._sidereon", name = "OmmRecordSpan")]
+#[derive(Clone)]
+pub struct PyOmmRecordSpan {
+    inner: sidereon_core::astro::omm::OmmRecordSpan,
+}
+
+#[pymethods]
+impl PyOmmRecordSpan {
+    /// Zero-based position of the record.
+    #[getter]
+    fn index(&self) -> usize {
+        self.inner.index
+    }
+    /// Byte offset at the start of the record.
+    #[getter]
+    fn byte_start(&self) -> usize {
+        self.inner.byte_start
+    }
+    /// Byte offset immediately after the record.
+    #[getter]
+    fn byte_end(&self) -> usize {
+        self.inner.byte_end
+    }
+    /// One-based source line at the start of the record.
+    #[getter]
+    fn line(&self) -> usize {
+        self.inner.line
+    }
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
     }
 }
 
@@ -1161,6 +1273,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOmm>()?;
     m.add_class::<PyOmmSkippedRecord>()?;
     m.add_class::<PyOmmArray>()?;
+    m.add_class::<PyOmmRecordSpan>()?;
     m.add_function(wrap_pyfunction!(parse_omm_kvn, m)?)?;
     m.add_function(wrap_pyfunction!(parse_omm_epoch, m)?)?;
     m.add_function(wrap_pyfunction!(parse_omm_xml, m)?)?;

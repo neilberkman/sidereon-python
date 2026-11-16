@@ -6,6 +6,12 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ### Added
 
+- Add OMM lenient KVN and XML writers, `Omm.from_tle`, and
+  `Omm.with_ccsds_header`.
+- Add CelesTrak GP source and URL builders, response parsing and cached fetches;
+  NAVCEN source metadata and cached constellation-status page fetch;
+  `OmmArray.spans` and TLE conversion through `TleElements` and `ElementSet`;
+  `Tle.elements`, `TleParseError.detail`, and `FitOmmHeader` for fitted OMMs.
 - Add precise-positioning TEC APIs: `PppTecConfig`, `PppTecLevelingSample`,
   `PppLeveledTecSample`, `PppTecLevelingResult`,
   `PppIonosphericPiercePoint`, `PppCodeSlantTecEstimate`,
@@ -61,6 +67,9 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ### Changed
 
+- OMM KVN and XML writers require the CCSDS header and mandatory fields; use
+  the explicit lenient writers for partial records.
+- `OmmArray` and `OmmSkippedRecord` compare by value and are unhashable.
 - The PPP value, configuration and result classes now compare by engine value
   with `==` instead of by identity, which makes them unhashable, as Python
   requires for mutable value types: `PppAutoInitOptions`,
