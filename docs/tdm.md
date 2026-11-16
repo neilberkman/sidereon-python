@@ -6,7 +6,7 @@ This document provides a comprehensive reference and usage guide for the CCSDS T
 
 ## Architecture & Public Contract
 
-In Sidereon 3.0, the TDM binding enforces a clear separation of authority:
+In Sidereon 4.0.0, the TDM binding enforces a clear separation of authority:
 1. **Raw Authority**: The ordered list of raw `TdmField` entries (`fields`) and positioned `TdmComment` entries (`comments`) within `TdmMetadata` are the sole authority.
 2. **Derived Properties**: All convenience properties on `TdmMetadata`—including `participants`, `paths`, `mode`, `timetag_ref`, `time_system`, and `range_units`—are synchronously derived by the Rust core upon construction or mutation. No duplicate parsers or synthetic fallback values reside in the Python layer.
 3. **Strict Validation by Default**: Default construction and serialization enforce existing core validation checks against CCSDS 503.0-B-2 (not proof that all conceivable CCSDS semantics are validated). Invalid inputs, missing mandatory fields (e.g. `CREATION_DATE` or `ORIGINATOR` in headers, `TIME_SYSTEM` or `PARTICIPANT_n` in metadata), or contradictory entries are refused with typed exceptions. Header and data section direct setters modify snapshots directly and are validated at write time (`to_kvn_string`), while the atomic edits contract applies to `TdmMetadata` helpers which validate candidates synchronously through the core builder.

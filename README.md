@@ -18,7 +18,7 @@ install.
 ## Install
 
 ```
-pip install sidereon
+pip install sidereon==4.0.0
 ```
 
 ```python
@@ -232,6 +232,10 @@ The Python package mirrors the full breadth of the engine.
     are deprecated. Joint EKF and UKF gate reports expose their NIS, degrees of
     freedom, threshold, false-alarm probability, and acceptance verdict. RTK
     hold releases identify `UNHELD_REFERENCE` and `INCOMPATIBLE_WAVELENGTHS`.
+    Tight joint-gate rejection preserves the state and covariance. EKF gates
+    belong to the loose or tight `update_options`; UKF gates belong to
+    `ukf_update_options`. Non-default options for a different filter kind,
+    invalid probabilities, and simultaneous row and joint gates are refused.
     SPP reports `NonFinitePseudorange` and `NonPositivePseudorange`, and accepts
     an optional `max_gdop` ceiling on its RTKLIB single-clock DOP. A GDOP
     refusal has `degenerate_geometry_gdop` detail. The ADD v3.0 constructor
