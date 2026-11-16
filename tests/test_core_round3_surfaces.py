@@ -297,7 +297,7 @@ def test_omm_optional_tle_parameters_stay_absent():
     assert rebuilt.ephemeris_type is None
     assert rebuilt.classification_type is None
     assert rebuilt.bstar is None
-    reparsed = sidereon.parse_omm_kvn(rebuilt.to_kvn_string())
+    reparsed = sidereon.parse_omm_kvn(rebuilt.encode_kvn_lenient())
     assert reparsed.norad_cat_id is None
     assert reparsed.ephemeris_type is None
     assert reparsed.bstar is None

@@ -92,6 +92,7 @@ mod rf;
 mod rinex;
 mod rinex_clock;
 mod rtcm;
+mod sgp4_elements;
 mod spp_error_detail;
 pub(crate) use fallback::selection_error_detail;
 pub(crate) use rtcm::to_rtcm_encode_err;
@@ -965,7 +966,9 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("AntexParseError", &antex_parse_error)?;
     m.add("AntexWriteError", antex_write_error_type(py)?)?;
     m.add("AntexQueryError", antex_query_error_type(py)?)?;
-    m.add("TleParseError", py.get_type::<TleParseError>())?;
+    let tle_parse_error = py.get_type::<TleParseError>();
+    tle_parse_error.setattr("detail", py.None())?;
+    m.add("TleParseError", &tle_parse_error)?;
     m.add("GeodesicError", py.get_type::<GeodesicError>())?;
     m.add("ProjVgridshiftError", py.get_type::<ProjVgridshiftError>())?;
     m.add(
@@ -1138,6 +1141,7 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     tides::register(m)?;
     doppler::register(m)?;
     defaults::register(m)?;
+    sgp4_elements::register(m)?;
     data_catalog::register(m)?;
     unix_compress::register(m)?;
     exact_cache::register(m)?;

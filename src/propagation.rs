@@ -1792,6 +1792,39 @@ impl PyTleFit {
     }
 }
 
+/// CCSDS header values for a fitted OMM.
+#[pyclass(module = "sidereon._sidereon", name = "FitOmmHeader")]
+#[derive(Clone)]
+pub struct PyFitOmmHeader {
+    inner: sidereon_core::astro::sgp4::fit::FitOmmHeader,
+}
+
+#[pymethods]
+impl PyFitOmmHeader {
+    #[new]
+    fn new(creation_date: String, originator: String) -> Self {
+        Self {
+            inner: sidereon_core::astro::sgp4::fit::FitOmmHeader {
+                creation_date,
+                originator,
+            },
+        }
+    }
+    /// Actual message creation date in CCSDS UTC date-time form.
+    #[getter]
+    fn creation_date(&self) -> &str {
+        &self.inner.creation_date
+    }
+    /// Organization or system that produced the fitted message.
+    #[getter]
+    fn originator(&self) -> &str {
+        &self.inner.originator
+    }
+    fn __eq__(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
 /// Fit a TLE to a TEME state arc.
 #[pyfunction]
 #[pyo3(signature = (
@@ -1812,6 +1845,7 @@ impl PyTleFit {
     loss = PyLoss::LINEAR,
     f_scale = 1.0,
     metadata = None,
+    omm_header = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_tle(
@@ -1832,6 +1866,7 @@ fn fit_tle(
     #[pyo3(from_py_with = extract_loss)] loss: PyLoss,
     f_scale: f64,
     metadata: Option<Py<PyTleFitMetadata>>,
+    omm_header: Option<Py<PyFitOmmHeader>>,
 ) -> PyResult<PyTleFit> {
     let samples: Vec<FitSample> = samples.iter().map(|s| s.borrow(py).inner).collect();
     let mut config = FitConfig::default();
@@ -1856,6 +1891,9 @@ fn fit_tle(
         .as_ref()
         .map(|value| value.borrow(py).inner())
         .unwrap_or_default();
+    config.omm_header = omm_header
+        .as_ref()
+        .map(|value| value.borrow(py).inner.clone());
     let inner = py
         .allow_threads(move || core_fit_tle(&samples, &config))
         .map_err(|error| crate::tle_fit_error_detail::tle_fit_error(py, error))?;
@@ -1922,6 +1960,13 @@ impl PyTle {
 
 #[pymethods]
 impl PyTle {
+    /// Parsed fixed-column element fields.
+    #[getter]
+    fn elements(&self) -> crate::sgp4_elements::PyTleElements {
+        crate::sgp4_elements::PyTleElements {
+            inner: self.elements.clone(),
+        }
+    }
     #[new]
     #[pyo3(signature = (line1, line2, opsmode=PyOpsMode::AFSPC, *, policy=PyTlePolicy::STRICT))]
     fn new(
@@ -3483,6 +3528,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFitSample>()?;
     m.add_class::<PyFitEpoch>()?;
     m.add_class::<PyTleFitMetadata>()?;
+    m.add_class::<PyFitOmmHeader>()?;
     m.add_class::<PyFitStatistics>()?;
     m.add_class::<PyTleFit>()?;
     m.add_class::<PyDecayLatch>()?;

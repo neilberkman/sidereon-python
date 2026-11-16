@@ -43,7 +43,7 @@ fn sgp4_input_kind(kind: sidereon::sgp4::Sgp4InputErrorKind) -> &'static str {
     }
 }
 
-fn sgp4_detail<'py>(
+pub(crate) fn sgp4_detail<'py>(
     py: Python<'py>,
     error: &sidereon::sgp4::Error,
 ) -> PyResult<Bound<'py, PyDict>> {
@@ -69,7 +69,7 @@ fn sgp4_detail<'py>(
     Ok(result)
 }
 
-fn tle_detail<'py>(py: Python<'py>, error: &TleError) -> PyResult<Bound<'py, PyDict>> {
+pub(crate) fn tle_detail<'py>(py: Python<'py>, error: &TleError) -> PyResult<Bound<'py, PyDict>> {
     use TleError as E;
     let (kind, message) = match error {
         E::NonAscii => ("non_ascii", error.to_string()),
@@ -117,6 +117,16 @@ fn tle_detail<'py>(py: Python<'py>, error: &TleError) -> PyResult<Bound<'py, PyD
         }
     }
     Ok(result)
+}
+
+pub(crate) fn tle_parse_error(error: TleError) -> PyErr {
+    Python::with_gil(|py| {
+        let result = crate::TleParseError::new_err(error.to_string());
+        match tle_detail(py, &error).and_then(|detail| result.value(py).setattr("detail", detail)) {
+            Ok(()) => result,
+            Err(err) => err,
+        }
+    })
 }
 
 fn backend_detail<'py>(py: Python<'py>, error: &BackendError) -> PyResult<Bound<'py, PyDict>> {
@@ -232,6 +242,7 @@ fn tle_fit_detail<'py>(py: Python<'py>, error: &TleFitError) -> PyResult<Bound<'
         E::DidNotConverge { .. } => ("did_not_converge", error.to_string()),
         E::FinalElements(_) => ("final_elements", error.to_string()),
         E::TleEncode(_) => ("tle_encode", error.to_string()),
+        E::OmmHeader(_) => ("omm_header", error.to_string()),
     };
     let result = detail(py, "TleFitError", kind, &message)?;
     match error {
@@ -264,6 +275,7 @@ fn tle_fit_detail<'py>(py: Python<'py>, error: &TleFitError) -> PyResult<Bound<'
         }
         E::FinalElements(cause) => result.set_item("cause", sgp4_detail(py, cause)?)?,
         E::TleEncode(cause) => result.set_item("cause", tle_detail(py, cause)?)?,
+        E::OmmHeader(cause) => result.set_item("cause", crate::omm::omm_detail(py, cause)?)?,
     }
     Ok(result)
 }
