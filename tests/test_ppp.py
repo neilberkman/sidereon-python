@@ -310,6 +310,8 @@ def test_ppp_fixed_matches_reference():
     exp = fx["expected"]
     assert isinstance(sol.position, np.ndarray)
     assert sol.position.dtype == np.float64
+    assert sol.posterior_variance_factor_estimated is True
+    assert sol.float_solution.posterior_variance_factor_estimated is True
     _assert_outcome(sol, exp["fixed_solution"])
     _assert_outcome(sol.float_solution, exp["fixed_float_solution"])
     assert sol.integer_status == _integer_status(exp["fixed_integer_status"])
@@ -590,3 +592,23 @@ def test_ppp_solution_record_classes():
         "PppSsrSignalReport",
     ):
         assert hasattr(sidereon, name)
+
+
+def test_exactly_determined_epoch_is_untested():
+    fx = _load_fixture()
+    fx["epochs"] = fx["epochs"][:1]
+    fx["initial_state"]["clocks_m"] = fx["initial_state"]["clocks_m"][:1]
+    fx["epochs"][0]["observations"] = fx["epochs"][0]["observations"][:4]
+    fx["config"]["tropo"]["enabled"] = False
+    fx["config"]["tropo"]["estimate_ztd"] = False
+    fx["config"]["tropo"]["estimate_tropo_gradients"] = False
+    fx["config"]["residual_screen"] = False
+    fx["config"]["elevation_cutoff_deg"] = None
+    config = _float_config(fx)
+    result = sidereon.fde_float_epoch(
+        _load_sp3(fx), _epochs(fx)[0], _state(fx), config, sidereon.PppRaimConfig()
+    )
+    assert result.status == sidereon.PppRaimFdeStatus.UNTESTED
+    assert result.raim.redundancy == 0
+    assert result.solution.posterior_variance_factor_estimated is False
+    assert result.solution.posterior_variance_factor == 1.0

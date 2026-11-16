@@ -520,9 +520,11 @@ fn fde_spp_options(
     n_systems: Option<isize>,
     max_pdop: Option<f64>,
     max_exclusion_rms_m: f64,
+    max_gdop: Option<f64>,
 ) -> PyResult<FdeSppOptions> {
     let mut validation = SolutionValidationOptions::default();
     validation.max_pdop = max_pdop;
+    validation.max_gdop = max_gdop;
     let mut fde = FdeOptions::new(
         raim_options(p_fa, weights, n_systems)?,
         exclusion_budget(max_exclusions),
@@ -566,6 +568,7 @@ fn fde_spp_options(
     max_pdop=None,
     *,
     max_exclusion_rms_m=DEFAULT_FDE_MAX_EXCLUSION_RMS_M,
+    max_gdop=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn qc_fde(
@@ -578,6 +581,7 @@ fn qc_fde(
     n_systems: Option<isize>,
     max_pdop: Option<f64>,
     max_exclusion_rms_m: f64,
+    max_gdop: Option<f64>,
 ) -> PyResult<PyFdeResult> {
     let options = fde_spp_options(
         p_fa,
@@ -586,6 +590,7 @@ fn qc_fde(
         n_systems,
         max_pdop,
         max_exclusion_rms_m,
+        max_gdop,
     )?;
     fde_outcome(
         py,
@@ -611,6 +616,7 @@ fn qc_fde(
     max_pdop=None,
     *,
     max_exclusion_rms_m=DEFAULT_FDE_MAX_EXCLUSION_RMS_M,
+    max_gdop=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn qc_fde_broadcast(
@@ -623,6 +629,7 @@ fn qc_fde_broadcast(
     n_systems: Option<isize>,
     max_pdop: Option<f64>,
     max_exclusion_rms_m: f64,
+    max_gdop: Option<f64>,
 ) -> PyResult<PyFdeResult> {
     let options = fde_spp_options(
         p_fa,
@@ -631,6 +638,7 @@ fn qc_fde_broadcast(
         n_systems,
         max_pdop,
         max_exclusion_rms_m,
+        max_gdop,
     )?;
     fde_outcome(
         py,
@@ -655,6 +663,7 @@ fn qc_fde_broadcast(
     max_pdop=None,
     *,
     max_exclusion_rms_m=DEFAULT_FDE_MAX_EXCLUSION_RMS_M,
+    max_gdop=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fde_broadcast(
@@ -667,6 +676,7 @@ fn fde_broadcast(
     n_systems: Option<isize>,
     max_pdop: Option<f64>,
     max_exclusion_rms_m: f64,
+    max_gdop: Option<f64>,
 ) -> PyResult<PyFdeResult> {
     qc_fde_broadcast(
         py,
@@ -678,6 +688,7 @@ fn fde_broadcast(
         n_systems,
         max_pdop,
         max_exclusion_rms_m,
+        max_gdop,
     )
 }
 
@@ -693,6 +704,7 @@ fn fde_broadcast(
     max_pdop=None,
     *,
     max_exclusion_rms_m=DEFAULT_FDE_MAX_EXCLUSION_RMS_M,
+    max_gdop=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 /// Run robust SPP with RAIM fault detection and exclusion.
@@ -713,6 +725,7 @@ fn solve_spp_robust_fde(
     n_systems: Option<isize>,
     max_pdop: Option<f64>,
     max_exclusion_rms_m: f64,
+    max_gdop: Option<f64>,
 ) -> PyResult<PyFdeResult> {
     solve_spp_robust_fde_impl(
         py,
@@ -726,6 +739,7 @@ fn solve_spp_robust_fde(
             n_systems,
             max_pdop,
             max_exclusion_rms_m,
+            max_gdop,
         )?,
     )
 }
@@ -742,6 +756,7 @@ fn solve_spp_robust_fde(
     max_pdop=None,
     *,
     max_exclusion_rms_m=DEFAULT_FDE_MAX_EXCLUSION_RMS_M,
+    max_gdop=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 /// Deprecated alias for `solve_spp_robust_fde`.
@@ -756,6 +771,7 @@ fn spp_robust_fde_driver(
     n_systems: Option<isize>,
     max_pdop: Option<f64>,
     max_exclusion_rms_m: f64,
+    max_gdop: Option<f64>,
 ) -> PyResult<PyFdeResult> {
     let warning = py.get_type::<PyDeprecationWarning>();
     PyErr::warn(
@@ -776,6 +792,7 @@ fn spp_robust_fde_driver(
             n_systems,
             max_pdop,
             max_exclusion_rms_m,
+            max_gdop,
         )?,
     )
 }
@@ -1045,6 +1062,12 @@ fn qc_raim_fde_design(
     options.max_exclusion_rms_m = max_exclusion_rms_m;
     let inner = core_raim_fde_design(&rows, &options).map_err(quality_err)?;
     Ok(PyRangeFdeResult { inner })
+}
+
+/// Chi-square inverse survival function for an upper-tail probability.
+#[pyfunction]
+fn chi2_isf(p: f64, dof: usize) -> PyResult<f64> {
+    quality::chi2_isf(p, dof).map_err(quality_err)
 }
 
 #[pyfunction]
@@ -1820,6 +1843,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spp_robust_fde_driver, m)?)?;
     m.add_function(wrap_pyfunction!(qc_raim_fde_design, m)?)?;
     m.add_function(wrap_pyfunction!(chi2_inv, m)?)?;
+    m.add_function(wrap_pyfunction!(chi2_isf, m)?)?;
     m.add_function(wrap_pyfunction!(observation_qc, m)?)?;
     Ok(())
 }

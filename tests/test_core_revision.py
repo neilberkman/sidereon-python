@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -44,6 +45,10 @@ _PROJECTS = (
 
 def _manifest_dependencies(path):
     text = path.read_text()
+    # Restrict direct-dependency parsing to [dependencies]; a local patch has
+    # the same package key but is not a second direct dependency.
+    text = re.split(r"^\[dependencies\]\s*$", text, maxsplit=1, flags=re.M)[1]
+    text = re.split(r"^\[", text, maxsplit=1, flags=re.M)[0]
     found = {}
     dependency_pattern = r'^\s*(sidereon(?:-core)?)\s*=\s*(?:"([^"\n]*)"|\{([^}\n]*)\})'
     for name, scalar_version, body in re.findall(dependency_pattern, text, re.M):
@@ -236,8 +241,28 @@ def _source_identity(manifest_path, lock_path, cargo_home=None):
 
 
 def test_root_and_generators_resolve_the_fixture_source():
-    source_kind, revision, _ = _assert_projects_match(_PROJECTS)
-    assert source_kind in {"git", "registry"}
+    manifest = tomllib.loads((_ROOT / "Cargo.toml").read_text())
+    core_patch = manifest.get("patch", {}).get("crates-io", {}).get("sidereon-core")
+    if core_patch and "path" in core_patch:
+        patch = Path(core_patch["path"]).resolve()
+        assert patch.name == "sidereon-core" and patch.is_dir()
+        for _, manifest_path, lock_path in _PROJECTS:
+            project = tomllib.loads(manifest_path.read_text())
+            assert (
+                Path(project["patch"]["crates-io"]["sidereon-core"]["path"]).resolve()
+                == patch
+            )
+            assert "source" not in _locked_packages(lock_path)["sidereon-core"]
+        assert not subprocess.check_output(
+            ["git", "-C", str(patch), "status", "--porcelain"], text=True
+        ).strip()
+        revision = subprocess.check_output(
+            ["git", "-C", str(patch), "rev-parse", "HEAD"], text=True
+        ).strip()
+        source_kind = "path"
+    else:
+        source_kind, revision, _ = _assert_projects_match(_PROJECTS)
+    assert source_kind in {"git", "registry", "path"}
     for fixture in ("core_goldens.json", "ppp_esbc.json"):
         with (_FIXTURES / fixture).open() as handle:
             assert json.load(handle)["core_revision"] == revision, (

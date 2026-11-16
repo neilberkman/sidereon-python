@@ -205,10 +205,14 @@ def test_rtk_float_matches_reference():
         options=_float_options(fx),
     )
     sol = sidereon.solve_rtk_float(config)
-    expected = np.array(fx["expected"]["float_baseline_m"])
     assert isinstance(sol.baseline, np.ndarray)
     assert sol.baseline.dtype == np.float64
-    assert np.array_equal(sol.baseline, expected)
+    assert _bits_list(sol.baseline) == _golden_bits(
+        core_goldens()["rtk_wtzr"]["float_baseline_m"]
+    )
+    # Core rtk_real_arc validates the independent surveyed antenna baseline.
+    _, _, _, _, truth = _wettzell_rinex_inputs()
+    assert _vector_error_m(sol.baseline, truth) < 0.08
     assert sol.converged
     assert isinstance(sol.geometry_quality, sidereon.GeometryQuality)
     _assert_square_covariance(sol.ambiguity_covariance, len(sol.ambiguities_m))
@@ -233,10 +237,14 @@ def test_rtk_fixed_matches_reference():
     )
     sol = sidereon.solve_rtk_fixed(config)
     exp = fx["expected"]
-    assert np.array_equal(sol.fixed_baseline, np.array(exp["fixed_baseline_m"]))
-    assert np.array_equal(
-        sol.float_baseline, np.array(exp["validated_float_baseline_m"])
+    golden = core_goldens()["rtk_wtzr"]
+    assert _bits_list(sol.fixed_baseline) == _golden_bits(golden["fixed_baseline_m"])
+    assert _bits_list(sol.float_baseline) == _golden_bits(
+        golden["validated_float_baseline_m"]
     )
+    _, _, _, _, truth = _wettzell_rinex_inputs()
+    assert _vector_error_m(sol.float_baseline, truth) < 0.08
+    assert _vector_error_m(sol.fixed_baseline, truth) < 0.01
     assert sol.integer_status == _integer_status(exp["fixed_integer_status"])
     assert "RtkFixedSolution(" in repr(sol)
 
@@ -426,15 +434,17 @@ def test_solve_static_rtk_arc_smoke():
     sol = sidereon.solve_static_rtk_arc(_arc_epochs(fx), config)
 
     assert sol.references == {"G": "G30"}
+    assert sol.elevation_mask_converged is True
     assert sol.ambiguity_ids
     assert sol.float_solution.converged
     assert sol.fixed_solution.integer_status == _integer_status(
         fx["expected"]["fixed_integer_status"]
     )
-    assert np.array_equal(
-        sol.fixed_solution.fixed_baseline,
-        np.array(fx["expected"]["fixed_baseline_m"]),
+    assert _bits_list(sol.fixed_solution.fixed_baseline) == _golden_bits(
+        core_goldens()["rtk_wtzr"]["static_fixed_baseline_m"]
     )
+    _, _, _, _, truth = _wettzell_rinex_inputs()
+    assert _vector_error_m(sol.fixed_solution.fixed_baseline, truth) < 0.01
     assert isinstance(sol.geometry_quality, sidereon.GeometryQuality)
     assert "RtkStaticArcSolution(" in repr(sol)
 
@@ -449,6 +459,10 @@ def test_rtk_arc_converges_to_static_fixed_baseline():
     assert sol.final_state.epoch_count == len(fx["epochs"])
 
     last = sol.epochs[-1]
+    assert last.reference_satellite_ids == ["G30"]
+    assert last.elevation_masked_satellite_ids == []
+    assert last.elevation_mask_converged is True
+    assert last.released_holds == []
     assert isinstance(last.reported_baseline, np.ndarray)
     assert last.reported_baseline.dtype == np.float64
     # The sequential arc resolves the integers and rides the static reference.
@@ -911,3 +925,253 @@ def test_prepare_ionosphere_free_rtk_arc_smoke():
     assert sol.wavelengths_m
     assert sol.offsets_m
     assert "RtkIonosphereFreeArcSolution(" in repr(sol)
+
+
+def _hold_transport_input(case, fixture, *, remove_new_reference=False):
+    base_m = fixture["base_m"]
+    initial = [case["epochs"][0]["rover"][i] - base_m[i] for i in range(3)]
+    wavelengths = {f"G{i:02}": case["wavelength_m"] for i in range(2, 7)}
+    offsets = {f"G{i:02}": case["offset_m"] for i in range(2, 7)}
+    if "wavelengths_m" in case:
+        wavelengths = case["wavelengths_m"]
+    config = sidereon.RtkArcConfig(
+        base_m,
+        sidereon.RtkMeasurementModel(0.3, 0.003, sagnac=False),
+        wavelengths,
+        offsets,
+        100.0,
+        1000.0,
+        initial_baseline_m=initial,
+        update_options=sidereon.RtkArcUpdateOptions(
+            hold_sigma_m=1e-4, dynamics="velocity_propagated"
+        ),
+        reference_per_system={"G": "G01"},
+        preprocessing=sidereon.RtkArcPreprocessing(
+            elevation_mask_deg=fixture["mask_deg"]
+        ),
+    )
+    epochs = []
+    for index, row in enumerate(case["epochs"]):
+        base, rover, positions = [], [], {}
+        for i, obs in enumerate(row["observations"]):
+            token = f"G{i + 1:02}"
+            if (
+                remove_new_reference
+                and index == 0
+                and token == case["epochs"][1]["reference"]
+            ):
+                continue
+            positions[token] = row["positions"][i]
+            base.append(
+                sidereon.RtkArcObservation(
+                    token, token, obs["base_code"], obs["base_phase"]
+                )
+            )
+            rover.append(
+                sidereon.RtkArcObservation(
+                    token, token, obs["rover_code"], obs["rover_phase"]
+                )
+            )
+        velocity = [
+            0.0
+            if index == 0
+            else (row["rover"][i] - case["epochs"][index - 1]["rover"][i]) / 30.0
+            for i in range(3)
+        ]
+        epochs.append(
+            sidereon.RtkArcEpoch(
+                base,
+                rover,
+                positions,
+                velocity_mps=velocity,
+                prediction_time_s=index * 30.0,
+            )
+        )
+    return epochs, config
+
+
+def test_hold_release_reasons_from_core_fixture():
+    with open(_core_fixture("rtk_hold_transport.json")) as handle:
+        fixture = json.load(handle)
+    for case, remove, expected, expected_ids in [
+        (
+            fixture["fdma_scenario"],
+            False,
+            sidereon.RtkHoldReleaseReason.INCOMPATIBLE_WAVELENGTHS,
+            ["G03", "G04", "G05", "G06"],
+        ),
+        (
+            fixture["scenarios"][0],
+            True,
+            sidereon.RtkHoldReleaseReason.UNHELD_REFERENCE,
+            ["G03", "G05", "G06"],
+        ),
+    ]:
+        epochs, config = _hold_transport_input(
+            case, fixture, remove_new_reference=remove
+        )
+        changed = sidereon.solve_rtk_arc(epochs[:2], config)
+        released = changed.epochs[1].released_holds
+        assert [r.ambiguity_id for r in released] == expected_ids
+        assert released
+        assert all(r.reason == expected for r in released)
+        assert changed.epochs[1].reference_satellite_ids == [
+            case["epochs"][1]["reference"]
+        ]
+
+
+def test_multi_constellation_combined_wide_lane_from_core_fixture():
+    with open(_core_fixture("rtk_hold_transport.json")) as handle:
+        fixture = json.load(handle)
+    case = fixture["scenarios"][0]
+    _, arc = _hold_transport_input(case, fixture)
+    epochs = []
+    for index, row in enumerate(case["epochs"][:2]):
+        positions, observations = {}, []
+        for system in ("G", "E"):
+            for sat_index, obs in enumerate(row["observations"]):
+                token = f"{system}{sat_index + 1:02}"
+                positions[token] = row["positions"][sat_index]
+                sides = [
+                    sidereon.RtkDualFrequencyObservation(
+                        token,
+                        obs[f"{side}_code"],
+                        obs[f"{side}_code"],
+                        obs[f"{side}_phi1"],
+                        obs[f"{side}_phi2"],
+                        _F_L1_HZ,
+                        _F_L2_HZ,
+                    )
+                    for side in ("base", "rover")
+                ]
+                observations.append(
+                    sidereon.RtkDualFrequencySatelliteObservation(token, *sides)
+                )
+        velocity = [
+            0.0
+            if index == 0
+            else (row["rover"][i] - case["epochs"][index - 1]["rover"][i]) / 30.0
+            for i in range(3)
+        ]
+        epochs.append(
+            sidereon.RtkDualFrequencyArcEpoch(
+                2_460_100.5,
+                0.25 + index / 86400,
+                observations,
+                positions,
+                epoch_sort_key=str(index),
+                gap_time_s=index * 30.0,
+                velocity_mps=velocity,
+                prediction_time_s=index * 30.0,
+            )
+        )
+    references = {"G": "G01", "E": "E01"}
+    wide = sidereon.RtkWideLaneArcConfig(
+        fixture["base_m"],
+        sidereon.RtkWideLaneOptions(2, 0.5),
+        reference_per_system=references,
+    )
+    iono = sidereon.RtkIonosphereFreeArcConfig(
+        fixture["base_m"],
+        initial_baseline_m=arc.initial_baseline_m,
+        reference_per_system=references,
+        apply_troposphere=False,
+    )
+    result = sidereon.solve_wide_lane_fixed_rtk_arc(epochs, wide, iono, arc)
+    assert result.wide_lane.references == references
+    assert result.ionosphere_free.references == references
+    for reference in references.values():
+        assert result.ionosphere_free.wavelengths_m[reference] == pytest.approx(
+            fixture["narrow_lane_wavelength_m"], abs=1e-15
+        )
+        assert result.ionosphere_free.offsets_m[reference] == 0.0
+    expected = case["epochs"][1]["reference"][1:]
+    assert result.solution.epochs[1].reference_satellite_ids == [
+        f"E{expected}",
+        f"G{expected}",
+    ]
+
+
+def test_carried_state_without_fixed_cycles_is_refused():
+    with open(_core_fixture("rtk_hold_transport.json")) as handle:
+        fixture = json.load(handle)
+    case = fixture["scenarios"][0]
+    epochs, config = _hold_transport_input(case, fixture)
+    first = sidereon.solve_rtk_arc(epochs[:1], config)
+    state = first.final_state.with_fixed_holds({}, first.final_state.fixed_m)
+    row = case["epochs"][0]
+    measurements = []
+    for i, obs in enumerate(row["observations"]):
+        token = f"G{i + 1:02}"
+        pos = row["positions"][i]
+        measurements.append(
+            sidereon.RtkSatMeasurement(
+                token,
+                token,
+                obs["base_code"],
+                obs["base_phase"],
+                obs["rover_code"],
+                obs["rover_phase"],
+                pos,
+                pos,
+                pos,
+            )
+        )
+    epoch = sidereon.RtkEpoch(measurements[:1], measurements[1:], 0.0)
+    with pytest.raises(sidereon.SolveError) as exc:
+        sidereon.update_rtk_epoch(
+            state,
+            epoch,
+            fixture["base_m"],
+            sidereon.RtkMeasurementModel(0.3, 0.003, sagnac=False),
+            {f"G{i:02}": case["wavelength_m"] for i in range(2, 7)},
+            {f"G{i:02}": case["offset_m"] for i in range(2, 7)},
+            sidereon.RtkArcUpdateOptions(),
+        )
+    assert exc.value.detail["kind"] == "invalid_input"
+    assert exc.value.detail["field"] == "state.fixed_cycles"
+    assert exc.value.detail["reason"] == "missing"
+
+
+def test_carried_hold_without_reference_column_refuses_as_singular():
+    with open(_core_fixture("rtk_hold_transport.json")) as handle:
+        fixture = json.load(handle)
+    case = fixture["scenarios"][0]
+    epochs, config = _hold_transport_input(case, fixture)
+    # This carried Galileo hold has neither its E01 reference column nor E02
+    # target column; the epoch contains only the GPS system.
+    state = (
+        sidereon.solve_rtk_arc(epochs[:1], config)
+        .final_state.with_references({"G": "G01", "E": "E01"})
+        .with_fixed_holds({"E02": 3}, {"E02": 0.57})
+    )
+    row = case["epochs"][0]
+    measurements = []
+    for i, obs in enumerate(row["observations"]):
+        token = f"G{i + 1:02}"
+        pos = row["positions"][i]
+        measurements.append(
+            sidereon.RtkSatMeasurement(
+                token,
+                token,
+                obs["base_code"],
+                obs["base_phase"],
+                obs["rover_code"],
+                obs["rover_phase"],
+                pos,
+                pos,
+                pos,
+            )
+        )
+    epoch = sidereon.RtkEpoch(measurements[:1], measurements[1:], 0.0)
+    with pytest.raises(sidereon.SolveError) as exc:
+        sidereon.update_rtk_epoch(
+            state,
+            epoch,
+            fixture["base_m"],
+            sidereon.RtkMeasurementModel(0.3, 0.003, sagnac=False),
+            {f"G{i:02}": case["wavelength_m"] for i in range(2, 7)},
+            {f"G{i:02}": case["offset_m"] for i in range(2, 7)},
+            sidereon.RtkArcUpdateOptions(),
+        )
+    assert exc.value.detail["kind"] == "singular_geometry"

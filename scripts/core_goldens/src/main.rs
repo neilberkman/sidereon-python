@@ -17,6 +17,7 @@ mod core_source_identity;
 mod diagnostics;
 mod field;
 mod parity_v3;
+mod rtk_wtzr;
 mod sp3_merge;
 
 use std::path::{Path, PathBuf};
@@ -831,9 +832,13 @@ fn tle_fit_parity() -> Value {
 }
 
 /// The paired engine revision locked by this program's Cargo graph.
-fn core_revision() -> String {
-    core_source_identity::revision_from_lock(include_str!("../Cargo.lock"))
-        .unwrap_or_else(|error| panic!("resolve engine source revision: {error}"))
+fn core_revision(core: &Path) -> String {
+    core_source_identity::revision_from_lock_or_checkout(
+        include_str!("../Cargo.lock"),
+        core,
+        include_str!("../Cargo.toml"),
+    )
+    .unwrap_or_else(|error| panic!("resolve engine source revision: {error}"))
 }
 
 fn main() {
@@ -854,7 +859,7 @@ fn main() {
     let spp_robust_faults = robust_faults(&sp3, &trace, &spp_consistent);
     let doc = json!({
         "source": "scripts/core_goldens",
-        "core_revision": core_revision(),
+        "core_revision": core_revision(&core),
         "spp_trace_default": trace_default(&sp3, &trace),
         "spp_consistent": spp_consistent,
         "spp_robust_faults": spp_robust_faults,
@@ -864,6 +869,7 @@ fn main() {
         "spp_doppler_terms": spp_doppler_terms(&sp3, &trace),
         "tle_fit": tle_fit_parity(),
         "ppp_corrections": ppp_corrections(&core),
+        "rtk_wtzr": rtk_wtzr::generate(&fixtures),
         "scenario": scenario(&fixtures),
     });
     let mut doc = doc;

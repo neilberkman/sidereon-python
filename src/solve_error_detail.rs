@@ -1089,6 +1089,11 @@ fn solve_error_for_rtk<'py>(
     solve_error(py, message, payload)
 }
 
+pub(crate) fn rtk_update_error(py: Python<'_>, error: UpdateError) -> PyErr {
+    let message = error.to_string();
+    solve_error_for_rtk(py, message, update_detail(py, &error))
+}
+
 pub(crate) fn rtk_float_error(py: Python<'_>, error: RtkFloatSolveError) -> PyErr {
     let message = error.to_string();
     solve_error_for_rtk(py, message, rtk_float_detail(py, &error))
@@ -1138,4 +1143,32 @@ pub(crate) fn rtk_ionosphere_free_arc_error(
 ) -> PyErr {
     let message = error.to_string();
     solve_error_for_rtk(py, message, ionosphere_free_arc_detail(py, &error))
+}
+
+#[cfg(test)]
+mod missing_ambiguity_mapping_test {
+    use super::*;
+    #[test]
+    fn update_missing_ambiguity_column_retains_id() {
+        Python::with_gil(|py| {
+            let error = rtk_update_error(py, UpdateError::MissingAmbiguityColumn("G04".into()));
+            let detail = error.value(py).getattr("detail").unwrap();
+            assert_eq!(
+                detail
+                    .get_item("kind")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "missing_ambiguity_column"
+            );
+            assert_eq!(
+                detail
+                    .get_item("ambiguity_id")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "G04"
+            );
+        });
+    }
 }

@@ -2480,6 +2480,15 @@ class IntegrityAllocation:
     def __repr__(self) -> str: ...
 
 class SatelliteIsmModel:
+    @staticmethod
+    def add_v3_0(
+        system: GnssSystem,
+        elevation_rad: float,
+        sigma_ura_m: float,
+        sigma_ure_m: float,
+        b_nom_m: float,
+        p_sat: float,
+    ) -> SatelliteIsmModel: ...
     def __init__(
         self,
         sigma_ura_m: float,
@@ -5457,6 +5466,8 @@ class SppSolution:
     @property
     def system_tdops(self) -> list[tuple[GnssSystem, float]]: ...
     @property
+    def rtklib_single_clock_dop(self) -> Dop | None: ...
+    @property
     def dop(self) -> Dop | None: ...
     @property
     def geometry_quality(self) -> GeometryQuality: ...
@@ -6314,6 +6325,16 @@ class RtkArcResidual:
     def phase_normalized(self) -> float: ...
     def __repr__(self) -> str: ...
 
+class RtkHoldReleaseReason:
+    UNHELD_REFERENCE = ...
+    INCOMPATIBLE_WAVELENGTHS = ...
+
+class ReleasedRtkHold:
+    @property
+    def ambiguity_id(self) -> str: ...
+    @property
+    def reason(self) -> RtkHoldReleaseReason: ...
+
 class RtkArcEpochSolution:
     """One epoch's reported baseline/ambiguity solution from the RTK arc driver."""
 
@@ -6340,6 +6361,14 @@ class RtkArcEpochSolution:
     @property
     def used_satellite_ids(self) -> list[str]: ...
     @property
+    def elevation_masked_satellite_ids(self) -> list[str]: ...
+    @property
+    def reference_satellite_ids(self) -> list[str]: ...
+    @property
+    def elevation_mask_converged(self) -> bool: ...
+    @property
+    def released_holds(self) -> list[ReleasedRtkHold]: ...
+    @property
     def search(self) -> RtkArcIntegerSearch | None: ...
     @property
     def residuals(self) -> list[RtkArcResidual]: ...
@@ -6350,6 +6379,10 @@ class RtkArcEpochSolution:
 class RtkFilterState:
     """The carried sequential filter state after the last RTK arc epoch."""
 
+    def with_references(self, references: Mapping[str, str]) -> RtkFilterState: ...
+    def with_fixed_holds(
+        self, fixed_cycles: Mapping[str, int], fixed_m: Mapping[str, float]
+    ) -> RtkFilterState: ...
     @property
     def version(self) -> int: ...
     @property
@@ -6373,6 +6406,26 @@ class RtkFilterState:
     @property
     def fixed_m(self) -> dict[str, float]: ...
     def __repr__(self) -> str: ...
+
+class RtkEpochUpdate:
+    @property
+    def state(self) -> RtkFilterState: ...
+    @property
+    def reported_baseline_m(self) -> list[float]: ...
+    @property
+    def integer_fixed(self) -> bool: ...
+    @property
+    def fixed_ids(self) -> list[str]: ...
+
+def update_rtk_epoch(
+    state: RtkFilterState,
+    epoch: RtkEpoch,
+    base: Sequence[float],
+    model: RtkMeasurementModel,
+    wavelengths_m: Mapping[str, float],
+    offsets_m: Mapping[str, float],
+    options: RtkArcUpdateOptions,
+) -> RtkEpochUpdate: ...
 
 class CycleSlipSplitArc:
     """Split-arc metadata from cycle-slip preprocessing under the split-arc policy."""
@@ -6434,6 +6487,8 @@ class RtkStaticArcConfig:
 class RtkStaticArcSolution:
     """Static arc float and fixed RTK solution."""
 
+    @property
+    def elevation_mask_converged(self) -> bool: ...
     @property
     def unresolved_carriers(self) -> list[RtkRinexUnresolvedCarrier] | None:
         """Measurements the RINEX arc builder left out for want of a carrier
@@ -7046,6 +7101,23 @@ def prepare_ionosphere_free_rtk_arc(
     config: RtkIonosphereFreeArcConfig,
 ) -> RtkIonosphereFreeArcSolution: ...
 
+class RtkWideLaneFixedSequentialArcSolution:
+    @property
+    def wide_lane(self) -> RtkWideLaneArcSolution: ...
+    @property
+    def ionosphere_free(self) -> RtkIonosphereFreeArcSolution: ...
+    @property
+    def solution(self) -> RtkArcSolution: ...
+    @property
+    def wide_lane_ambiguities_cycles(self) -> dict[str, int]: ...
+
+def solve_wide_lane_fixed_rtk_arc(
+    epochs: Sequence[RtkDualFrequencyArcEpoch],
+    wide_lane: RtkWideLaneArcConfig,
+    ionosphere_free: RtkIonosphereFreeArcConfig,
+    arc: RtkArcConfig,
+) -> RtkWideLaneFixedSequentialArcSolution: ...
+
 class PppUnplacedObservation:
     """A PPP observation left out because no transmission epoch is placed from it."""
 
@@ -7243,6 +7315,8 @@ class PppFloatSolution:
     def formal_position_covariance_ecef_m2(self) -> npt.NDArray[np.float64]: ...
     @property
     def formal_position_covariance_enu_m2(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def posterior_variance_factor_estimated(self) -> bool: ...
     @property
     def posterior_variance_factor(self) -> float: ...
     @property
@@ -7766,6 +7840,8 @@ class PppFixedSolution:
     def formal_position_covariance_ecef_m2(self) -> npt.NDArray[np.float64]: ...
     @property
     def formal_position_covariance_enu_m2(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def posterior_variance_factor_estimated(self) -> bool: ...
     @property
     def posterior_variance_factor(self) -> float: ...
     @property
@@ -9038,6 +9114,7 @@ def solve_spp(
     *,
     max_pdop: float | None = ...,
     coarse_search_seeds: int | None = ...,
+    max_gdop: float | None = ...,
 ) -> SppSolution: ...
 def solve_spp_exact(
     sp3: Sp3,
@@ -9046,6 +9123,7 @@ def solve_spp_exact(
     *,
     max_pdop: float | None = ...,
     coarse_search_seeds: int | None = ...,
+    max_gdop: float | None = ...,
 ) -> SppSolution: ...
 def spp_residual_rms_m(residuals_m: Sequence[float]) -> float: ...
 def solve_spp_batch(
@@ -9055,6 +9133,7 @@ def solve_spp_batch(
     parallel: bool = ...,
     max_pdop: float | None = ...,
     coarse_search_seeds: int | None = ...,
+    max_gdop: float | None = ...,
 ) -> list[SppSolution]: ...
 def solve_spp_batch_exact(
     sp3: Sp3,
@@ -9063,6 +9142,7 @@ def solve_spp_batch_exact(
     *,
     max_pdop: float | None = ...,
     coarse_search_seeds: int | None = ...,
+    max_gdop: float | None = ...,
 ) -> list[SppSolution]: ...
 def spp_inputs_from_rinex_obs(
     source: Sp3 | BroadcastEphemeris,
@@ -9080,6 +9160,7 @@ def solve_spp_from_rinex_obs(
     max_pdop: float | None = ...,
     coarse_search_seeds: int | None = ...,
     broadcast_context: BroadcastEphemeris | None = ...,
+    max_gdop: float | None = ...,
 ) -> list[RinexSppEpochSolution]: ...
 def solve_static(
     source: Sp3 | BroadcastEphemeris,
@@ -12279,6 +12360,7 @@ def qc_fde(
     max_pdop: float | None = ...,
     *,
     max_exclusion_rms_m: float = ...,
+    max_gdop: float | None = ...,
 ) -> FdeResult:
     """Fault detection and exclusion over an SPP solve.
 
@@ -12302,6 +12384,7 @@ def qc_fde_broadcast(
     max_pdop: float | None = ...,
     *,
     max_exclusion_rms_m: float = ...,
+    max_gdop: float | None = ...,
 ) -> FdeResult: ...
 def fde_broadcast(
     broadcast: BroadcastEphemeris,
@@ -12313,6 +12396,7 @@ def fde_broadcast(
     max_pdop: float | None = ...,
     *,
     max_exclusion_rms_m: float = ...,
+    max_gdop: float | None = ...,
 ) -> FdeResult: ...
 
 class RangeFdeRow:
@@ -12393,6 +12477,7 @@ def qc_raim_fde_design(
     ...
 
 def chi2_inv(p: float, dof: int) -> float: ...
+def chi2_isf(p: float, dof: int) -> float: ...
 
 class CelestrakSource:
     """CelesTrak gps-ops provenance preserved on a record."""
@@ -13768,6 +13853,8 @@ class CoverageGrid:
     def azimuth_deg(self) -> npt.NDArray[np.float64]: ...
     def elevation_deg(self) -> npt.NDArray[np.float64]: ...
     def range_km(self) -> npt.NDArray[np.float64]: ...
+    def try_visible_mask(self, min_elevation_deg: float) -> list[list[bool]]: ...
+    def try_access_counts(self, min_elevation_deg: float) -> list[int]: ...
     def visible_mask(self, min_elevation_deg: float) -> list[list[bool]]: ...
     def access_counts(self, min_elevation_deg: float) -> list[int]: ...
     def max_elevation(self) -> list[float | None]: ...
@@ -18920,6 +19007,7 @@ def solve_spp_robust_fde(
     max_pdop: float | None = ...,
     *,
     max_exclusion_rms_m: float = ...,
+    max_gdop: float | None = ...,
 ) -> FdeResult: ...
 def spp_robust_fde_driver(
     sp3: Sp3,
@@ -18932,6 +19020,7 @@ def spp_robust_fde_driver(
     max_pdop: float | None = ...,
     *,
     max_exclusion_rms_m: float = ...,
+    max_gdop: float | None = ...,
 ) -> FdeResult: ...
 
 class SbasPlError:
@@ -21236,7 +21325,13 @@ class InnovationGate:
 class EkfUpdateOptions:
     """Generic EKF correction options."""
 
-    def __init__(self, innovation_gate: InnovationGate | None = ...) -> None: ...
+    def __init__(
+        self,
+        innovation_gate: InnovationGate | None = ...,
+        joint_innovation_gate_probability: float | None = ...,
+    ) -> None: ...
+    @property
+    def joint_innovation_gate_probability(self) -> float | None: ...
     @property
     def innovation_gate(self) -> InnovationGate | None: ...
 
@@ -21260,7 +21355,10 @@ class UkfUpdateOptions:
         self,
         transform: UnscentedTransformOptions | None = ...,
         innovation_gate: InnovationGate | None = ...,
+        joint_innovation_gate_probability: float | None = ...,
     ) -> None: ...
+    @property
+    def joint_innovation_gate_probability(self) -> float | None: ...
     @property
     def transform(self) -> UnscentedTransformOptions: ...
     @property
@@ -21616,6 +21714,13 @@ class InnovationGateReport:
     @property
     def coasted(self) -> bool: ...
 
+class JointInnovationGateReport:
+    statistic: float
+    degrees_of_freedom: int
+    threshold: float
+    false_alarm_probability: float
+    accepted: bool
+
 class EkfCorrectionReport:
     """Diagnostics from one EKF or UKF correction attempt."""
 
@@ -21629,6 +21734,8 @@ class EkfCorrectionReport:
     def rejected_rows(self) -> int: ...
     @property
     def innovation_gate(self) -> InnovationGateReport | None: ...
+    @property
+    def joint_innovation_gate(self) -> JointInnovationGateReport | None: ...
     @property
     def innovation_covariance(self) -> npt.NDArray[np.float64]: ...
     @property
@@ -22687,6 +22794,7 @@ class PppProtectionLevels:
 
 class PppRaimFdeStatus:
     CLEAN = ...
+    UNTESTED = ...
     RESTORED = ...
     CANNOT_EXCLUDE = ...
     INTEGRITY_NOT_RESTORED = ...
@@ -22713,6 +22821,18 @@ def per_satellite_statistics(
 ) -> PppRaimIdentification: ...
 def protection_levels(
     geometry: Sequence[PppRaimGeometryRow],
+    receiver: Wgs84Geodetic,
+    config: PppRaimConfig,
+) -> PppProtectionLevels: ...
+def protection_levels_with_weights(
+    geometry: Sequence[PppRaimGeometryRow],
+    weights: Sequence[float],
+    receiver: Wgs84Geodetic,
+    config: PppRaimConfig,
+) -> PppProtectionLevels: ...
+def fault_free_accuracy_bounds(
+    geometry: Sequence[PppRaimGeometryRow],
+    weights: Sequence[float],
     receiver: Wgs84Geodetic,
     config: PppRaimConfig,
 ) -> PppProtectionLevels: ...

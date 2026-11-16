@@ -8,6 +8,7 @@ import re
 import struct
 
 import numpy as np
+import pytest
 import sidereon
 from _helpers import FIXTURES, core_goldens
 
@@ -525,3 +526,99 @@ def test_fusion_robust_loose_recorded_rts_bits():
         assert _array_bits(np.diag(epoch.covariance)) == _golden_bits(
             expected["covariance_diagonal"]
         )
+
+
+def test_joint_innovation_gate_report_from_loose_update():
+    options = sidereon.EkfUpdateOptions(joint_innovation_gate_probability=0.01)
+    config = sidereon.InertialFilterConfig(
+        sidereon.ImuSpec.mems(),
+        loose=sidereon.LooseCouplingConfig(update_options=options),
+    )
+    filter_ = sidereon.InertialFilter.with_config(_filter_state(), config)
+    update = filter_.update_loose(_zero_fix(0.0, 1.0))
+    gate = update.ekf.joint_innovation_gate
+    assert gate.statistic == 0.0
+    assert gate.degrees_of_freedom == 3
+    assert gate.threshold == pytest.approx(11.344866730144373)
+    assert gate.false_alarm_probability == 0.01
+    assert gate.accepted is True
+    assert update.applied is True
+
+
+def test_ukf_joint_gate_uses_probability():
+    config = sidereon.InertialFilterConfig(
+        sidereon.ImuSpec.mems(),
+        filter_kind=sidereon.FusionFilterKind.UKF,
+        ukf_update_options=sidereon.UkfUpdateOptions(
+            joint_innovation_gate_probability=0.01
+        ),
+    )
+    update = sidereon.InertialFilter.with_config(_filter_state(), config).update_loose(
+        _zero_fix(0.0, 1.0)
+    )
+    gate = update.ekf.joint_innovation_gate
+    assert gate.degrees_of_freedom == 3
+    assert gate.threshold == pytest.approx(11.344866730144373)
+    assert gate.false_alarm_probability == 0.01
+    assert gate.accepted is True
+    assert gate.statistic == pytest.approx(0.0, abs=1e-15)
+
+
+@pytest.mark.parametrize(
+    "kind", [sidereon.FusionFilterKind.EKF, sidereon.FusionFilterKind.UKF]
+)
+def test_igg_joint_gate_uses_raw_covariance_core_oracle(kind):
+    from _helpers import CORE_FIXTURES
+
+    with open(os.path.join(CORE_FIXTURES, "fusion_gate_oracles.json")) as handle:
+        oracle = json.load(handle)["raw_gate_after_igg_removal"]
+    v = oracle["innovation"]
+    measurement = sidereon.GnssFixMeasurement.position_velocity(
+        0.0, [6_378_137.0 + v[0], v[1], v[2]], v[3:], np.eye(6), 8
+    )
+    config = sidereon.InertialFilterConfig(
+        sidereon.ImuSpec.mems(),
+        filter_kind=kind,
+        loose=sidereon.LooseCouplingConfig(
+            update_options=sidereon.EkfUpdateOptions(
+                joint_innovation_gate_probability=0.01
+            ),
+            measurement_reweighting=sidereon.IggIiiMeasurementReweighting.standard(),
+        ),
+        ukf_update_options=sidereon.UkfUpdateOptions(
+            joint_innovation_gate_probability=0.01
+        ),
+    )
+    update = sidereon.InertialFilter.with_config(_filter_state(), config).update_loose(
+        measurement
+    )
+    assert (update.applied, update.accepted_rows, update.rejected_rows) == (False, 0, 6)
+    assert update.ekf.joint_innovation_gate.statistic == pytest.approx(16.0, abs=1e-12)
+    assert update.ekf.joint_innovation_gate.degrees_of_freedom == 1
+    assert update.ekf.joint_innovation_gate.accepted is False
+
+
+def test_loose_innovation_covariance_and_nis_from_literal_matrices():
+    # Position-only measurement: H selects the first three error states.
+    h = np.zeros((3, 15))
+    h[:, :3] = np.eye(3)
+    p = np.eye(15)
+    r = np.diag([2.0, 3.0, 4.0])
+    innovation = np.array([1.0, 2.0, 3.0])
+    expected_s = h @ p @ h.T + r
+    expected_nis = innovation @ np.linalg.solve(expected_s, innovation)
+    loose = sidereon.LooseCouplingConfig(
+        update_options=sidereon.EkfUpdateOptions(sidereon.InnovationGate(100.0, 1))
+    )
+    filt = sidereon.InertialFilter.with_config(
+        _filter_state(),
+        sidereon.InertialFilterConfig(sidereon.ImuSpec.mems(), loose=loose),
+    )
+    report = filt.update_loose(
+        sidereon.GnssFixMeasurement.position(0.0, [6_378_138.0, 2.0, 3.0], r, 8)
+    )
+    np.testing.assert_array_equal(report.ekf.innovation_covariance, expected_s)
+    assert report.nis == pytest.approx(expected_nis, rel=1e-15)
+    assert report.ekf.innovation_gate.max_abs_normalized_innovation == pytest.approx(
+        np.max(np.abs(innovation) / np.sqrt(np.diag(expected_s))), rel=1e-15
+    )

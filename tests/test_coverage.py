@@ -55,14 +55,14 @@ def test_reductions_match_grid():
     grid = sidereon.coverage_look_angles(_tles(), _stations(), EPOCH_US)
     el = grid.elevation_deg()
 
-    mask = grid.visible_mask(0.0)
+    mask = grid.try_visible_mask(0.0)
     assert len(mask) == 2 and all(len(row) == 2 for row in mask)
     for sat_index in range(2):
         for station_index in range(2):
             expected = el[sat_index, station_index] >= 0.0
             assert mask[sat_index][station_index] == bool(expected)
 
-    counts = grid.access_counts(0.0)
+    counts = grid.try_access_counts(0.0)
     assert list(counts) == [
         sum(1 for sat in range(2) if mask[sat][station]) for station in range(2)
     ]
@@ -81,7 +81,7 @@ def test_empty_inputs_give_empty_grid():
     grid = sidereon.coverage_look_angles([], _stations(), EPOCH_US)
     assert grid.n_satellites == 0
     assert grid.azimuth_deg().shape == (0, 2)
-    assert grid.access_counts(0.0) == []
+    assert grid.try_access_counts(0.0) == []
 
 
 def test_indexed_cell_error_retains_invalid_station_detail():

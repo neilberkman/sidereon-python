@@ -16,7 +16,7 @@
 //! It rewrites the fixture in place and changes no input.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use serde_json::{json, Map, Value};
@@ -461,9 +461,13 @@ fn fixed_metadata(sol: &FixedSolution) -> Map<String, Value> {
 }
 
 /// The paired engine revision locked by this program's Cargo graph.
-fn core_revision() -> String {
-    core_source_identity::revision_from_lock(include_str!("../Cargo.lock"))
-        .unwrap_or_else(|error| panic!("resolve engine source revision: {error}"))
+fn core_revision(fixtures: &Path) -> String {
+    core_source_identity::revision_from_lock_or_checkout(
+        include_str!("../Cargo.lock"),
+        fixtures,
+        include_str!("../Cargo.toml"),
+    )
+    .unwrap_or_else(|error| panic!("resolve engine source revision: {error}"))
 }
 
 fn main() {
@@ -655,9 +659,10 @@ fn main() {
         Value::Object(gradient_block),
     );
 
-    fx.as_object_mut()
-        .expect("fixture object")
-        .insert("core_revision".into(), json!(core_revision()));
+    fx.as_object_mut().expect("fixture object").insert(
+        "core_revision".into(),
+        json!(core_revision(sp3_dir.parent().expect("SP3 fixture parent"))),
+    );
     std::fs::write(
         &fixture,
         serde_json::to_string_pretty(&fx).expect("serialize fixture"),
