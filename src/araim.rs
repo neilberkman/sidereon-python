@@ -3,7 +3,7 @@
 use numpy::PyArray1;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyModule};
+use pyo3::types::{PyAny, PyDict, PyModule};
 
 use sidereon_core::araim::{
     araim as core_araim, enumerate_fault_modes as core_enumerate_fault_modes, AraimGeometry,
@@ -17,8 +17,28 @@ use crate::events::PyWgs84Geodetic;
 use crate::marshal::{fixed_array_from_any, FinitePolicy, PyGnssSystem};
 use crate::np_array;
 
-fn to_araim_err<E: std::fmt::Display>(err: E) -> PyErr {
-    PyValueError::new_err(err.to_string())
+fn to_araim_err(err: sidereon_core::araim::AraimError) -> PyErr {
+    use sidereon_core::araim::AraimError as E;
+    let kind = match err {
+        E::UnsupportedConstellation(_) => "unsupported_constellation",
+        E::InsufficientGeometry => "insufficient_geometry",
+        E::UnmonitorableFaultMass => "unmonitorable_fault_mass",
+        E::NumericalFailure => "numerical_failure",
+        E::InvalidIsm => "invalid_ism",
+        E::InvalidAllocation => "invalid_allocation",
+        E::Ut1OutsideCoverage(_) => "ut1_outside_coverage",
+    };
+    let exception = PyValueError::new_err(err.to_string());
+    Python::with_gil(|py| {
+        let detail = PyDict::new(py);
+        let _ = detail.set_item("family", "AraimError");
+        let _ = detail.set_item("kind", kind);
+        if let E::UnsupportedConstellation(system) = err {
+            let _ = detail.set_item("system", PyGnssSystem::from(system));
+        }
+        let _ = exception.value(py).setattr("detail", detail);
+    });
+    exception
 }
 
 fn parse_satellite(token: &str) -> PyResult<GnssSatelliteId> {
@@ -340,6 +360,28 @@ impl PySatelliteIsmModel {
                 p_sat,
             },
         }
+    }
+
+    /// Construct the ADD v3.0 Appendix A dual-frequency local-error model.
+    #[staticmethod]
+    fn add_v3_0(
+        system: PyGnssSystem,
+        elevation_rad: f64,
+        sigma_ura_m: f64,
+        sigma_ure_m: f64,
+        b_nom_m: f64,
+        p_sat: f64,
+    ) -> PyResult<Self> {
+        SatelliteIsmModel::add_v3_0(
+            system.into(),
+            elevation_rad,
+            sigma_ura_m,
+            sigma_ure_m,
+            b_nom_m,
+            p_sat,
+        )
+        .map(|inner| Self { inner })
+        .map_err(to_araim_err)
     }
 
     /// Build a per-satellite ISM model with direct effective range sigmas.

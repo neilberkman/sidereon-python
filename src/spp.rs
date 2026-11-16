@@ -39,6 +39,8 @@ type PyRejectedSatelliteRow = (String, &'static str, Option<(f64, f64)>);
 /// GLONASS satellite with no channel or one outside `-7..=6`).
 pub(crate) fn rejection_reason_label(reason: RejectionReason) -> &'static str {
     match reason {
+        RejectionReason::NonFinitePseudorange => "NonFinitePseudorange",
+        RejectionReason::NonPositivePseudorange => "NonPositivePseudorange",
         RejectionReason::NoEphemeris => "NoEphemeris",
         RejectionReason::SsrCorrectionExceedsLimit(_) => "SsrCorrectionExceedsLimit",
         RejectionReason::LowElevation => "LowElevation",
@@ -694,6 +696,7 @@ impl PySppConfig {
 fn build_policy(
     max_pdop: Option<f64>,
     coarse_search_seeds: Option<usize>,
+    max_gdop: Option<f64>,
 ) -> PyResult<SolvePolicy> {
     if let Some(pdop) = max_pdop {
         if !(pdop.is_finite() && pdop > 0.0) {
@@ -711,6 +714,7 @@ fn build_policy(
     }
     let mut validation = SolutionValidationOptions::default();
     validation.max_pdop = max_pdop;
+    validation.max_gdop = max_gdop;
     Ok(SolvePolicy {
         validation,
         coarse_search_seeds,
@@ -1144,7 +1148,8 @@ impl PySppSolution {
 
     /// Satellites excluded from the solve as `(satellite, reason)` rows, the
     /// reason being the core `RejectionReason` variant name: `NoEphemeris`,
-    /// `SsrCorrectionExceedsLimit`, `LowElevation`, `SbasWithdrawn`, `SbasIonoUncovered` or
+    /// `NonFinitePseudorange`, `NonPositivePseudorange`, `SsrCorrectionExceedsLimit`,
+    /// `LowElevation`, `SbasWithdrawn`, `SbasIonoUncovered` or
     /// `IonosphereCarrierUnresolved`. An ionosphere-corrected solve excludes a
     /// satellite it has no carrier frequency for (a GLONASS satellite with no
     /// channel, or one outside `-7..=6`) with the last reason and solves the
@@ -1188,6 +1193,11 @@ impl PySppSolution {
 
     /// Dilution-of-precision diagnostics for the accepted geometry, or `None`
     /// when the geometry was rank-deficient (so no covariance was formed).
+    #[getter]
+    fn rtklib_single_clock_dop(&self) -> Option<PyDop> {
+        self.inner.rtklib_single_clock_dop.clone().map(PyDop::from)
+    }
+
     #[getter]
     fn dop(&self) -> Option<PyDop> {
         self.inner.dop.clone().map(PyDop::from)
@@ -1265,6 +1275,7 @@ fn spp_residual_rms_m(residuals_m: Vec<f64>) -> f64 {
 
 /// Run single-point positioning.
 ///
+/// `max_gdop` optionally caps RTKLIB single-clock GDOP.
 /// `max_pdop` optionally caps the accepted geometry's PDOP (a fix that is
 /// rank-deficient or exceeds the ceiling is refused). `coarse_search_seeds`
 /// optionally widens the cold-start convergence basin: the solve runs once from
@@ -1273,23 +1284,24 @@ fn spp_residual_rms_m(residuals_m: Vec<f64>) -> f64 {
 /// good position prior is needed. Both delegate to the core `SolvePolicy`; raise
 /// `ValueError` on a non-positive value.
 #[pyfunction]
-#[pyo3(signature = (sp3, config, *, max_pdop=None, coarse_search_seeds=None))]
+#[pyo3(signature = (sp3, config, *, max_pdop=None, coarse_search_seeds=None, max_gdop=None))]
 fn solve_spp(
     py: Python<'_>,
     sp3: &PySp3,
     config: &PySppConfig,
     max_pdop: Option<f64>,
     coarse_search_seeds: Option<usize>,
+    max_gdop: Option<f64>,
 ) -> PyResult<PySppSolution> {
     let inputs = config.to_inputs();
-    let policy = build_policy(max_pdop, coarse_search_seeds)?;
+    let policy = build_policy(max_pdop, coarse_search_seeds, max_gdop)?;
     let inner = sidereon::solve_spp(&sp3.inner, &inputs, config.with_geodetic, policy)
         .map_err(|err| crate::spp_error_detail::facade_spp_error(py, err, "", None))?;
     Ok(PySppSolution { inner })
 }
 
 #[pyfunction]
-#[pyo3(signature = (sp3, config, receive_epoch, *, max_pdop=None, coarse_search_seeds=None))]
+#[pyo3(signature = (sp3, config, receive_epoch, *, max_pdop=None, coarse_search_seeds=None, max_gdop=None))]
 fn solve_spp_exact(
     py: Python<'_>,
     sp3: &PySp3,
@@ -1297,12 +1309,13 @@ fn solve_spp_exact(
     receive_epoch: &PyExactEpoch,
     max_pdop: Option<f64>,
     coarse_search_seeds: Option<usize>,
+    max_gdop: Option<f64>,
 ) -> PyResult<PySppSolution> {
     let exact_inputs = ExactSolveInputs {
         inputs: config.to_inputs(),
         receive_epoch: receive_epoch.inner,
     };
-    let policy = build_policy(max_pdop, coarse_search_seeds)?;
+    let policy = build_policy(max_pdop, coarse_search_seeds, max_gdop)?;
     let inner = sidereon_core::positioning::solve_with_exact_epoch_and_policy(
         &sp3.inner,
         &exact_inputs,
@@ -1330,7 +1343,7 @@ fn solve_spp_exact(
 /// batch returns an empty list. Raises `SidereonError` (naming the epoch index)
 /// if an epoch fails to solve.
 #[pyfunction]
-#[pyo3(signature = (sp3, configs, *, parallel=true, max_pdop=None, coarse_search_seeds=None))]
+#[pyo3(signature = (sp3, configs, *, parallel=true, max_pdop=None, coarse_search_seeds=None, max_gdop=None))]
 fn solve_spp_batch(
     py: Python<'_>,
     sp3: &PySp3,
@@ -1338,10 +1351,11 @@ fn solve_spp_batch(
     parallel: bool,
     max_pdop: Option<f64>,
     coarse_search_seeds: Option<usize>,
+    max_gdop: Option<f64>,
 ) -> PyResult<Vec<PySppSolution>> {
     let with_geodetic = configs.first().map(|c| c.with_geodetic).unwrap_or(false);
     let epochs: Vec<SolveInputs> = configs.iter().map(|c| c.to_inputs()).collect();
-    let policy = build_policy(max_pdop, coarse_search_seeds)?;
+    let policy = build_policy(max_pdop, coarse_search_seeds, max_gdop)?;
     let eph = &sp3.inner;
 
     // GIL released for the whole batch: the closure owns plain Rust data (the
@@ -1373,7 +1387,7 @@ fn solve_spp_batch(
 }
 
 #[pyfunction]
-#[pyo3(signature = (sp3, configs, receive_epochs, *, max_pdop=None, coarse_search_seeds=None))]
+#[pyo3(signature = (sp3, configs, receive_epochs, *, max_pdop=None, coarse_search_seeds=None, max_gdop=None))]
 fn solve_spp_batch_exact(
     py: Python<'_>,
     sp3: &PySp3,
@@ -1381,6 +1395,7 @@ fn solve_spp_batch_exact(
     receive_epochs: Vec<PyRef<'_, PyExactEpoch>>,
     max_pdop: Option<f64>,
     coarse_search_seeds: Option<usize>,
+    max_gdop: Option<f64>,
 ) -> PyResult<Vec<PySppSolution>> {
     if configs.len() != receive_epochs.len() {
         return Err(PyValueError::new_err(
@@ -1399,7 +1414,7 @@ fn solve_spp_batch_exact(
             receive_epoch: epoch.inner,
         })
         .collect();
-    let policy = build_policy(max_pdop, coarse_search_seeds)?;
+    let policy = build_policy(max_pdop, coarse_search_seeds, max_gdop)?;
     let ephemeris = &sp3.inner;
     let results = py.allow_threads(move || {
         exact_inputs
@@ -1503,6 +1518,7 @@ fn spp_inputs_from_rinex_obs(
     max_pdop=None,
     coarse_search_seeds=None,
     broadcast_context=None,
+    max_gdop=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn solve_spp_from_rinex_obs(
@@ -1514,9 +1530,10 @@ fn solve_spp_from_rinex_obs(
     max_pdop: Option<f64>,
     coarse_search_seeds: Option<usize>,
     broadcast_context: Option<&PyBroadcastEphemeris>,
+    max_gdop: Option<f64>,
 ) -> PyResult<Vec<PyRinexSppEpochSolution>> {
     let options = default_or_supplied_rinex_options(py, obs, options)?;
-    let policy = build_policy(max_pdop, coarse_search_seeds)?;
+    let policy = build_policy(max_pdop, coarse_search_seeds, max_gdop)?;
     with_source(
         source,
         broadcast_context,

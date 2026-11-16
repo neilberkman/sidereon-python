@@ -69,6 +69,76 @@ pub fn revision_from_lock(lock: &str) -> Result<String, String> {
     Ok(facade_revision)
 }
 
+/// Resolve a path-patched core from the actual fixture checkout. The caller
+/// passes that checkout's fixtures directory so the revision and inputs agree.
+pub fn revision_from_lock_or_checkout(
+    lock: &str,
+    fixtures: &Path,
+    manifest: &str,
+) -> Result<String, String> {
+    let packages = lock
+        .split("[[package]]")
+        .skip(1)
+        .map(parse_package)
+        .collect::<Vec<_>>();
+    let core = unique_package(&packages, "sidereon-core")?;
+    if core.source.is_some() {
+        return revision_from_lock(lock);
+    }
+    if core.version != RELEASE_VERSION {
+        return Err("path core has unexpected version".into());
+    }
+    let crate_dir = fixtures
+        .canonicalize()
+        .map_err(|e| e.to_string())?
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("invalid core fixtures path")?
+        .to_path_buf();
+    let patch = manifest
+        .split("[patch.crates-io]")
+        .nth(1)
+        .ok_or("missing core patch")?
+        .lines()
+        .find(|line| line.trim_start().starts_with("sidereon-core"))
+        .ok_or("missing core path")?;
+    let path = patch
+        .split_once("path")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(path, _)| path)
+        .ok_or("invalid core patch path")?;
+    if Path::new(path).canonicalize().map_err(|e| e.to_string())? != crate_dir {
+        return Err("core fixture path does not match patched core".into());
+    }
+    let crate_manifest =
+        fs::read_to_string(crate_dir.join("Cargo.toml")).map_err(|e| e.to_string())?;
+    if !crate_manifest.contains("name = \"sidereon-core\"") {
+        return Err("fixture directory is not in sidereon-core".into());
+    }
+    let run = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&crate_dir)
+            .args(args)
+            .output()
+            .map_err(|e| e.to_string())
+    };
+    let status = run(&["status", "--porcelain"])?;
+    if !status.status.success() || !status.stdout.is_empty() {
+        return Err("core checkout must be clean to identify generated goldens".into());
+    }
+    let output = run(&["rev-parse", "HEAD"])?;
+    let revision = String::from_utf8(output.stdout)
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_owned();
+    if !output.status.success() || !is_hex(&revision, 40) {
+        return Err("cannot identify path-patched core revision".into());
+    }
+    Ok(revision)
+}
+
 fn parse_package(block: &str) -> LockedPackage {
     LockedPackage {
         name: field(block, "name").unwrap_or_default(),

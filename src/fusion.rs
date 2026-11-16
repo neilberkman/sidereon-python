@@ -1721,11 +1721,21 @@ impl PyEkfUpdateOptions {
 impl PyEkfUpdateOptions {
     /// Build EKF update options.
     #[new]
-    #[pyo3(signature = (innovation_gate=None))]
-    fn new(innovation_gate: Option<&PyInnovationGate>) -> Self {
+    #[pyo3(signature = (innovation_gate=None, joint_innovation_gate_probability=None))]
+    fn new(
+        innovation_gate: Option<&PyInnovationGate>,
+        joint_innovation_gate_probability: Option<f64>,
+    ) -> Self {
         let mut inner = EkfUpdateOptions::default();
         inner.innovation_gate = innovation_gate.map(PyInnovationGate::inner);
+        inner.joint_innovation_gate_probability = joint_innovation_gate_probability;
         Self { inner }
+    }
+
+    /// False-alarm probability for the joint innovation gate.
+    #[getter]
+    fn joint_innovation_gate_probability(&self) -> Option<f64> {
+        self.inner.joint_innovation_gate_probability
     }
 
     /// Innovation gate options when screening is active.
@@ -1799,16 +1809,18 @@ impl PyUkfUpdateOptions {
 impl PyUkfUpdateOptions {
     /// Build UKF update options.
     #[new]
-    #[pyo3(signature = (transform=None, innovation_gate=None))]
+    #[pyo3(signature = (transform=None, innovation_gate=None, joint_innovation_gate_probability=None))]
     fn new(
         transform: Option<&PyUnscentedTransformOptions>,
         innovation_gate: Option<&PyInnovationGate>,
+        joint_innovation_gate_probability: Option<f64>,
     ) -> Self {
         let mut inner = UkfUpdateOptions::default();
         inner.transform = transform
             .map(PyUnscentedTransformOptions::inner)
             .unwrap_or_default();
         inner.innovation_gate = innovation_gate.map(PyInnovationGate::inner);
+        inner.joint_innovation_gate_probability = joint_innovation_gate_probability;
         Self { inner }
     }
 
@@ -1818,6 +1830,12 @@ impl PyUkfUpdateOptions {
         PyUnscentedTransformOptions {
             inner: self.inner.transform,
         }
+    }
+
+    /// False-alarm probability for the joint innovation gate.
+    #[getter]
+    fn joint_innovation_gate_probability(&self) -> Option<f64> {
+        self.inner.joint_innovation_gate_probability
     }
 
     /// Innovation gate options when screening is active.
@@ -3068,6 +3086,36 @@ impl PyInnovationGateReport {
     }
 }
 
+/// Diagnostics from a joint chi-square innovation gate.
+#[pyclass(module = "sidereon._sidereon", name = "JointInnovationGateReport")]
+#[derive(Clone)]
+pub struct PyJointInnovationGateReport {
+    inner: sidereon_core::fusion::JointInnovationGateReport,
+}
+#[pymethods]
+impl PyJointInnovationGateReport {
+    #[getter]
+    fn statistic(&self) -> f64 {
+        self.inner.statistic
+    }
+    #[getter]
+    fn degrees_of_freedom(&self) -> usize {
+        self.inner.degrees_of_freedom
+    }
+    #[getter]
+    fn threshold(&self) -> f64 {
+        self.inner.threshold
+    }
+    #[getter]
+    fn false_alarm_probability(&self) -> f64 {
+        self.inner.false_alarm_probability
+    }
+    #[getter]
+    fn accepted(&self) -> bool {
+        self.inner.accepted
+    }
+}
+
 /// Diagnostics from one EKF or UKF correction attempt.
 #[pyclass(module = "sidereon._sidereon", name = "EkfCorrectionReport")]
 #[derive(Clone)]
@@ -3111,6 +3159,14 @@ impl PyEkfCorrectionReport {
     #[getter]
     fn innovation_gate(&self) -> Option<PyInnovationGateReport> {
         self.inner.innovation_gate.clone().map(Into::into)
+    }
+
+    /// Joint innovation gate diagnostics, when enabled.
+    #[getter]
+    fn joint_innovation_gate(&self) -> Option<PyJointInnovationGateReport> {
+        self.inner
+            .joint_innovation_gate
+            .map(|inner| PyJointInnovationGateReport { inner })
     }
 
     /// Innovation covariance matrix.
@@ -3994,6 +4050,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTightGnssObservation>()?;
     m.add_class::<PyTightGnssEpoch>()?;
     m.add_class::<PyInnovationGateReport>()?;
+    m.add_class::<PyJointInnovationGateReport>()?;
     m.add_class::<PyEkfCorrectionReport>()?;
     m.add_class::<PyFusionUpdate>()?;
     m.add_class::<PyTightClockState>()?;

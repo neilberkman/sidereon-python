@@ -47,5 +47,5 @@ nalgebra = "0.33"
 
 # Replaced by the version bump at release.
 [patch.crates-io]
-sidereon-core = { path = "/Volumes/ExternalSSD/sidereon-oracle-20261114/sidereon-fetch/crates/sidereon-core" }
-trust-region-least-squares = { path = "/Volumes/ExternalSSD/sidereon-oracle-20261114/sidereon-fetch/crates/trust-region-least-squares" }
+sidereon-core = { path = "/Volumes/ExternalSSD/sidereon-oracle-20261114/sidereon-merged/crates/sidereon-core" }
+trust-region-least-squares = { path = "/Volumes/ExternalSSD/sidereon-oracle-20261114/sidereon-merged/crates/trust-region-least-squares" }

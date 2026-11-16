@@ -158,7 +158,11 @@ def test_raim_geometry_and_protection_refusals():
             geometry, sidereon.Wgs84Geodetic(0.0, 0.0), sidereon.PppRaimConfig()
         )
     assert singular.value.detail["family"] == "RaimError"
-    assert singular.value.detail["kind"] == "dop"
+    assert singular.value.detail["kind"] == "invalid_geometry"
+    assert (
+        singular.value.detail["reason"]
+        == "protection levels require positive redundancy"
+    )
     with pytest.raises(sidereon.SolveError) as mismatch:
         sidereon.per_satellite_statistics(rows[:2], geometry, sidereon.PppRaimConfig())
     assert mismatch.value.detail["kind"] == "invalid_geometry"

@@ -479,3 +479,40 @@ def test_precise_interpolant_artifact_round_trip_and_typed_errors():
     corrupt[-1] ^= 0x01
     with pytest.raises(sidereon.PreciseInterpolantArtifactCorruptError):
         sidereon.PreciseInterpolantArtifact.from_bytes(corrupt)
+
+
+def test_spp_max_gdop_ceiling_and_single_clock_dop():
+    sp3, config = _spp_sp3_config()
+    solution = sidereon.solve_spp(sp3, config, max_gdop=30.0)
+    assert solution.rtklib_single_clock_dop is not None
+    assert solution.rtklib_single_clock_dop.gdop < 30.0
+    with pytest.raises(sidereon.SolveError) as exc:
+        sidereon.solve_spp(sp3, config, max_gdop=0.1)
+    assert exc.value.detail["cause"]["kind"] == "degenerate_geometry_gdop"
+
+
+def test_spp_invalid_pseudorange_rejection_reasons():
+    fixture = _spp_fixture()
+    inputs = fixture["inputs"]
+    sp3, base = _spp_sp3_config()
+    observations = [
+        sidereon.SppObservation(row["sat_id"], hex_to_f64(row["p_meas_m"]))
+        for row in inputs["observations"]
+    ]
+    observations.extend(
+        [
+            sidereon.SppObservation("G01", float("nan")),
+            sidereon.SppObservation("G02", 0.0),
+        ]
+    )
+    config = sidereon.SppConfig(
+        observations,
+        base.t_rx_j2000_s,
+        base.t_rx_second_of_day_s,
+        base.day_of_year,
+        base.initial_guess,
+        corrections=sidereon.SppCorrections(ionosphere=False, troposphere=False),
+    )
+    solution = sidereon.solve_spp(sp3, config)
+    assert ("G01", "NonFinitePseudorange") in solution.rejected_sats
+    assert ("G02", "NonPositivePseudorange") in solution.rejected_sats

@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! One-epoch satellite/station coverage grid binding.
 //!
 //! Thin INTERFACE over `sidereon_core::astro::coverage`. It collects the
@@ -9,6 +10,8 @@
 //! [`access_counts`](sidereon_core::astro::coverage::access_counts), and
 //! [`max_elevation`](sidereon_core::astro::coverage::max_elevation). No look
 //! angle, visibility, or reduction math lives here.
+
+use pyo3::ffi::c_str;
 
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2};
@@ -113,15 +116,39 @@ impl PyCoverageGrid {
         look_angle_error_value(py, error).map(Some)
     }
 
-    /// Boolean `[satellite][station]` visibility at or above `min_elevation_deg`.
-    /// Error cells are not visible.
-    fn visible_mask(&self, min_elevation_deg: f64) -> Vec<Vec<bool>> {
-        core_visible_mask(&self.grid, min_elevation_deg)
+    /// Checked visibility mask; rejects a non-finite threshold.
+    fn try_visible_mask(&self, min_elevation_deg: f64) -> PyResult<Vec<Vec<bool>>> {
+        sidereon_core::astro::coverage::try_visible_mask(&self.grid, min_elevation_deg)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
-    /// Visible-satellite count per station at or above `min_elevation_deg`.
-    fn access_counts(&self, min_elevation_deg: f64) -> Vec<usize> {
-        core_access_counts(&self.grid, min_elevation_deg)
+    /// Checked counts; rejects a non-finite threshold or ragged grid.
+    fn try_access_counts(&self, min_elevation_deg: f64) -> PyResult<Vec<usize>> {
+        sidereon_core::astro::coverage::try_access_counts(&self.grid, min_elevation_deg)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    /// Deprecated: use `try_visible_mask`. Boolean `[satellite][station]` visibility at or above `min_elevation_deg`.
+    /// Error cells are not visible.
+    fn visible_mask(&self, py: Python<'_>, min_elevation_deg: f64) -> PyResult<Vec<Vec<bool>>> {
+        PyErr::warn(
+            py,
+            &py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
+            c_str!("visible_mask is deprecated; use try_visible_mask"),
+            2,
+        )?;
+        Ok(core_visible_mask(&self.grid, min_elevation_deg))
+    }
+
+    /// Deprecated: use `try_access_counts`. Visible-satellite count per station.
+    fn access_counts(&self, py: Python<'_>, min_elevation_deg: f64) -> PyResult<Vec<usize>> {
+        PyErr::warn(
+            py,
+            &py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
+            c_str!("access_counts is deprecated; use try_access_counts"),
+            2,
+        )?;
+        Ok(core_access_counts(&self.grid, min_elevation_deg))
     }
 
     /// Maximum successful elevation per station, degrees, or `None` for a station

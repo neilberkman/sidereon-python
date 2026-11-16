@@ -101,6 +101,8 @@ def test_ppp_corrections_are_bit_exact():
     sat, idx, windup = corr.windup_m[0]
     assert sat == SAT and idx == 0
     assert windup == _bits(WINDUP_BITS)
+    # Prior Skyfield-compatible receiver basis, before the RTKLIB ecef2pos change.
+    assert windup == pytest.approx(-0.008081989943662828, abs=2e-14, rel=0.0)
 
     assert len(corr.sat_pco_ecef) == 1
     sat, idx, pco = corr.sat_pco_ecef[0]

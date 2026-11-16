@@ -216,9 +216,8 @@ def test_solution_raim_is_the_chi_square_over_the_solution_variances():
     assert result.test_statistic == statistic
     assert result.normalized_residuals == normalized
     assert result.dof == len(solution.used_sats) - 4
-    assert result.threshold == sidereon.chi2_inv(
-        1.0 - sidereon.RAIM_DEFAULT_P_FA, result.dof
-    )
+    # Core ppp_raim_oracles.json: SciPy chi-square ISF at p=0.001, dof=4.
+    assert result.threshold == pytest.approx(18.466826952903173, abs=4e-15, rel=0.0)
     assert result.fault_detected
 
 

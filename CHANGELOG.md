@@ -6,6 +6,14 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ### Added
 
+- Expose Brown snapshot RAIM fault protection levels, weighted levels, separate
+  fault-free accuracy bounds, the untested FDE status, and distinct RAIM errors.
+- Expose PPP variance-estimation flags, joint EKF/UKF gate options and reports,
+  checked coverage reductions, `chi2_isf`, ADD v3.0 satellite models, the
+  single-clock DOP, and the optional GDOP ceiling.
+- Expose RTK epoch mask and hold-release diagnostics, carried-state updates,
+  and the combined multi-constellation wide-lane sequential arc driver.
+
 - Add OMM lenient KVN and XML writers, `Omm.from_tle`, and
   `Omm.with_ccsds_header`.
 - Add CelesTrak GP source and URL builders, response parsing and cached fetches;
@@ -66,6 +74,9 @@ All notable changes to the Sidereon Python interface are documented here.
   for policy-aware TDM result objects.
 
 ### Changed
+
+- Deprecate `CoverageGrid.visible_mask` and `access_counts` in favor of their
+  checked forms.
 
 - OMM KVN and XML writers require the CCSDS header and mandatory fields; use
   the explicit lenient writers for partial records.

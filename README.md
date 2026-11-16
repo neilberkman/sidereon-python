@@ -222,7 +222,22 @@ The Python package mirrors the full breadth of the engine.
     `PppRaimIdentification`, `PppProtectionLevels`, `PppRaimFdeStatus`,
     `PppRaimFdeResult`, `global_test`, `global_test_with_geometry`,
     `per_satellite_statistics`, `protection_levels`, `fde_float_epoch`, and
-    `solve_float_epoch_with_raim`.
+    `solve_float_epoch_with_raim`. Brown snapshot fault protection levels require
+    positive redundancy. Weighted levels use inverse-standard-deviation weights;
+    `fault_free_accuracy_bounds` returns the separate K × sigma × DOP fault-free
+    accuracy quantity. `SolveError.detail` distinguishes `unsupported_dof`,
+    `unsupported_noncentrality`, and `numerical_protection_level` RAIM errors;
+    `PppRaimFdeStatus.UNTESTED` identifies a solve without redundancy. The
+    checked coverage reductions reject invalid thresholds; the older reductions
+    are deprecated. Joint EKF and UKF gate reports expose their NIS, degrees of
+    freedom, threshold, false-alarm probability, and acceptance verdict. RTK
+    hold releases identify `UNHELD_REFERENCE` and `INCOMPATIBLE_WAVELENGTHS`.
+    SPP reports `NonFinitePseudorange` and `NonPositivePseudorange`, and accepts
+    an optional `max_gdop` ceiling on its RTKLIB single-clock DOP. A GDOP
+    refusal has `degenerate_geometry_gdop` detail. The ADD v3.0 constructor
+    reports `AraimError` detail `unsupported_constellation` for systems it
+    does not cover. Carried RTK updates distinguish `missing_ambiguity_column`
+    and `invalid_input` with field `state.fixed_cycles` and reason `missing`.
   - Kinematic PPP: `PppKinematicState`,
     `PppKinematicPositionProcessNoise`, `PppKinematicMotionModel`,
     `PppKinematicProcessNoise`, `PppKinematicConfig`,

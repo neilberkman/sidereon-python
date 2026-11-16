@@ -216,6 +216,20 @@ fn raim_error(py: Python<'_>, error: core::RaimError) -> PyErr {
             detailed_error(py, "RaimError", "dop", message, &[("reason", reason_text)])
         }
         E::SingularGeometry => detailed_error(py, "RaimError", "singular_geometry", message, &[]),
+        E::NumericalProtectionLevel => {
+            detailed_error(py, "RaimError", "numerical_protection_level", message, &[])
+        }
+        E::UnsupportedNoncentrality => {
+            detailed_error(py, "RaimError", "unsupported_noncentrality", message, &[])
+        }
+        E::UnsupportedDof { dof, max } => {
+            let detail = PyDict::new(py);
+            let _ = detail.set_item("family", "RaimError");
+            let _ = detail.set_item("kind", "unsupported_dof");
+            let _ = detail.set_item("dof", dof);
+            let _ = detail.set_item("max", max);
+            attach_detail(py, message, &detail)
+        }
     }
 }
 
@@ -1778,11 +1792,13 @@ pub enum PyRaimFdeStatus {
     RESTORED,
     CANNOT_EXCLUDE,
     INTEGRITY_NOT_RESTORED,
+    UNTESTED,
 }
 impl From<core::RaimFdeStatus> for PyRaimFdeStatus {
     fn from(value: core::RaimFdeStatus) -> Self {
         match value {
             core::RaimFdeStatus::Clean => Self::CLEAN,
+            core::RaimFdeStatus::Untested => Self::UNTESTED,
             core::RaimFdeStatus::Restored => Self::RESTORED,
             core::RaimFdeStatus::CannotExclude => Self::CANNOT_EXCLUDE,
             core::RaimFdeStatus::IntegrityNotRestored => Self::INTEGRITY_NOT_RESTORED,
@@ -1795,6 +1811,7 @@ impl PyRaimFdeStatus {
     fn label(&self) -> &'static str {
         match self {
             Self::CLEAN => "clean",
+            Self::UNTESTED => "untested",
             Self::RESTORED => "restored",
             Self::CANNOT_EXCLUDE => "cannot_exclude",
             Self::INTEGRITY_NOT_RESTORED => "integrity_not_restored",
@@ -1831,6 +1848,7 @@ impl PyRaimFdeResult {
     }
 }
 
+/// Brown snapshot-RAIM fault protection levels; requires positive redundancy.
 #[pyfunction]
 fn protection_levels(
     py: Python<'_>,
@@ -1844,6 +1862,44 @@ fn protection_levels(
         .collect::<Vec<_>>();
     let receiver = sidereon_core::frame::Wgs84Geodetic::try_from(receiver)?;
     core::raim::protection_levels(&geometry, receiver, config.inner)
+        .map(|inner| PyProtectionLevels { inner })
+        .map_err(|e| raim_error(py, e))
+}
+
+/// Brown snapshot-RAIM fault protection levels using inverse-standard-deviation weights.
+#[pyfunction]
+fn protection_levels_with_weights(
+    py: Python<'_>,
+    geometry: Vec<Py<PyRaimGeometryRow>>,
+    weights: Vec<f64>,
+    receiver: &PyWgs84Geodetic,
+    config: &PyRaimConfig,
+) -> PyResult<PyProtectionLevels> {
+    let geometry = geometry
+        .iter()
+        .map(|v| v.borrow(py).inner.clone())
+        .collect::<Vec<_>>();
+    let receiver = sidereon_core::frame::Wgs84Geodetic::try_from(receiver)?;
+    core::raim::protection_levels_with_weights(&geometry, &weights, receiver, config.inner)
+        .map(|inner| PyProtectionLevels { inner })
+        .map_err(|e| raim_error(py, e))
+}
+
+/// Fault-free K * sigma * DOP accuracy bounds using inverse-standard-deviation weights.
+#[pyfunction]
+fn fault_free_accuracy_bounds(
+    py: Python<'_>,
+    geometry: Vec<Py<PyRaimGeometryRow>>,
+    weights: Vec<f64>,
+    receiver: &PyWgs84Geodetic,
+    config: &PyRaimConfig,
+) -> PyResult<PyProtectionLevels> {
+    let geometry = geometry
+        .iter()
+        .map(|v| v.borrow(py).inner.clone())
+        .collect::<Vec<_>>();
+    let receiver = sidereon_core::frame::Wgs84Geodetic::try_from(receiver)?;
+    core::raim::fault_free_accuracy_bounds(&geometry, &weights, receiver, config.inner)
         .map(|inner| PyProtectionLevels { inner })
         .map_err(|e| raim_error(py, e))
 }
@@ -2562,6 +2618,8 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(global_test_with_geometry, module)?)?;
     module.add_function(wrap_pyfunction!(per_satellite_statistics, module)?)?;
     module.add_function(wrap_pyfunction!(protection_levels, module)?)?;
+    module.add_function(wrap_pyfunction!(protection_levels_with_weights, module)?)?;
+    module.add_function(wrap_pyfunction!(fault_free_accuracy_bounds, module)?)?;
     module.add_function(wrap_pyfunction!(fde_float_epoch, module)?)?;
     module.add_function(wrap_pyfunction!(solve_float_epoch_with_raim, module)?)?;
     module.add_function(wrap_pyfunction!(predict_kinematic_state, module)?)?;

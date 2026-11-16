@@ -282,8 +282,11 @@ def test_016_troposphere_low_elevation_error_and_oblate_eclipse_bits():
 
 def test_016_wtest_noncentrality_uses_core_delta_and_approved_dependencies():
     constants = sidereon.wtest_noncentrality(0.001, 0.80)
-    assert constants.delta0.hex() == "0x1.08751cbd0bec7p+2"
-    assert constants.lambda0.hex() == "0x1.1131c0d9309e7p+4"
+    # Core araim_oracles.json, alpha=0.001, missed-detection beta=0.2.
+    # Core now evaluates inverse-normal tails without forming 1-p; allow the
+    # oracle's decimal rounding and platform libm differences.
+    assert constants.delta0 == pytest.approx(4.132147965064808, abs=2e-14)
+    assert constants.lambda0 == pytest.approx(17.074646805189236, abs=2e-13)
     assert "lambda0.sqrt" not in (REPO / "src" / "reliability.rs").read_text()
 
     manifest = (REPO / "Cargo.toml").read_text()

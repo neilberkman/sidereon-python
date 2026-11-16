@@ -1866,6 +1866,47 @@ impl PyRtkArcResidual {
 }
 
 /// One epoch's reported baseline/ambiguity solution from the RTK arc driver.
+/// Reason a held ambiguity was released during a reference change.
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "RtkHoldReleaseReason",
+    eq,
+    eq_int
+)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub enum PyRtkHoldReleaseReason {
+    /// The new reference did not have a held integer.
+    UNHELD_REFERENCE,
+    /// Carrier wavelengths do not share an integer lattice.
+    INCOMPATIBLE_WAVELENGTHS,
+}
+
+/// A released held ambiguity and its reason.
+#[pyclass(module = "sidereon._sidereon", name = "ReleasedRtkHold")]
+#[derive(Clone)]
+pub struct PyReleasedRtkHold {
+    inner: sidereon_core::rtk_filter::ReleasedRtkHold,
+}
+#[pymethods]
+impl PyReleasedRtkHold {
+    #[getter]
+    fn ambiguity_id(&self) -> &str {
+        &self.inner.ambiguity_id
+    }
+    #[getter]
+    fn reason(&self) -> PyRtkHoldReleaseReason {
+        match self.inner.reason {
+            sidereon_core::rtk_filter::RtkHoldReleaseReason::UnheldReference => {
+                PyRtkHoldReleaseReason::UNHELD_REFERENCE
+            }
+            sidereon_core::rtk_filter::RtkHoldReleaseReason::IncompatibleWavelengths => {
+                PyRtkHoldReleaseReason::INCOMPATIBLE_WAVELENGTHS
+            }
+        }
+    }
+}
+
 #[pyclass(module = "sidereon._sidereon", name = "RtkArcEpochSolution")]
 #[derive(Clone)]
 pub struct PyRtkArcEpochSolution {
@@ -1932,6 +1973,32 @@ impl PyRtkArcEpochSolution {
         self.inner.used_satellite_ids.clone()
     }
 
+    /// Satellites screened by the rover elevation mask.
+    #[getter]
+    fn elevation_masked_satellite_ids(&self) -> Vec<String> {
+        self.inner.elevation_masked_satellite_ids.clone()
+    }
+    /// Per-system reference satellites used in this epoch.
+    #[getter]
+    fn reference_satellite_ids(&self) -> Vec<String> {
+        self.inner.reference_satellite_ids.clone()
+    }
+    /// Whether the elevation-mask iteration converged.
+    #[getter]
+    fn elevation_mask_converged(&self) -> bool {
+        self.inner.elevation_mask_converged
+    }
+    /// Released ambiguity IDs and their distinct release reasons.
+    #[getter]
+    fn released_holds(&self) -> Vec<PyReleasedRtkHold> {
+        self.inner
+            .released_holds
+            .iter()
+            .cloned()
+            .map(|inner| PyReleasedRtkHold { inner })
+            .collect()
+    }
+
     /// LAMBDA search diagnostics, or `None` when no search ran this epoch.
     #[getter]
     fn search(&self) -> Option<PyRtkArcIntegerSearch> {
@@ -1979,6 +2046,24 @@ pub struct PyRtkFilterState {
 
 #[pymethods]
 impl PyRtkFilterState {
+    /// Copy this carried state with caller-supplied per-system reference ids.
+    fn with_references(&self, references: BTreeMap<String, String>) -> Self {
+        let mut inner = self.inner.clone();
+        inner.references = references;
+        Self { inner }
+    }
+
+    /// Copy this carried state with caller-supplied held integer and metre maps.
+    fn with_fixed_holds(
+        &self,
+        fixed_cycles: BTreeMap<String, i64>,
+        fixed_m: BTreeMap<String, f64>,
+    ) -> Self {
+        let mut inner = self.inner.clone();
+        inner.fixed_cycles = fixed_cycles;
+        inner.fixed_m = fixed_m;
+        Self { inner }
+    }
     #[getter]
     fn version(&self) -> u16 {
         self.inner.version
@@ -2048,6 +2133,59 @@ impl PyRtkFilterState {
             self.inner.epoch_count
         )
     }
+}
+
+/// One streaming RTK update result.
+#[pyclass(module = "sidereon._sidereon", name = "RtkEpochUpdate")]
+pub struct PyRtkEpochUpdate {
+    inner: sidereon_core::rtk_filter::EpochUpdate,
+}
+#[pymethods]
+impl PyRtkEpochUpdate {
+    #[getter]
+    fn state(&self) -> PyRtkFilterState {
+        PyRtkFilterState {
+            inner: self.inner.state.clone(),
+        }
+    }
+    #[getter]
+    fn reported_baseline_m(&self) -> [f64; 3] {
+        self.inner.reported_baseline_m
+    }
+    #[getter]
+    fn integer_fixed(&self) -> bool {
+        self.inner.integer_fixed
+    }
+    #[getter]
+    fn fixed_ids(&self) -> Vec<String> {
+        self.inner.fixed_ids.clone()
+    }
+}
+
+/// Update a carried RTK filter state with a prepared epoch.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn update_rtk_epoch(
+    py: Python<'_>,
+    state: &PyRtkFilterState,
+    epoch: &PyRtkEpoch,
+    base: [f64; 3],
+    model: &PyRtkMeasurementModel,
+    wavelengths_m: BTreeMap<String, f64>,
+    offsets_m: BTreeMap<String, f64>,
+    options: &PyRtkArcUpdateOptions,
+) -> PyResult<PyRtkEpochUpdate> {
+    sidereon_core::rtk_filter::update_epoch(
+        state.inner.clone(),
+        &epoch.inner,
+        base,
+        &model.inner,
+        &wavelengths_m,
+        &offsets_m,
+        &options.inner,
+    )
+    .map(|inner| PyRtkEpochUpdate { inner })
+    .map_err(|e| crate::solve_error_detail::rtk_update_error(py, e))
 }
 
 /// Split-arc metadata produced by cycle-slip preprocessing under the
@@ -2341,6 +2479,12 @@ impl PyRtkStaticArcSolution {
     #[getter]
     fn elevation_masked_sats(&self) -> Vec<String> {
         self.inner.elevation_masked_sats.clone()
+    }
+
+    /// Whether the elevation-mask iteration converged.
+    #[getter]
+    fn elevation_mask_converged(&self) -> bool {
+        self.inner.elevation_mask_converged
     }
 
     /// Geometry observability and covariance-validation diagnostics.
@@ -4560,6 +4704,70 @@ fn prepare_ionosphere_free_rtk_arc(
     Ok(PyRtkIonosphereFreeArcSolution { inner })
 }
 
+/// Combined wide-lane and ionosphere-free sequential RTK result.
+#[pyclass(
+    module = "sidereon._sidereon",
+    name = "RtkWideLaneFixedSequentialArcSolution"
+)]
+pub struct PyRtkWideLaneFixedSequentialArcSolution {
+    inner: sidereon_core::rtk_filter::RtkWideLaneFixedSequentialArcSolution,
+}
+#[pymethods]
+impl PyRtkWideLaneFixedSequentialArcSolution {
+    #[getter]
+    fn wide_lane(&self) -> PyRtkWideLaneArcSolution {
+        PyRtkWideLaneArcSolution {
+            inner: self.inner.wide_lane.clone(),
+        }
+    }
+    #[getter]
+    fn ionosphere_free(&self) -> PyRtkIonosphereFreeArcSolution {
+        PyRtkIonosphereFreeArcSolution {
+            inner: self.inner.ionosphere_free.clone(),
+        }
+    }
+    #[getter]
+    fn solution(&self) -> PyRtkArcSolution {
+        PyRtkArcSolution {
+            inner: self.inner.solution.clone(),
+        }
+    }
+    #[getter]
+    fn wide_lane_ambiguities_cycles(&self) -> BTreeMap<String, i64> {
+        self.inner.metadata.wide_lane_ambiguities_cycles.clone()
+    }
+}
+
+/// Run the combined wide-lane, ionosphere-free and sequential RTK arc driver.
+#[pyfunction]
+fn solve_wide_lane_fixed_rtk_arc(
+    py: Python<'_>,
+    epochs: Vec<Py<PyRtkDualFrequencyArcEpoch>>,
+    wide_lane: &PyRtkWideLaneArcConfig,
+    ionosphere_free: &PyRtkIonosphereFreeArcConfig,
+    arc: &PyRtkArcConfig,
+) -> PyResult<PyRtkWideLaneFixedSequentialArcSolution> {
+    let epochs = epochs
+        .iter()
+        .map(|epoch| epoch.borrow(py).inner.clone())
+        .collect::<Vec<_>>();
+    let config = RtkWideLaneFixedArcConfig::new(
+        wide_lane.inner.clone(),
+        ionosphere_free.inner.clone(),
+        RtkWideLaneFixedArcSolveConfig::Sequential(arc.inner.clone()),
+    );
+    match core_solve_wide_lane_fixed_rtk_arc(&epochs, &config)
+        .map_err(|e| crate::solve_error_detail::rtk_wide_lane_fixed_arc_error(py, e))?
+    {
+        RtkWideLaneFixedArcSolution::Sequential(inner) => {
+            Ok(PyRtkWideLaneFixedSequentialArcSolution { inner })
+        }
+        RtkWideLaneFixedArcSolution::Static(_) => {
+            Err(PyTypeError::new_err("expected sequential arc solution"))
+        }
+    }
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRtkFloatSolution>()?;
     m.add_class::<PyRtkFixedSolution>()?;
@@ -4586,9 +4794,15 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRtkArcIntegerSearch>()?;
     m.add_class::<PyRtkArcResidual>()?;
     m.add_class::<PyRtkArcEpochSolution>()?;
+    m.add_class::<PyReleasedRtkHold>()?;
+    m.add_class::<PyRtkHoldReleaseReason>()?;
     m.add_class::<PyCycleSlipSplitArc>()?;
     m.add_class::<PyRtkFilterState>()?;
+    m.add_class::<PyRtkEpochUpdate>()?;
+    m.add_function(wrap_pyfunction!(update_rtk_epoch, m)?)?;
     m.add_class::<PyRtkArcSolution>()?;
+    m.add_class::<PyRtkWideLaneFixedSequentialArcSolution>()?;
+    m.add_function(wrap_pyfunction!(solve_wide_lane_fixed_rtk_arc, m)?)?;
     m.add_function(wrap_pyfunction!(solve_rtk_arc, m)?)?;
     m.add_class::<PyRtkStaticArcConfig>()?;
     m.add_class::<PyRtkStaticArcSolution>()?;

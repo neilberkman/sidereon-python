@@ -109,6 +109,10 @@ fn validation_detail<'py>(
             detail.set_item("kind", "degenerate_geometry_pdop")?;
             set_float(&detail, "pdop", *pdop)?;
         }
+        SolutionValidationError::DegenerateGeometryGdop(gdop) => {
+            detail.set_item("kind", "degenerate_geometry_gdop")?;
+            set_float(&detail, "gdop", *gdop)?;
+        }
         SolutionValidationError::ImplausiblePosition(radius_m) => {
             detail.set_item("kind", "implausible_position")?;
             set_float(&detail, "radius_m", *radius_m)?;

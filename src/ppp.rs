@@ -2472,6 +2472,10 @@ impl PyPppFloatSolution {
     }
 
     #[getter]
+    fn posterior_variance_factor_estimated(&self) -> bool {
+        self.inner.posterior_variance_factor_estimated
+    }
+    #[getter]
     fn posterior_variance_factor(&self) -> f64 {
         self.inner.posterior_variance_factor
     }
@@ -2722,6 +2726,10 @@ impl PyPppFixedSolution {
         mat3_to_array(py, &self.inner.formal_position_covariance.enu_m2)
     }
 
+    #[getter]
+    fn posterior_variance_factor_estimated(&self) -> bool {
+        self.inner.posterior_variance_factor_estimated
+    }
     #[getter]
     fn posterior_variance_factor(&self) -> f64 {
         self.inner.posterior_variance_factor
