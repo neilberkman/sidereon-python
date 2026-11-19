@@ -125,3 +125,21 @@ def test_finders_reversed_window_returns_empty():
         == []
     )
     assert sidereon.find_moon_transits(LAT, LON, ALT_KM, good_end, good_start) == []
+
+
+def test_sky_out_of_range_instants_raise_value_error():
+    valid = _us(2024, 4, 23, 23, 55, 59)
+    for extreme in (-(1 << 63), (1 << 63) - 1):
+        with pytest.raises(ValueError, match="invalid UTC instant"):
+            sidereon.sun_az_el(LAT, LON, ALT_KM, extreme)
+        with pytest.raises(ValueError, match="invalid UTC instant"):
+            sidereon.moon_az_el(LAT, LON, ALT_KM, extreme)
+        with pytest.raises(ValueError, match="invalid UTC instant"):
+            sidereon.moon_illumination(LAT, LON, ALT_KM, extreme)
+        with pytest.raises(ValueError, match="invalid UTC instant"):
+            sidereon.moon_elevation_deg(LAT, LON, ALT_KM, extreme)
+
+    with pytest.raises(ValueError, match="invalid UTC instant"):
+        sidereon.find_moon_elevation_crossings(LAT, LON, ALT_KM, valid, (1 << 63) - 1)
+    with pytest.raises(ValueError, match="invalid UTC instant"):
+        sidereon.find_moon_transits(LAT, LON, ALT_KM, -(1 << 63), valid)

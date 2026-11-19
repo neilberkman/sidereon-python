@@ -5,7 +5,7 @@
 //! Marshals numpy state arrays plus a unix-microsecond epoch grid into the core's
 //! [`sidereon_core::astro::frames`] compute functions and the precise
 //! [`sidereon_core::astro::time`] scales. No modeling lives here: every instant's
-//! scales come from the parity-critical [`UtcInstant::time_scales`] path and every
+//! scales come from the [`UtcInstant::try_time_scales`] path and every
 //! transform is the engine's own `*_compute`, so the numbers are bit-identical to
 //! what `sidereon-core` produces. Each batched call crosses the FFI boundary once,
 //! with the per-row loop inside Rust.
@@ -177,8 +177,14 @@ pub struct PyInstant {
 }
 
 impl PyInstant {
-    pub(crate) fn time_scales(&self) -> TimeScales {
-        UtcInstant::from_unix_microseconds(self.unix_micros).time_scales()
+    pub(crate) fn try_time_scales(&self) -> Option<TimeScales> {
+        UtcInstant::from_unix_microseconds(self.unix_micros).try_time_scales()
+    }
+
+    pub(crate) fn time_scales(&self) -> PyResult<TimeScales> {
+        self.try_time_scales().ok_or_else(|| {
+            PyValueError::new_err("invalid frame transform datetime: invalid UTC instant")
+        })
     }
 }
 
@@ -226,118 +232,118 @@ impl PyInstant {
 
     /// The shared integer Julian-day boundary (TAI-aligned).
     #[getter]
-    fn jd_whole(&self) -> f64 {
-        self.time_scales().jd_whole
+    fn jd_whole(&self) -> PyResult<f64> {
+        Ok(self.time_scales()?.jd_whole)
     }
 
     /// Full Terrestrial Time (TT) Julian date.
     #[getter]
-    fn tt_jd(&self) -> f64 {
-        self.time_scales().jd_tt
+    fn tt_jd(&self) -> PyResult<f64> {
+        Ok(self.time_scales()?.jd_tt)
     }
 
     /// Full UT1 Julian date.
     #[getter]
-    fn ut1_jd(&self) -> f64 {
-        self.time_scales().jd_ut1
+    fn ut1_jd(&self) -> PyResult<f64> {
+        Ok(self.time_scales()?.jd_ut1)
     }
 
     /// Full Barycentric Dynamical Time (TDB) Julian date.
     #[getter]
-    fn tdb_jd(&self) -> f64 {
-        self.time_scales().jd_tdb
+    fn tdb_jd(&self) -> PyResult<f64> {
+        Ok(self.time_scales()?.jd_tdb)
     }
 
     /// TT day fraction relative to [`jd_whole`](Self::jd_whole).
     #[getter]
-    fn tt_fraction(&self) -> f64 {
-        self.time_scales().tt_fraction
+    fn tt_fraction(&self) -> PyResult<f64> {
+        Ok(self.time_scales()?.tt_fraction)
     }
 
     /// UT1 day fraction relative to [`jd_whole`](Self::jd_whole).
     #[getter]
-    fn ut1_fraction(&self) -> f64 {
-        self.time_scales().ut1_fraction
+    fn ut1_fraction(&self) -> PyResult<f64> {
+        Ok(self.time_scales()?.ut1_fraction)
     }
 
     /// TDB day fraction relative to [`jd_whole`](Self::jd_whole).
     #[getter]
-    fn tdb_fraction(&self) -> f64 {
-        self.time_scales().tdb_fraction
+    fn tdb_fraction(&self) -> PyResult<f64> {
+        Ok(self.time_scales()?.tdb_fraction)
     }
 
     /// The two-part TT Julian date (`jd_whole`, `tt_fraction`).
     #[getter]
-    fn tt_jd_split(&self) -> PyJulianDate {
-        let ts = self.time_scales();
-        PyJulianDate {
+    fn tt_jd_split(&self) -> PyResult<PyJulianDate> {
+        let ts = self.time_scales()?;
+        Ok(PyJulianDate {
             whole: ts.jd_whole,
             fraction: ts.tt_fraction,
-        }
+        })
     }
 
     /// The two-part UT1 Julian date (`jd_whole`, `ut1_fraction`).
     #[getter]
-    fn ut1_jd_split(&self) -> PyJulianDate {
-        let ts = self.time_scales();
-        PyJulianDate {
+    fn ut1_jd_split(&self) -> PyResult<PyJulianDate> {
+        let ts = self.time_scales()?;
+        Ok(PyJulianDate {
             whole: ts.jd_whole,
             fraction: ts.ut1_fraction,
-        }
+        })
     }
 
     /// The two-part TDB Julian date (`jd_whole`, `tdb_fraction`).
     #[getter]
-    fn tdb_jd_split(&self) -> PyJulianDate {
-        let ts = self.time_scales();
-        PyJulianDate {
+    fn tdb_jd_split(&self) -> PyResult<PyJulianDate> {
+        let ts = self.time_scales()?;
+        Ok(PyJulianDate {
             whole: ts.jd_whole,
             fraction: ts.tdb_fraction,
-        }
+        })
     }
 
     /// Delta-T (TT minus UT1) in seconds at this instant.
     #[getter]
-    fn delta_t_seconds(&self) -> f64 {
-        let ts = self.time_scales();
-        (ts.tt_fraction - ts.ut1_fraction) * SECONDS_PER_DAY
+    fn delta_t_seconds(&self) -> PyResult<f64> {
+        let ts = self.time_scales()?;
+        Ok((ts.tt_fraction - ts.ut1_fraction) * SECONDS_PER_DAY)
     }
 
     /// IAU mean obliquity of the ecliptic, radians.
     #[getter]
     fn mean_obliquity_radians(&self) -> PyResult<f64> {
-        skyfield_mean_obliquity_radians(self.time_scales().jd_tdb)
+        skyfield_mean_obliquity_radians(self.time_scales()?.jd_tdb)
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
     /// Greenwich Mean Sidereal Time, radians in `[0, 2pi)`.
     fn gmst_radians(&self) -> PyResult<f64> {
-        greenwich_mean_sidereal_time_radians(&self.time_scales())
+        greenwich_mean_sidereal_time_radians(&self.time_scales()?)
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
     /// Greenwich Apparent Sidereal Time, radians in `[0, 2pi)`.
     fn gast_radians(&self) -> PyResult<f64> {
-        greenwich_apparent_sidereal_time_radians(&self.time_scales())
+        greenwich_apparent_sidereal_time_radians(&self.time_scales()?)
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
     /// IAU 2000A nutation in longitude and obliquity `(dpsi, deps)`, radians.
     fn nutation_angles(&self) -> PyResult<(f64, f64)> {
-        skyfield_iau2000a_radians(self.time_scales().jd_tt)
+        skyfield_iau2000a_radians(self.time_scales()?.jd_tt)
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
     /// IAU 2006 precession rotation matrix, as a numpy `(3, 3)` array.
     fn precession_matrix<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let matrix = compute_skyfield_precession_matrix(self.time_scales().jd_tdb)
+        let matrix = compute_skyfield_precession_matrix(self.time_scales()?.jd_tdb)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
         Ok(mat3_to_array(py, &matrix))
     }
 
     /// IAU 2000A nutation rotation matrix, as a numpy `(3, 3)` array.
     fn nutation_matrix<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let ts = self.time_scales();
+        let ts = self.time_scales()?;
         let (dpsi, deps) = skyfield_iau2000a_radians(ts.jd_tt)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
         let mean_ob = skyfield_mean_obliquity_radians(ts.jd_tdb)
@@ -348,11 +354,13 @@ impl PyInstant {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "Instant(unix_micros={}, tt_jd={})",
-            self.unix_micros,
-            self.time_scales().jd_tt
-        )
+        match self.try_time_scales() {
+            Some(ts) => format!(
+                "Instant(unix_micros={}, tt_jd={})",
+                self.unix_micros, ts.jd_tt
+            ),
+            None => format!("Instant(unix_micros={})", self.unix_micros),
+        }
     }
 
     fn __eq__(&self, other: &PyInstant) -> bool {

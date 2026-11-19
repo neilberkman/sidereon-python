@@ -15,12 +15,26 @@ use pyo3::Bound;
 
 use sidereon_core::astro::doppler::{
     doppler_shift as core_doppler_shift, range_rate_and_ratio as core_range_rate_and_ratio,
-    DopplerShift,
+    DopplerError, DopplerShift,
 };
+use sidereon_core::astro::frames::transforms::FrameTransformError;
+use sidereon_core::astro::time::TimeScales;
 
 use crate::frames::PyInstant;
 use crate::marshal::{fixed_array, FinitePolicy};
 use crate::to_solve_err;
+
+fn epoch_time_scales(epoch: &PyInstant) -> PyResult<TimeScales> {
+    epoch
+        .try_time_scales()
+        .ok_or(DopplerError::FrameTransform(
+            FrameTransformError::InvalidInput {
+                field: "datetime",
+                reason: "invalid UTC instant",
+            },
+        ))
+        .map_err(to_solve_err)
+}
 
 /// Range rate, Doppler ratio, and carrier Doppler shift for a satellite-ground
 /// link at one epoch.
@@ -103,13 +117,14 @@ fn range_rate_and_ratio(
         &gcrs_velocity_km_s,
         FinitePolicy::RequireFinite,
     )?;
+    let ts = epoch_time_scales(epoch)?;
     core_range_rate_and_ratio(
         position,
         velocity,
         station_lat_deg,
         station_lon_deg,
         station_alt_km,
-        &epoch.time_scales(),
+        &ts,
     )
     .map_err(to_solve_err)
 }
@@ -148,13 +163,14 @@ fn doppler_shift(
         &gcrs_velocity_km_s,
         FinitePolicy::RequireFinite,
     )?;
+    let ts = epoch_time_scales(epoch)?;
     let shift = core_doppler_shift(
         position,
         velocity,
         station_lat_deg,
         station_lon_deg,
         station_alt_km,
-        &epoch.time_scales(),
+        &ts,
         frequency_hz,
     )
     .map_err(to_solve_err)?;

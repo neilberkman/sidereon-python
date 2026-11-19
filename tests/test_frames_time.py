@@ -325,3 +325,47 @@ def test_transform_errors():
     # Bad calendar field.
     with pytest.raises(ValueError):
         sidereon.Instant.from_utc(2020, 13, 1)
+
+
+def test_extreme_representable_instants_raise_value_error():
+    for extreme in (-(1 << 63), (1 << 63) - 1):
+        inst = sidereon.Instant.from_unix_micros(extreme)
+        assert inst.unix_micros == extreme
+        assert f"unix_micros={extreme}" in repr(inst)
+
+        for getter in (
+            "jd_whole",
+            "tt_jd",
+            "ut1_jd",
+            "tdb_jd",
+            "tt_fraction",
+            "ut1_fraction",
+            "tdb_fraction",
+            "tt_jd_split",
+            "ut1_jd_split",
+            "tdb_jd_split",
+            "delta_t_seconds",
+            "mean_obliquity_radians",
+        ):
+            with pytest.raises(ValueError, match="invalid UTC instant"):
+                getattr(inst, getter)
+
+        for method in (
+            "gmst_radians",
+            "gast_radians",
+            "nutation_angles",
+            "precession_matrix",
+            "nutation_matrix",
+        ):
+            with pytest.raises(ValueError, match="invalid UTC instant"):
+                getattr(inst, method)()
+
+        epochs = np.asarray([extreme], dtype=np.int64)
+        pos = np.tile(SAMPLE_POS, (1, 1))
+        vel = np.tile(SAMPLE_VEL, (1, 1))
+        with pytest.raises(ValueError, match="invalid UTC instant"):
+            sidereon.teme_to_gcrs(pos, vel, epochs)
+        with pytest.raises(ValueError, match="invalid UTC instant"):
+            sidereon.gcrs_to_itrs(pos, epochs)
+        with pytest.raises(ValueError, match="invalid UTC instant"):
+            sidereon.itrs_to_gcrs(pos, epochs)

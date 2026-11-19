@@ -4,6 +4,38 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## Unreleased
 
+## [4.1.0] - 2026-11-19
+
+### Added
+
+- Add `ground_tracks_batch` and `BatchGroundTracks` for batched WGS84
+  sub-satellite ground tracks (`latitude_deg`, `longitude_deg`, `altitude_km`)
+  over a fleet of TLEs and a shared epoch grid, with parallel execution and
+  bit-identical results to `Tle.ground_track`.
+
+### Changed
+
+- Upgrade the underlying Rust engine to `sidereon` / `sidereon-core` 4.1.0.
+- Route `Constellation.look_angle_arcs`, `Constellation.look_angle_arcs_detailed`,
+  `Constellation.ground_tracks`, and `Constellation.ground_tracks_detailed`
+  through the engine's parallel batch look-angle and ground-track paths with the
+  GIL released, sharing epoch frame matrices across satellites in a single native
+  call while keeping exact result shapes and per-satellite error payloads.
+
+### Fixed
+
+- `Instant` time-scale properties and methods, batched frame transforms,
+  `sun_moon_eci`, `sun_moon_ecef`, Doppler and troposphere helpers raise
+  `ValueError` or `SolveError` for instants outside UTC years 0 through 9999
+  instead of a `PanicException`.
+- `coverage_look_angles`, `look_angles_batch`, `ground_tracks_batch`,
+  `Constellation` batch and pass methods, `Tle.find_passes`,
+  `Tle.visibility_series`, `visible_from_satellites`, almanac event searches,
+  ground-site Sun/Moon helpers and `observe_body` report the typed
+  invalid-datetime error (`field="datetime"`, `reason="invalid UTC instant"`)
+  for instants outside UTC years 0 through 9999, instead of panicking,
+  returning an empty pass list, or reporting a time-window error.
+
 ## [4.0.0] - 2026-11-16
 
 ### Added

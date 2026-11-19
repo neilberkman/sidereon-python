@@ -494,6 +494,21 @@ def test_body_observe_and_almanac_events_are_exposed():
     phases = sidereon.moon_phases(_unix_us(2026, 1, 1), _unix_us(2026, 2, 1))
     assert phases
 
+    for extreme in (-(1 << 63), (1 << 63) - 1):
+        with pytest.raises(ValueError, match="invalid UTC instant"):
+            sidereon.observe_body(40.0, -105.0, 1.6, extreme, sidereon.Target.sun())
+
+    with pytest.raises(ValueError, match="invalid UTC instant"):
+        sidereon.seasons(start, (1 << 63) - 1)
+    with pytest.raises(ValueError, match="invalid UTC instant"):
+        sidereon.moon_phases(-(1 << 63), end)
+    with pytest.raises(ValueError, match="invalid UTC instant"):
+        sidereon.lunar_solar_eclipses(start, (1 << 63) - 1)
+    with pytest.raises(ValueError, match="invalid UTC instant"):
+        sidereon.meridian_transits(
+            sidereon.TransitBody.sun(), 40.0, -105.0, 1.6, -(1 << 63), end
+        )
+
 
 # --- Phase B: drag, sampling, terrain, bias, SBAS/SSR, robust FDE ----------
 

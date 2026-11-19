@@ -176,6 +176,87 @@ def test_look_angles_batch_opsmode_enum_matches_string_alias():
     assert _bits_equal(enum_batch.range_km, legacy.range_km)
 
 
+def test_ground_tracks_batch_matches_single_tle_bits():
+    fx = _load_fixture()
+    tles = _tle_pairs(fx)
+    epochs = _epochs_int64(fx)
+    opsmode = fx["opsmode"]
+
+    batch = sidereon.ground_tracks_batch(tles, epochs, opsmode=opsmode, policy=LENIENT)
+
+    n_sats, n_epochs = len(tles), len(epochs)
+    assert batch.satellite_count == n_sats
+    assert batch.epoch_count == n_epochs
+    assert len(batch) == n_sats
+    assert batch.latitude_deg.shape == (n_sats, n_epochs)
+    assert batch.longitude_deg.shape == (n_sats, n_epochs)
+    assert batch.altitude_km.shape == (n_sats, n_epochs)
+    assert "BatchGroundTracks(" in repr(batch)
+
+    for i, (line1, line2) in enumerate(tles):
+        ref = sidereon.Tle(line1, line2, opsmode=opsmode, policy=LENIENT).ground_track(
+            epochs
+        )
+        lat = np.asarray([np.degrees(g.lat_rad) for g in ref], dtype=np.float64)
+        lon = np.asarray([np.degrees(g.lon_rad) for g in ref], dtype=np.float64)
+        alt = np.asarray([g.height_m / 1000.0 for g in ref], dtype=np.float64)
+        assert _bits_equal(batch.latitude_deg[i], lat)
+        assert _bits_equal(batch.longitude_deg[i], lon)
+        assert _bits_equal(batch.altitude_km[i], alt)
+
+
+def test_ground_tracks_batch_parallel_equals_serial_bits():
+    fx = _load_fixture()
+    tles = _tle_pairs(fx)
+    epochs = _epochs_int64(fx)
+    opsmode = fx["opsmode"]
+
+    parallel = sidereon.ground_tracks_batch(
+        tles, epochs, opsmode=opsmode, parallel=True, policy=LENIENT
+    )
+    serial = sidereon.ground_tracks_batch(
+        tles, epochs, opsmode=opsmode, parallel=False, policy=LENIENT
+    )
+
+    assert _bits_equal(parallel.latitude_deg, serial.latitude_deg)
+    assert _bits_equal(parallel.longitude_deg, serial.longitude_deg)
+    assert _bits_equal(parallel.altitude_km, serial.altitude_km)
+
+
+def test_ground_tracks_batch_opsmode_enum_matches_string_alias():
+    fx = _load_fixture()
+    tles = _tle_pairs(fx)
+    epochs = _epochs_int64(fx)
+
+    legacy = sidereon.ground_tracks_batch(
+        tles, epochs, opsmode=fx["opsmode"], policy=LENIENT
+    )
+    enum_batch = sidereon.ground_tracks_batch(
+        tles, epochs, opsmode=_opsmode(fx["opsmode"]), policy=LENIENT
+    )
+
+    assert _bits_equal(enum_batch.latitude_deg, legacy.latitude_deg)
+    assert _bits_equal(enum_batch.longitude_deg, legacy.longitude_deg)
+    assert _bits_equal(enum_batch.altitude_km, legacy.altitude_km)
+
+
+def test_batch_look_angles_and_ground_tracks_reject_out_of_range_instants():
+    fx = _load_fixture()
+    tles = _tle_pairs(fx)[:2]
+    station = sidereon.GroundStation(latitude_deg=40.0, longitude_deg=-105.0)
+    msg = "invalid look-angle input datetime: invalid UTC instant"
+    for extreme in (-(1 << 63), (1 << 63) - 1):
+        epochs = np.asarray([extreme], dtype=np.int64)
+        with pytest.raises(sidereon.SolveError, match=msg):
+            sidereon.look_angles_batch(
+                tles, station, epochs, opsmode=fx["opsmode"], policy=LENIENT
+            )
+        with pytest.raises(sidereon.SolveError, match=msg):
+            sidereon.ground_tracks_batch(
+                tles, epochs, opsmode=fx["opsmode"], policy=LENIENT
+            )
+
+
 def test_empty_fleet_returns_empty_batches():
     fx = _load_fixture()
     epochs = _epochs_int64(fx)
@@ -183,6 +264,7 @@ def test_empty_fleet_returns_empty_batches():
 
     prop = sidereon.propagate_batch([], epochs)
     looks = sidereon.look_angles_batch([], station, epochs)
+    tracks = sidereon.ground_tracks_batch([], epochs)
 
     assert prop.satellite_count == 0
     assert prop.epoch_count == len(epochs)
@@ -193,6 +275,11 @@ def test_empty_fleet_returns_empty_batches():
     assert looks.azimuth_deg.shape == (0, len(epochs))
     assert looks.elevation_deg.shape == (0, len(epochs))
     assert looks.range_km.shape == (0, len(epochs))
+    assert tracks.satellite_count == 0
+    assert tracks.epoch_count == len(epochs)
+    assert tracks.latitude_deg.shape == (0, len(epochs))
+    assert tracks.longitude_deg.shape == (0, len(epochs))
+    assert tracks.altitude_km.shape == (0, len(epochs))
 
 
 def test_empty_epochs_return_empty_batches():
@@ -203,6 +290,7 @@ def test_empty_epochs_return_empty_batches():
 
     prop = sidereon.propagate_batch(tles, epochs, policy=LENIENT)
     looks = sidereon.look_angles_batch(tles, station, epochs, policy=LENIENT)
+    tracks = sidereon.ground_tracks_batch(tles, epochs, policy=LENIENT)
 
     assert prop.satellite_count == len(tles)
     assert prop.epoch_count == 0
@@ -213,6 +301,11 @@ def test_empty_epochs_return_empty_batches():
     assert looks.azimuth_deg.shape == (len(tles), 0)
     assert looks.elevation_deg.shape == (len(tles), 0)
     assert looks.range_km.shape == (len(tles), 0)
+    assert tracks.satellite_count == len(tles)
+    assert tracks.epoch_count == 0
+    assert tracks.latitude_deg.shape == (len(tles), 0)
+    assert tracks.longitude_deg.shape == (len(tles), 0)
+    assert tracks.altitude_km.shape == (len(tles), 0)
 
 
 def test_bad_tle_in_fleet_raises_with_index():

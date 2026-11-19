@@ -3,7 +3,7 @@
 //! Marshals a unix-microsecond UTC epoch array into the core's analytic
 //! ephemerides ([`sidereon_core::astro::bodies`]) and packages the per-epoch
 //! Sun/Moon vectors as numpy `(n, 3)` arrays. No modeling lives here: each epoch's
-//! precise time scales come from the parity-critical [`UtcInstant::time_scales`]
+//! precise time scales come from the [`UtcInstant::try_time_scales`]
 //! path and the positions are exactly `sun_moon_eci_at` / `sun_moon_ecef`, so the
 //! numbers are bit-identical to what `sidereon-core` produces. The per-epoch loop
 //! runs inside Rust, so the call crosses the FFI boundary once.

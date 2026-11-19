@@ -208,3 +208,38 @@ def test_below_horizon_slant_saturates_to_zero():
             DOY28_EPOCH_US,
         )
         assert slant == 0.0
+
+
+def test_tropo_out_of_range_instant_raises_value_error_with_detail():
+    c = _zenith_case()
+    for extreme in (-(1 << 63), (1 << 63) - 1):
+        with pytest.raises(
+            ValueError,
+            match="invalid frame transform datetime: invalid UTC instant",
+        ) as exc:
+            sidereon.tropo_mapping_factors(
+                math.radians(30.0), _inp(c, "lat_rad"), _inp(c, "height_m"), extreme
+            )
+        assert exc.value.detail == {
+            "family": "FrameTransformError",
+            "kind": "invalid_input",
+            "message": "invalid frame transform datetime: invalid UTC instant",
+            "field": "datetime",
+            "reason": "invalid UTC instant",
+        }
+        with pytest.raises(
+            ValueError,
+            match="invalid frame transform datetime: invalid UTC instant",
+        ) as slant_exc:
+            sidereon.tropo_slant_delay(
+                math.radians(30.0),
+                _inp(c, "lat_rad"),
+                _inp(c, "lon_rad"),
+                _inp(c, "height_m"),
+                _inp(c, "pressure_hpa"),
+                _inp(c, "temperature_k"),
+                _inp(c, "relative_humidity"),
+                extreme,
+            )
+        assert slant_exc.value.detail["field"] == "datetime"
+        assert slant_exc.value.detail["reason"] == "invalid UTC instant"
