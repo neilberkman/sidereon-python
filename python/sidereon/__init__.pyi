@@ -8141,6 +8141,22 @@ class BatchLookAngles:
     def __len__(self) -> int: ...
     def __repr__(self) -> str: ...
 
+class BatchGroundTracks:
+    """Batched WGS84 ground tracks `(n_satellites, n_epochs)`, degrees and km."""
+
+    @property
+    def latitude_deg(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def longitude_deg(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def altitude_km(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def satellite_count(self) -> int: ...
+    @property
+    def epoch_count(self) -> int: ...
+    def __len__(self) -> int: ...
+    def __repr__(self) -> str: ...
+
 class VisibleSatellite:
     """One satellite above a ground station's horizon at an instant.
 
@@ -9090,6 +9106,14 @@ def look_angles_batch(
     parallel: bool = ...,
     policy: TlePolicy = ...,
 ) -> BatchLookAngles: ...
+def ground_tracks_batch(
+    tles: Sequence[tuple[str, str]],
+    epochs_unix_us: npt.NDArray[np.int64],
+    *,
+    opsmode: OpsMode = ...,
+    parallel: bool = ...,
+    policy: TlePolicy = ...,
+) -> BatchGroundTracks: ...
 def propagate_state(
     epoch_s: float,
     position_km: npt.NDArray[np.float64],

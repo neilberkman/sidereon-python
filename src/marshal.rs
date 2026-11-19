@@ -441,10 +441,16 @@ pub(crate) fn time_scales_from_unix_micros(
     empty: EmptyPolicy,
 ) -> PyResult<Vec<TimeScales>> {
     let micros = unix_microseconds_slice(epochs_unix_us, empty)?;
-    Ok(micros
+    micros
         .iter()
-        .map(|&us| UtcInstant::from_unix_microseconds(us).time_scales())
-        .collect())
+        .map(|&us| {
+            UtcInstant::from_unix_microseconds(us)
+                .try_time_scales()
+                .ok_or_else(|| {
+                    PyValueError::new_err("invalid frame transform datetime: invalid UTC instant")
+                })
+        })
+        .collect()
 }
 
 pub(crate) fn instants_from_unix_micros(

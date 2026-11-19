@@ -88,7 +88,19 @@ fn time_model_error(error: TimeModelError) -> PyErr {
 /// scale tag is immaterial to the day-of-year, so the engine's resolved JD split
 /// is used directly.
 fn instant_from_unix_micros(epoch_unix_us: i64) -> PyResult<Instant> {
-    let scales = UtcInstant::from_unix_microseconds(epoch_unix_us).time_scales();
+    let scales = UtcInstant::from_unix_microseconds(epoch_unix_us)
+        .try_time_scales()
+        .ok_or_else(|| {
+            let message = "invalid frame transform datetime: invalid UTC instant";
+            attach_typed_input_detail(
+                PyValueError::new_err(message),
+                "FrameTransformError",
+                "invalid_input",
+                message,
+                Some("datetime"),
+                Some("invalid UTC instant"),
+            )
+        })?;
     let split =
         JulianDateSplit::new(scales.jd_whole, scales.tt_fraction).map_err(time_model_error)?;
     Ok(Instant::from_julian_date(TimeScale::Tt, split))

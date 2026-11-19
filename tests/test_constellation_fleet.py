@@ -349,3 +349,41 @@ def test_empty_constellation_and_empty_grid():
     batch = const.propagate(no_epochs)
     assert batch.satellite_count == len(fx["tles"])
     assert batch.epoch_count == 0
+
+
+def test_out_of_range_instants_report_typed_invalid_datetime_detail():
+    fx = _load_fixture()
+    tles = _tles(fx)
+    epochs = _epochs(fx)
+    const = sidereon.Constellation(tles)
+    station = _station()
+    valid_start = int(epochs[0])
+    valid_end = int(epochs[-1])
+    expected_error = {
+        "kind": "invalid_input",
+        "fields": {"field": "datetime", "reason": "invalid UTC instant"},
+    }
+
+    for extreme in (-(1 << 63), (1 << 63) - 1):
+        grid = np.asarray([extreme], dtype=np.int64)
+        look_outcomes = const.look_angle_arcs_detailed(station, grid)
+        assert all(row["value"] is None for row in look_outcomes)
+        assert all(row["error"] == expected_error for row in look_outcomes)
+
+        track_outcomes = const.ground_tracks_detailed(grid)
+        assert all(row["value"] is None for row in track_outcomes)
+        assert all(row["error"] == expected_error for row in track_outcomes)
+
+        with pytest.raises(
+            sidereon.SolveError,
+            match="invalid pass input datetime: invalid UTC instant",
+        ):
+            const.visible(station, extreme)
+
+    end_oob = const.passes_detailed(station, valid_start, (1 << 63) - 1)
+    assert all(row["value"] is None for row in end_oob)
+    assert all(row["error"] == expected_error for row in end_oob)
+
+    start_oob = const.passes_detailed(station, -(1 << 63), valid_end)
+    assert all(row["value"] is None for row in start_oob)
+    assert all(row["error"] == expected_error for row in start_oob)

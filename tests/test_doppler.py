@@ -9,6 +9,7 @@ caught.
 """
 
 import numpy as np
+import pytest
 import sidereon
 
 # Matches the core doppler oracle test state.
@@ -73,3 +74,31 @@ def test_doppler_quantities_are_physical():
     # Receding (positive range rate) means approaching is false: the ratio is the
     # negated range rate over c, so the signs are opposite.
     assert np.sign(shift.doppler_ratio) == -np.sign(shift.range_rate_km_s)
+
+
+def test_doppler_out_of_range_instant_raises_solve_error():
+    msg = (
+        "doppler frame transform failed: "
+        "invalid frame transform datetime: invalid UTC instant"
+    )
+    for extreme in (-(1 << 63), (1 << 63) - 1):
+        epoch = sidereon.Instant.from_unix_micros(extreme)
+        with pytest.raises(sidereon.SolveError, match=msg):
+            sidereon.range_rate_and_ratio(
+                GCRS_POS_KM,
+                GCRS_VEL_KM_S,
+                STATION_LAT_DEG,
+                STATION_LON_DEG,
+                STATION_ALT_KM,
+                epoch,
+            )
+        with pytest.raises(sidereon.SolveError, match=msg):
+            sidereon.doppler_shift(
+                GCRS_POS_KM,
+                GCRS_VEL_KM_S,
+                STATION_LAT_DEG,
+                STATION_LON_DEG,
+                STATION_ALT_KM,
+                epoch,
+                FREQUENCY_HZ,
+            )

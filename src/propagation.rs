@@ -17,9 +17,9 @@ use sidereon::astro::forces::TideSystem;
 use sidereon::astro::forces::{SolidEarthPoleTideGravity, SolidEarthTideGravity};
 use sidereon::geometry::visible_at_elevation_mask;
 use sidereon::passes::{
-    find_passes_for_satellite, ground_track as core_ground_track, look_angle_arc,
-    look_angle_batch_parallel, look_angle_batch_serial, propagate_teme_arc,
-    propagate_teme_batch_parallel, propagate_teme_batch_serial,
+    find_passes_for_satellite, ground_track as core_ground_track, ground_track_batch_parallel,
+    ground_track_batch_serial, look_angle_arc, look_angle_batch_parallel, look_angle_batch_serial,
+    propagate_teme_arc, propagate_teme_batch_parallel, propagate_teme_batch_serial,
     visible_from_satellites as core_visible_from_satellites, GroundStation, PassFinderOptions,
     UtcInstant, VisibleSatellite,
 };
@@ -2799,6 +2799,66 @@ impl PyBatchLookAngles {
     }
 }
 
+/// Sub-satellite WGS84 ground tracks for a batch of satellites over a shared
+/// epoch grid: `latitude_deg`, `longitude_deg`, and `altitude_km`, each a
+/// numpy `float64` array of shape `(n_satellites, n_epochs)`. Row `i`
+/// corresponds to input TLE `i`.
+#[pyclass(module = "sidereon._sidereon", name = "BatchGroundTracks")]
+pub struct PyBatchGroundTracks {
+    epoch_count: usize,
+    latitude_deg: Vec<Vec<f64>>,
+    longitude_deg: Vec<Vec<f64>>,
+    altitude_km: Vec<Vec<f64>>,
+}
+
+#[pymethods]
+impl PyBatchGroundTracks {
+    /// Geodetic latitude of the sub-satellite point, degrees north, shape
+    /// `(n_satellites, n_epochs)`.
+    #[getter]
+    fn latitude_deg<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        scalar_rows_to_array2(py, &self.latitude_deg, self.epoch_count)
+    }
+
+    /// Geodetic longitude of the sub-satellite point, degrees east in
+    /// `[-180, 180]`, shape `(n_satellites, n_epochs)`.
+    #[getter]
+    fn longitude_deg<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        scalar_rows_to_array2(py, &self.longitude_deg, self.epoch_count)
+    }
+
+    /// Ellipsoidal height above the WGS84 ellipsoid, kilometres, shape
+    /// `(n_satellites, n_epochs)`.
+    #[getter]
+    fn altitude_km<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        scalar_rows_to_array2(py, &self.altitude_km, self.epoch_count)
+    }
+
+    /// Number of satellites in the batch.
+    #[getter]
+    fn satellite_count(&self) -> usize {
+        self.latitude_deg.len()
+    }
+
+    /// Number of epochs each satellite was evaluated over.
+    #[getter]
+    fn epoch_count(&self) -> usize {
+        self.epoch_count
+    }
+
+    fn __len__(&self) -> usize {
+        self.latitude_deg.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BatchGroundTracks(satellite_count={}, epoch_count={})",
+            self.latitude_deg.len(),
+            self.epoch_count
+        )
+    }
+}
+
 /// Build a satellite per `(line1, line2)` pair, parsed once with the GIL held so
 /// the rayon compute window touches no Python objects. A parse/init failure
 /// names the offending index. Empty fleets are valid and return empty batches.
@@ -2928,6 +2988,56 @@ fn look_angles_batch(
         range_km: arcs
             .iter()
             .map(|arc| arc.iter().map(|l| l.range_km).collect())
+            .collect(),
+    })
+}
+
+/// Sub-satellite WGS84 ground tracks for a fleet of TLEs over a shared epoch
+/// grid, releasing the GIL for the whole compute.
+///
+/// Same input/threading contract as [`propagate_batch`] and
+/// [`look_angles_batch`]: `tles` parsed with the GIL held, then the rayon
+/// ground-track batch runs inside `Python::allow_threads` (`parallel=True` by
+/// default), bit-identical to the serial path. Returns a [`BatchGroundTracks`]
+/// with `(n_satellites, n_epochs)` geodetic latitude/longitude (degrees) and
+/// altitude (kilometres) arrays.
+#[pyfunction]
+#[pyo3(signature = (tles, epochs_unix_us, *, opsmode=PyOpsMode::AFSPC, parallel=true, policy=PyTlePolicy::STRICT))]
+fn ground_tracks_batch(
+    py: Python<'_>,
+    tles: Vec<(String, String)>,
+    epochs_unix_us: PyReadonlyArray1<'_, i64>,
+    #[pyo3(from_py_with = extract_opsmode)] opsmode: PyOpsMode,
+    parallel: bool,
+    policy: PyTlePolicy,
+) -> PyResult<PyBatchGroundTracks> {
+    let mode = CoreOpsMode::from(opsmode);
+    let satellites = build_satellites(&tles, mode, policy)?;
+    let instants = instants_from_unix_micros(&epochs_unix_us, EmptyPolicy::Allow)?;
+    let epoch_count = instants.len();
+
+    let results = py.allow_threads(move || {
+        if parallel {
+            ground_track_batch_parallel(&satellites, &instants)
+        } else {
+            ground_track_batch_serial(&satellites, &instants)
+        }
+    });
+
+    let tracks = unwrap_batch(results)?;
+    Ok(PyBatchGroundTracks {
+        epoch_count,
+        latitude_deg: tracks
+            .iter()
+            .map(|track| track.iter().map(|g| g.lat_rad.to_degrees()).collect())
+            .collect(),
+        longitude_deg: tracks
+            .iter()
+            .map(|track| track.iter().map(|g| g.lon_rad.to_degrees()).collect())
+            .collect(),
+        altitude_km: tracks
+            .iter()
+            .map(|track| track.iter().map(|g| g.height_m / 1000.0).collect())
             .collect(),
     })
 }
@@ -3203,11 +3313,15 @@ impl PyConstellation {
     /// [`Tle.look_angles`].
     fn look_angle_arcs(
         &self,
+        py: Python<'_>,
         station: PyGroundStation,
         epochs_unix_us: PyReadonlyArray1<'_, i64>,
     ) -> PyResult<Vec<PyLookAngles>> {
         let instants = instants_from_unix_micros(&epochs_unix_us, EmptyPolicy::Allow)?;
-        let results = look_angle_batch_serial(&self.satellites, station.inner, &instants);
+        let ground_station = station.inner;
+        let satellites = &self.satellites;
+        let results =
+            py.allow_threads(|| look_angle_batch_parallel(satellites, ground_station, &instants));
         Ok(results
             .into_iter()
             .map(|arc| match arc {
@@ -3236,7 +3350,9 @@ impl PyConstellation {
         epochs_unix_us: PyReadonlyArray1<'_, i64>,
     ) -> PyResult<Vec<Bound<'py, PyDict>>> {
         let instants = instants_from_unix_micros(&epochs_unix_us, EmptyPolicy::Allow)?;
-        look_angle_batch_serial(&self.satellites, station.inner, &instants)
+        let ground_station = station.inner;
+        let satellites = &self.satellites;
+        py.allow_threads(|| look_angle_batch_parallel(satellites, ground_station, &instants))
             .into_iter()
             .enumerate()
             .map(|(satellite_index, result)| {
@@ -3282,13 +3398,15 @@ impl PyConstellation {
     /// index-aligned with the constellation.
     fn ground_tracks(
         &self,
+        py: Python<'_>,
         epochs_unix_us: PyReadonlyArray1<'_, i64>,
     ) -> PyResult<Vec<PyGroundTrack>> {
         let instants = instants_from_unix_micros(&epochs_unix_us, EmptyPolicy::Allow)?;
-        Ok(self
-            .satellites
-            .iter()
-            .map(|satellite| match core_ground_track(satellite, &instants) {
+        let satellites = &self.satellites;
+        let results = py.allow_threads(|| ground_track_batch_parallel(satellites, &instants));
+        Ok(results
+            .into_iter()
+            .map(|track| match track {
                 Ok(points) => PyGroundTrack {
                     latitude_deg: points.iter().map(|g| g.lat_rad.to_degrees()).collect(),
                     longitude_deg: points.iter().map(|g| g.lon_rad.to_degrees()).collect(),
@@ -3311,13 +3429,14 @@ impl PyConstellation {
         epochs_unix_us: PyReadonlyArray1<'_, i64>,
     ) -> PyResult<Vec<Bound<'py, PyDict>>> {
         let instants = instants_from_unix_micros(&epochs_unix_us, EmptyPolicy::Allow)?;
-        self.satellites
-            .iter()
+        let satellites = &self.satellites;
+        py.allow_threads(|| ground_track_batch_parallel(satellites, &instants))
+            .into_iter()
             .enumerate()
-            .map(|(satellite_index, satellite)| {
+            .map(|(satellite_index, result)| {
                 let outcome = PyDict::new(py);
                 outcome.set_item("satellite_index", satellite_index)?;
-                match core_ground_track(satellite, &instants) {
+                match result {
                     Ok(points) => {
                         let value = PyDict::new(py);
                         value.set_item(
@@ -3545,6 +3664,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEphemeris>()?;
     m.add_class::<PyBatchPropagation>()?;
     m.add_class::<PyBatchLookAngles>()?;
+    m.add_class::<PyBatchGroundTracks>()?;
     m.add_class::<PyVisibleSatellite>()?;
     m.add_class::<PyGroundTrack>()?;
     m.add_class::<PyFleetPass>()?;
@@ -3554,6 +3674,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(propagate_state, m)?)?;
     m.add_function(wrap_pyfunction!(propagate_batch, m)?)?;
     m.add_function(wrap_pyfunction!(look_angles_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(ground_tracks_batch, m)?)?;
     m.add_function(wrap_pyfunction!(visible_from_satellites, m)?)?;
     Ok(())
 }

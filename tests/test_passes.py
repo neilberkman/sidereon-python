@@ -304,3 +304,28 @@ def test_visibility_series_rejects_non_increasing_grid():
     epochs = np.asarray([fx["window"]["start_unix_us"]] * 2, dtype=np.int64)
     with pytest.raises(ValueError):
         tle.visibility_series(station, epochs)
+
+
+def test_find_passes_rejects_out_of_range_instants():
+    fx = _load_fixture()
+    tle, station = _tle_and_station(fx)
+    valid_start = fx["window"]["start_unix_us"]
+    valid_end = fx["window"]["end_unix_us"]
+
+    with pytest.raises(
+        sidereon.SolveError, match="invalid pass input datetime: invalid UTC instant"
+    ):
+        tle.find_passes(station, valid_start, (1 << 63) - 1)
+
+    with pytest.raises(
+        sidereon.SolveError, match="invalid pass input datetime: invalid UTC instant"
+    ):
+        tle.find_passes(station, -(1 << 63), valid_end)
+
+    with pytest.raises(
+        sidereon.SolveError,
+        match="invalid look-angle input datetime: invalid UTC instant",
+    ):
+        tle.visibility_series(
+            station, np.asarray([-(1 << 63), valid_end], dtype=np.int64)
+        )

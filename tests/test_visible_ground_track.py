@@ -169,3 +169,14 @@ def test_ground_track_empty_epochs_returns_empty():
     tle = sidereon.Tle(_ISS_L1, _ISS_L2)
     track = tle.ground_track(np.asarray([], dtype=np.int64))
     assert track == []
+
+
+def test_visible_from_satellites_rejects_out_of_range_instant():
+    tle = sidereon.Tle(_ISS_L1, _ISS_L2)
+    st = _station()
+    for extreme in (-(1 << 63), (1 << 63) - 1):
+        with pytest.raises(
+            sidereon.SolveError,
+            match="invalid pass input datetime: invalid UTC instant",
+        ):
+            sidereon.visible_from_satellites([tle], ["ISS"], st, extreme)

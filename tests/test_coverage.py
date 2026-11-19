@@ -121,3 +121,15 @@ def test_indexed_cell_error_retains_strict_ut1_refusal():
             }
         },
     }
+
+
+def test_indexed_cell_error_retains_invalid_utc_instant():
+    for extreme in (-(1 << 63), (1 << 63) - 1):
+        grid = sidereon.coverage_look_angles(_tles(), _stations()[:1], extreme)
+        assert np.isnan(grid.azimuth_deg()).all()
+        assert np.isnan(grid.elevation_deg()).all()
+        assert np.isnan(grid.range_km()).all()
+        assert grid.cell_error(0, 0) == {
+            "kind": "invalid_input",
+            "fields": {"field": "datetime", "reason": "invalid UTC instant"},
+        }

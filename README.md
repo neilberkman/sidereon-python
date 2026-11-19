@@ -18,7 +18,7 @@ install.
 ## Install
 
 ```
-pip install sidereon==4.0.0
+pip install sidereon==4.1.0
 ```
 
 ```python
@@ -168,8 +168,10 @@ The Python package mirrors the full breadth of the engine.
   composable force model (spherical-harmonic geopotential to selectable degree
   and order, Sun/Moon third-body, solar radiation pressure, relativistic
   correction, atmospheric drag) and orbital-decay estimation with a post-decay
-  validity latch, batch and constellation arcs, pass prediction,
-  look angles, and coverage analysis.
+  validity latch, batch and constellation arcs (`propagate_batch`,
+  `look_angles_batch`, `ground_tracks_batch` returning `BatchGroundTracks`, and
+  `Constellation`), pass prediction, look angles, ground tracks, and coverage
+  analysis.
 - **Orbital mechanics:** classical, equinoctial, and modified equinoctial
   elements, anomaly conversions and Kepler propagation, Lambert transfers,
   initial orbit determination (IOD), batch least-squares orbit fitting against

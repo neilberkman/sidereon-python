@@ -332,6 +332,7 @@ from ._sidereon import (
     Ephemeris,
     BatchPropagation,
     BatchLookAngles,
+    BatchGroundTracks,
     VisibleSatellite,
     GroundTrack,
     FleetPass,
@@ -507,6 +508,7 @@ from ._sidereon import (
     propagate_state,
     propagate_batch,
     look_angles_batch,
+    ground_tracks_batch,
     visible_from_satellites,
     teme_to_gcrs,
     gcrs_to_itrs,
@@ -2026,6 +2028,7 @@ __all__ = [
     "Ephemeris",
     "BatchPropagation",
     "BatchLookAngles",
+    "BatchGroundTracks",
     "VisibleSatellite",
     "GroundTrack",
     "FleetPass",
@@ -2286,6 +2289,7 @@ __all__ = [
     "propagate_state",
     "propagate_batch",
     "look_angles_batch",
+    "ground_tracks_batch",
     "visible_from_satellites",
     "teme_to_gcrs",
     "gcrs_to_itrs",
@@ -3450,4 +3454,4 @@ try:
 
     __version__ = _pkg_version("sidereon")
 except Exception:  # package metadata unavailable (e.g. running from a source tree)
-    __version__ = "4.0.0"
+    __version__ = "4.1.0"
