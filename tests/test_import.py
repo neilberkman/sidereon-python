@@ -1,14 +1,18 @@
 """The package imports and exposes its public surface."""
 
 from importlib.metadata import version
+from pathlib import Path
 
 import sidereon
+import tomllib
 
 
 def test_import_and_surface():
     # __version__ tracks the installed package metadata (single source of truth),
     # so this does not need editing on every release bump.
     assert sidereon.__version__ == version("sidereon")
+    with (Path(__file__).resolve().parents[1] / "pyproject.toml").open("rb") as handle:
+        assert sidereon.__version__ == tomllib.load(handle)["project"]["version"]
     for name in (
         "load_sp3",
         "load_antex",

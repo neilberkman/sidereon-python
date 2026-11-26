@@ -18,7 +18,7 @@ install.
 ## Install
 
 ```
-pip install sidereon==4.1.0
+pip install sidereon==4.2.0
 ```
 
 ```python

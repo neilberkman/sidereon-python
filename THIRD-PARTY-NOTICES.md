@@ -330,9 +330,9 @@ endorsed by the IERS Conventions Center. The Rust source describes the origin,
 the renamed routines, and the differences from the Fortran implementation.
 The complete non-test tide source distributed in the compiled extension is
 included under
-`third_party_source/sidereon-core-4.1.0/tides/` in wheels and source
-distributions. These files match sidereon-core 4.1.0 at commit 012c6c38ea054b61293e83fc95ac60ff6d11fb8b.
-Source: [sidereon-core tides at the pinned commit](https://github.com/neilberkman/sidereon/tree/012c6c38ea054b61293e83fc95ac60ff6d11fb8b/crates/sidereon-core/src/tides).
+`third_party_source/sidereon-core-4.2.0/tides/` in wheels and source
+distributions. These files match sidereon-core 4.2.0 at commit 17b493fe8cf6d1b45ecc0982e7d594b88cdd2b7b.
+Source: [sidereon-core tides at the pinned commit](https://github.com/neilberkman/sidereon/tree/17b493fe8cf6d1b45ecc0982e7d594b88cdd2b7b/crates/sidereon-core/src/tides).
 The authoritative original is available from:
 
 <https://iers-conventions.obspm.fr/content/chapter7/software/dehanttideinel/DEHANTTIDEINEL.F>
