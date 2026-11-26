@@ -1,6 +1,6 @@
 {
   "source": "scripts/core_goldens",
-  "core_revision": "3c61740f5e3d71f930ce40a6504fc9ce320c0fa7",
+  "core_revision": "17b493fe8cf6d1b45ecc0982e7d594b88cdd2b7b",
   "orbital_dynamics": {
     "celestial": {
       "sun_moon": [
@@ -2361,6 +2361,14 @@
           "0x401d31dabbcf84f6",
           "0x3fe8805ea1b09dd0"
         ]
+      ],
+      "dense_coverage": [
+        "0x0000000000000000",
+        "0x4072c00000000000"
+      ],
+      "backward_dense_coverage": [
+        "0xc072c00000000000",
+        "0x0000000000000000"
       ],
       "dense_first_step_end": "0x402da1ca20a34e2b",
       "final_state": [

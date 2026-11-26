@@ -2,7 +2,7 @@
 
 All notable changes to the Sidereon Python interface are documented here.
 
-## Unreleased
+## [4.2.0] - 2026-11-26
 
 ### Added
 
@@ -31,6 +31,7 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ### Fixed
 
+- `GnssAttitudeLaw.variant` raises `ValueError` for unsupported variants.
 - `estimate_decay` and `SourcedDragForce.acceleration` include typed details
   on their `ValueError` exceptions.
 - Force evaluations return finite values or typed errors, validate the inputs
@@ -38,6 +39,7 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ### Changed
 
+- Upgrade the underlying Rust engine to `sidereon` / `sidereon-core` 4.2.0.
 - Numerical integration uses elapsed TT and drag uses UT1. Solar radiation
   pressure defaults to apparent-disc occultation with a WGS84 oblate Earth
   and lunar eclipses.
