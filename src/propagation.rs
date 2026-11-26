@@ -8,6 +8,8 @@
 //! so the numbers are exactly what the engine produces. Epochs cross the FFI
 //! boundary once as a 1-D `int64` array of unix microseconds.
 
+use std::sync::Arc;
+
 use numpy::{PyArray1, PyArray2, PyArray3, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -43,15 +45,25 @@ use sidereon::{
 };
 use sidereon_core::astro::passes::PassError as CorePassError;
 
+use crate::earth_orientation::PyPropagationContext;
+use crate::eclipse::PyShadowFunction;
+use crate::events::PyEarthShadowModel;
 use crate::events::PyWgs84Geodetic;
+use crate::force_models::{force_object, PyEarthRadiationPressure};
+use crate::force_models::{
+    propagation_error, with_context, PyAccelerationPartials, PyForceParameter,
+};
 use crate::forces::PyDragParameters;
 use crate::marshal::{
     fixed_array, instants_from_unix_micros, rows3_to_array, rows6_to_array, scalar_rows_to_array2,
     unix_microseconds_slice, vec3_rows_to_array3, EmptyPolicy, FinitePolicy,
 };
 use crate::omm::PyOmm;
+use crate::relative::PyCartesianState;
 use crate::space_weather::PySpaceWeatherTable;
 use crate::{to_solve_err, to_tle_err, SolveError, TleParseError};
+use sidereon_core::astro::error::PropagationError;
+use sidereon_core::astro::forces::ForceModel as CoreForceModel;
 
 /// The split Julian date `Tle.propagate` propagates at for a unix-microsecond
 /// instant: the core's, Skyfield 1.54's split for that UTC instant.
@@ -203,6 +215,10 @@ impl PyForceModel {
         }
     }
 
+    pub(crate) fn core_force(self) -> Result<Box<dyn CoreForceModel>, PropagationError> {
+        self.to_kind(None).build()
+    }
+
     fn to_kind(self, mu_km3_s2: Option<f64>) -> ForceModelKind {
         match self {
             PyForceModel::TWO_BODY => match mu_km3_s2 {
@@ -227,6 +243,89 @@ impl PyForceModel {
 
 #[pymethods]
 impl PyForceModel {
+    /// Estimable parameters in gravity model order.
+    fn parameters(&self) -> PyResult<Vec<PyForceParameter>> {
+        Ok(self
+            .core_force()
+            .map_err(propagation_error)?
+            .parameters()
+            .into_iter()
+            .map(PyForceParameter)
+            .collect())
+    }
+
+    /// Number of estimable parameters.
+    fn parameter_count(&self) -> PyResult<usize> {
+        Ok(self
+            .core_force()
+            .map_err(propagation_error)?
+            .parameter_count())
+    }
+
+    /// Evaluate the gravitational acceleration in kilometres per square second.
+    #[pyo3(signature = (state, context=None))]
+    fn acceleration(
+        &self,
+
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<[f64; 3]> {
+        let force = self.core_force().map_err(propagation_error)?;
+        with_context(context, |context| {
+            force.acceleration(state.inner(), context)
+        })
+        .map(Into::into)
+        .map_err(propagation_error)
+    }
+
+    /// Evaluate gravitational acceleration with replacement parameter values.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn acceleration_with_parameters(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<[f64; 3]> {
+        let force = self.core_force().map_err(propagation_error)?;
+        with_context(context, |context| {
+            force.acceleration_with_parameters(&parameters, state.inner(), context)
+        })
+        .map(Into::into)
+        .map_err(propagation_error)
+    }
+
+    /// Evaluate the gravitational acceleration derivative blocks.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn acceleration_partials(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<PyAccelerationPartials> {
+        let force = self.core_force().map_err(propagation_error)?;
+        with_context(context, |context| {
+            force.acceleration_partials(&parameters, state.inner(), context)
+        })
+        .map(PyAccelerationPartials)
+        .map_err(propagation_error)
+    }
+
+    /// Evaluate one gravitational acceleration derivative per parameter.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn parameter_partials(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<Vec<[f64; 3]>> {
+        let force = self.core_force().map_err(propagation_error)?;
+        with_context(context, |context| {
+            force.parameter_partials(&parameters, state.inner(), context)
+        })
+        .map(|values| values.into_iter().map(Into::into).collect())
+        .map_err(propagation_error)
+    }
+
     /// Stable lowercase selector accepted as a string alias.
     #[getter]
     fn label(&self) -> &'static str {
@@ -255,7 +354,7 @@ pub(crate) fn extract_force_model(obj: &Bound<'_, PyAny>) -> PyResult<PyForceMod
 #[pyclass(module = "sidereon._sidereon", name = "SolarRadiationPressure")]
 #[derive(Clone, Copy)]
 pub struct PySolarRadiationPressure {
-    inner: SolarRadiationPressure,
+    pub(crate) inner: SolarRadiationPressure,
 }
 
 impl PySolarRadiationPressure {
@@ -266,6 +365,132 @@ impl PySolarRadiationPressure {
 
 #[pymethods]
 impl PySolarRadiationPressure {
+    /// Select the eclipse lighting function.
+    fn with_shadow_function(&self, function: PyShadowFunction) -> Self {
+        Self {
+            inner: self.inner.with_shadow_function(function.into()),
+        }
+    }
+
+    /// Select the Earth figure for occultation.
+    fn with_earth_shadow_model(&self, model: PyEarthShadowModel) -> Self {
+        Self {
+            inner: self.inner.with_earth_shadow_model(model.into()),
+        }
+    }
+
+    /// Enable or disable lunar occultation.
+    fn with_moon_eclipse(&self, enabled: bool) -> Self {
+        Self {
+            inner: self.inner.with_moon_eclipse(enabled),
+        }
+    }
+
+    /// Configured eclipse lighting function.
+    fn shadow_function(&self) -> PyResult<PyShadowFunction> {
+        self.inner.shadow_function().try_into()
+    }
+
+    /// Configured Earth figure for occultation.
+    fn earth_shadow_model(&self) -> PyEarthShadowModel {
+        self.inner.earth_shadow_model().into()
+    }
+
+    /// Whether the model includes lunar occultation.
+    fn moon_eclipse_enabled(&self) -> bool {
+        self.inner.moon_eclipse_enabled()
+    }
+
+    /// Estimation parameter name for the reflectivity coefficient.
+    #[classattr]
+    const CR_PARAMETER: &'static str = SolarRadiationPressure::CR_PARAMETER;
+    /// Evaluate solar radiation pressure with explicit Sun and Moon positions.
+    fn acceleration_with_sun_moon(
+        &self,
+        sat_pos_km: [f64; 3],
+        sun_pos_km: [f64; 3],
+        moon_pos_km: [f64; 3],
+    ) -> PyResult<[f64; 3]> {
+        self.inner
+            .acceleration_with_sun_moon(sat_pos_km.into(), sun_pos_km.into(), moon_pos_km.into())
+            .map(Into::into)
+            .map_err(propagation_error)
+    }
+
+    /// Return estimable parameters in model order.
+    fn parameters(&self) -> Vec<PyForceParameter> {
+        self.inner
+            .parameters()
+            .into_iter()
+            .map(PyForceParameter)
+            .collect()
+    }
+
+    /// Return the number of estimable parameters.
+    fn parameter_count(&self) -> usize {
+        self.inner.parameter_count()
+    }
+
+    /// Evaluate acceleration in kilometres per square second.
+    #[pyo3(signature = (state, context=None))]
+    fn acceleration(
+        &self,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<[f64; 3]> {
+        with_context(context, |ctx| self.inner.acceleration(state.inner(), ctx))
+            .map(Into::into)
+            .map_err(propagation_error)
+    }
+
+    /// Evaluate acceleration with replacement parameter values.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn acceleration_with_parameters(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<[f64; 3]> {
+        with_context(context, |ctx| {
+            self.inner
+                .acceleration_with_parameters(&parameters, state.inner(), ctx)
+        })
+        .map(Into::into)
+        .map_err(propagation_error)
+    }
+
+    /// Evaluate position and velocity derivatives at the supplied parameter values.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn acceleration_partials(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<PyAccelerationPartials> {
+        with_context(context, |ctx| {
+            self.inner
+                .acceleration_partials(&parameters, state.inner(), ctx)
+        })
+        .map(PyAccelerationPartials)
+        .map_err(propagation_error)
+    }
+
+    /// Evaluate one acceleration derivative per parameter in model order.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn parameter_partials(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<Vec<[f64; 3]>> {
+        with_context(context, |ctx| {
+            self.inner
+                .parameter_partials(&parameters, state.inner(), ctx)
+        })
+        .map(|partials| partials.into_iter().map(Into::into).collect())
+        .map_err(propagation_error)
+    }
+
     /// Build SRP parameters from reflectivity coefficient and area-to-mass ratio.
     #[new]
     fn new(cr: f64, area_to_mass_m2_kg: f64) -> PyResult<Self> {
@@ -393,6 +618,21 @@ fn zonal_degree_label(zonal: Option<ZonalGravity>) -> Option<u8> {
 
 #[pymethods]
 impl PyForceModelComponents {
+    /// Add cannonball Earth albedo and infrared radiation pressure.
+    fn with_earth_radiation_pressure(&self, pressure: &PyEarthRadiationPressure) -> Self {
+        Self {
+            inner: self.inner.with_earth_radiation_pressure(pressure.0),
+        }
+    }
+
+    /// Earth radiation pressure component, if configured.
+    #[getter]
+    fn earth_radiation_pressure(&self) -> Option<PyEarthRadiationPressure> {
+        self.inner
+            .earth_radiation_pressure
+            .map(PyEarthRadiationPressure)
+    }
+
     /// Build an additive force-component set.
     ///
     /// `tide_system` declares the tide system of zonal coefficients and selects
@@ -610,7 +850,7 @@ impl PyForceModelComponents {
 #[pyclass(module = "sidereon._sidereon", name = "ForceModelKind")]
 #[derive(Clone, Copy)]
 pub struct PyForceModelKind {
-    inner: ForceModelKind,
+    pub(crate) inner: ForceModelKind,
 }
 
 impl PyForceModelKind {
@@ -2595,9 +2835,9 @@ impl PyEphemeris {
 ///
 /// `position_km` and `velocity_km_s` are length-3 numpy arrays; `times_s` is a
 /// 1-D numpy `float64` array of absolute TDB epochs (seconds) at which to sample
-/// the trajectory, monotonic in the propagation direction. The state is
-/// integrated with the chosen `force_model` (the legacy [`ForceModel`] enum or
-/// a 0.15 [`ForceModelKind`] composite handle) and `integrator`
+/// the trajectory, monotonic in the propagation direction. The propagator
+/// evaluates the configured gravity and optional fixed or table-driven drag,
+/// then sums `additional_forces` in list order. Choose the numerical `integrator`
 /// (`Integrator.DP54` adaptive, default, or `Integrator.RK4` fixed-step). The
 /// tolerance / step keywords are forwarded to the integrator. Bad input
 /// (wrong array length, unknown selector, non-positive step) raises
@@ -2620,6 +2860,7 @@ impl PyEphemeris {
     mu_km3_s2 = None,
     drag = None,
     space_weather_table = None,
+    additional_forces = Vec::new(),
 ))]
 #[allow(clippy::too_many_arguments)]
 fn propagate_state(
@@ -2639,6 +2880,7 @@ fn propagate_state(
     mu_km3_s2: Option<f64>,
     drag: Option<Py<PyDragParameters>>,
     space_weather_table: Option<Py<PySpaceWeatherTable>>,
+    additional_forces: Vec<Py<PyAny>>,
 ) -> PyResult<PyEphemeris> {
     let position = fixed_array::<3>("position_km", &position_km, FinitePolicy::AllowNonFinite)?;
     let velocity = fixed_array::<3>(
@@ -2654,7 +2896,6 @@ fn propagate_state(
         return Err(PyValueError::new_err("initial_step_s must be positive"));
     }
     let drag = drag.map(|value| value.borrow(py).inner());
-    let force_model = force_kind_from_any(force_model, mu_km3_s2)?;
 
     let mut options = IntegratorOptions::default();
     options.abs_tol = abs_tol;
@@ -2665,27 +2906,31 @@ fn propagate_state(
     options.max_steps = max_steps;
     options.dense_output = false;
 
+    let initial = sidereon::state::CartesianState::new(epoch_s, position, velocity);
+    let force_model = force_kind_from_any(force_model, mu_km3_s2)?;
+
     let propagator = StatePropagator {
-        initial: sidereon::state::CartesianState::new(epoch_s, position, velocity),
+        initial,
         force_model,
         integrator: IntegratorKind::from(integrator),
         options,
         drag,
-        space_weather: None,
+        space_weather: space_weather_table.map(|table| table.borrow(py).source()),
     };
 
-    let output_times = times_vec.clone();
-    let states = if let Some(table) = space_weather_table {
-        let source = table.borrow(py).source();
-        let propagator = propagator.with_space_weather(source);
-        py.allow_threads(move || propagator.ephemeris(&times_vec))
-            .map_err(to_solve_err)?
-    } else {
-        py.allow_threads(move || propagator.ephemeris(&times_vec))
-            .map_err(to_solve_err)?
-    };
+    let additional_forces: Vec<Arc<dyn CoreForceModel>> = additional_forces
+        .iter()
+        .map(|force| force_object(force.bind(py)))
+        .collect::<PyResult<_>>()?;
+    let states = py
+        .allow_threads(|| {
+            with_context(None, |context| {
+                propagator.ephemeris_with_additional_forces(&times_vec, &additional_forces, context)
+            })
+        })
+        .map_err(propagation_error)?;
     Ok(PyEphemeris {
-        times_s: output_times,
+        times_s: times_vec,
         positions_km: states.iter().map(|s| s.position_array()).collect(),
         velocities_km_s: states.iter().map(|s| s.velocity_array()).collect(),
     })

@@ -7905,6 +7905,29 @@ class OpsMode:
     def __repr__(self) -> str: ...
 
 class ForceModel:
+    def parameters(self) -> list[ForceParameter]: ...
+    def parameter_count(self) -> int: ...
+    def acceleration(
+        self, state: CartesianState, context: PropagationContext | None = None
+    ) -> list[float]: ...
+    def acceleration_with_parameters(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[float]: ...
+    def acceleration_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> AccelerationPartials: ...
+    def parameter_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[list[float]]: ...
     """Numerical propagation force model."""
 
     TWO_BODY = ...
@@ -7923,6 +7946,47 @@ class TideSystem:
     def label(self) -> str: ...
 
 class SolarRadiationPressure:
+    def with_shadow_function(
+        self, function: ShadowFunction
+    ) -> SolarRadiationPressure: ...
+    def with_earth_shadow_model(
+        self, model: EarthShadowModel
+    ) -> SolarRadiationPressure: ...
+    def with_moon_eclipse(self, enabled: bool) -> SolarRadiationPressure: ...
+    def shadow_function(self) -> ShadowFunction: ...
+    def earth_shadow_model(self) -> EarthShadowModel: ...
+    def moon_eclipse_enabled(self) -> bool: ...
+    CR_PARAMETER: str
+    def acceleration_with_sun_moon(
+        self,
+        sat_pos_km: Sequence[float],
+        sun_pos_km: Sequence[float],
+        moon_pos_km: Sequence[float],
+    ) -> list[float]: ...
+    def parameters(self) -> list[ForceParameter]: ...
+    def parameter_count(self) -> int: ...
+    def acceleration(
+        self, state: CartesianState, context: PropagationContext | None = None
+    ) -> list[float]: ...
+    def acceleration_with_parameters(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[float]: ...
+    def acceleration_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> AccelerationPartials: ...
+    def parameter_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[list[float]]: ...
+
     """Cannonball solar-radiation-pressure parameters."""
 
     def __init__(self, cr: float, area_to_mass_m2_kg: float) -> None: ...
@@ -7944,6 +8008,11 @@ class SolarRadiationPressure:
     def __repr__(self) -> str: ...
 
 class ForceModelComponents:
+    def with_earth_radiation_pressure(
+        self, pressure: EarthRadiationPressure
+    ) -> ForceModelComponents: ...
+    @property
+    def earth_radiation_pressure(self) -> EarthRadiationPressure | None: ...
     """Additive force components for composite numerical propagation.
 
     ``tide_system`` declares the system of zonal coefficients and selects the
@@ -9121,7 +9190,7 @@ def propagate_state(
     times_s: npt.NDArray[np.float64],
     *,
     force_model: ForceModel | ForceModelKind | str | None = ...,
-    integrator: Integrator = ...,
+    integrator: Integrator | str = ...,
     abs_tol: float = ...,
     rel_tol: float = ...,
     initial_step_s: float = ...,
@@ -9129,8 +9198,9 @@ def propagate_state(
     max_step_s: float = ...,
     max_steps: int = ...,
     mu_km3_s2: float | None = ...,
-    drag: DragForce | None = ...,
+    drag: DragParameters | None = ...,
     space_weather_table: SpaceWeatherTable | None = ...,
+    additional_forces: Sequence[_ForceModelObject] = (),
 ) -> Ephemeris: ...
 def solve_spp(
     sp3: Sp3,
@@ -18368,6 +18438,29 @@ class SpaceWeatherTable:
     def __repr__(self) -> str: ...
 
 class DragParameters:
+    def parameters(self) -> list[ForceParameter]: ...
+    def parameter_count(self) -> int: ...
+    def acceleration(
+        self, state: CartesianState, context: PropagationContext | None = None
+    ) -> list[float]: ...
+    def acceleration_with_parameters(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[float]: ...
+    def acceleration_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> AccelerationPartials: ...
+    def parameter_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[list[float]]: ...
     @staticmethod
     def from_area_mass(
         cd: float,
@@ -18398,6 +18491,29 @@ class DragParameters:
     def __repr__(self) -> str: ...
 
 class DragForce:
+    def parameters(self) -> list[ForceParameter]: ...
+    def parameter_count(self) -> int: ...
+    def acceleration(
+        self, state: CartesianState, context: PropagationContext | None = None
+    ) -> list[float]: ...
+    def acceleration_with_parameters(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[float]: ...
+    def acceleration_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> AccelerationPartials: ...
+    def parameter_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[list[float]]: ...
     @staticmethod
     def from_area_mass(
         cd: float,
@@ -18427,6 +18543,26 @@ class DragForce:
     def __repr__(self) -> str: ...
 
 class SourcedDragForce:
+    def parameters(self) -> list[ForceParameter]: ...
+    def parameter_count(self) -> int: ...
+    def acceleration_with_parameters(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[float]: ...
+    def acceleration_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> AccelerationPartials: ...
+    def parameter_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[list[float]]: ...
     def __init__(
         self, drag: DragParameters, space_weather_table: SpaceWeatherTable
     ) -> None: ...
@@ -22997,3 +23133,1837 @@ def solve_kinematic_ppp(
     epochs: Sequence[PppEpoch],
     config: PppKinematicConfig,
 ) -> list[PppKinematicEpochSolution]: ...
+def sun_moon_gcrs(t_tt_centuries: float) -> tuple[list[float], list[float]]: ...
+def sun_moon_gcrs_at(instant: Instant) -> tuple[list[float], list[float]]: ...
+def sun_moon_gcrs_at_tdb_seconds(
+    epoch_tdb_seconds: float,
+) -> tuple[list[float], list[float]]: ...
+def gcrs_to_mean_of_date_matrix(instant: Instant) -> npt.NDArray[np.float64]: ...
+def mean_of_date_to_gcrs_matrix(instant: Instant) -> npt.NDArray[np.float64]: ...
+def tdb_minus_tt_seconds(tt_j2000_s: float) -> float: ...
+def tdb_from_tt_j2000_seconds(tt_j2000_s: float) -> float: ...
+def tt_from_tdb_j2000_seconds(tdb_j2000_s: float) -> float: ...
+
+IAU_2015_SOLAR_RADIUS_KM: float
+
+class ShadowGradientError(SolveError):
+    detail: dict[str, Any]
+
+class ShadowFunction:
+    APPARENT_DISC: ShadowFunction
+    CONICAL: ShadowFunction
+
+def moon_shadow_fraction(
+    satellite_position_km: Sequence[float],
+    sun_position_km: Sequence[float],
+    moon_position_km: Sequence[float],
+) -> float: ...
+def shadow_fraction_with_moon(
+    satellite_position_km: Sequence[float],
+    sun_position_km: Sequence[float],
+    moon_position_km: Sequence[float],
+) -> float: ...
+def shadow_fraction_with_model_and_moon(
+    satellite_position_km: Sequence[float],
+    sun_position_km: Sequence[float],
+    moon_position_km: Sequence[float],
+    model: EarthShadowModel,
+) -> float: ...
+def status_with_moon(
+    satellite_position_km: Sequence[float],
+    sun_position_km: Sequence[float],
+    moon_position_km: Sequence[float],
+) -> EclipseStatus: ...
+def status_with_model_and_moon(
+    satellite_position_km: Sequence[float],
+    sun_position_km: Sequence[float],
+    moon_position_km: Sequence[float],
+    model: EarthShadowModel,
+) -> EclipseStatus: ...
+def shadow_fraction_with_gradient(
+    satellite_position_km: Sequence[float], sun_position_km: Sequence[float]
+) -> tuple[float, list[float]]: ...
+def shadow_fraction_with_model_and_gradient(
+    satellite_position_km: Sequence[float],
+    sun_position_km: Sequence[float],
+    model: EarthShadowModel,
+) -> tuple[float, list[float]]: ...
+def shadow_fraction_with_model_moon_and_gradient(
+    satellite_position_km: Sequence[float],
+    sun_position_km: Sequence[float],
+    moon_position_km: Sequence[float],
+    model: EarthShadowModel,
+) -> tuple[float, list[float]]: ...
+
+class DeError(SidereonError):
+    detail: dict[str, Any]
+
+class DeBody:
+    SUN: DeBody
+    MERCURY: DeBody
+    VENUS: DeBody
+    EARTH_MOON: DeBody
+    EARTH: DeBody
+    MOON: DeBody
+    MARS: DeBody
+    JUPITER: DeBody
+    SATURN: DeBody
+    URANUS: DeBody
+    NEPTUNE: DeBody
+    PLUTO: DeBody
+    SOLAR_SYSTEM: DeBody
+
+class DeState:
+    @property
+    def position_m(self) -> list[float]: ...
+    @property
+    def velocity_m_s(self) -> list[float]: ...
+
+class DeSunMoon:
+    @property
+    def sun(self) -> DeState: ...
+    @property
+    def moon(self) -> DeState: ...
+
+class DeEphemeris:
+    @staticmethod
+    def load(path: str | os.PathLike[str]) -> DeEphemeris: ...
+    @staticmethod
+    def from_bytes(data: bytes) -> DeEphemeris: ...
+    def version(self) -> int: ...
+    def record_size(self) -> int: ...
+    def coverage_tdb_seconds(self) -> tuple[float, float]: ...
+    def constants(self) -> dict[str, float]: ...
+    def astronomical_unit_m(self) -> float: ...
+    def earth_moon_mass_ratio(self) -> float: ...
+    def gm_m3_s2(self, body: DeBody) -> float | None: ...
+    def sun_moon_positions_at_tdb_seconds(
+        self, epoch_tdb_seconds: float
+    ) -> tuple[list[float], list[float]]: ...
+    def sun_moon_at_tdb_seconds(self, epoch_tdb_seconds: float) -> DeSunMoon: ...
+
+class AnalyticPropagationError(SolveError):
+    detail: dict[str, Any]
+
+class AnalyticTheory:
+    ECKSTEIN_HECHLER: AnalyticTheory
+    BROUWER_LYDDANE: AnalyticTheory
+    def __str__(self) -> str: ...
+
+class CircularElements:
+    def __init__(
+        self,
+        a_km: float,
+        ex: float,
+        ey: float,
+        i_rad: float,
+        raan_rad: float,
+        mean_latitude_argument_rad: float,
+    ) -> None: ...
+    @property
+    def a_km(self) -> float: ...
+    @property
+    def ex(self) -> float: ...
+    @property
+    def ey(self) -> float: ...
+    @property
+    def i_rad(self) -> float: ...
+    @property
+    def raan_rad(self) -> float: ...
+    @property
+    def mean_latitude_argument_rad(self) -> float: ...
+    @staticmethod
+    def from_cartesian(
+        position_km: Sequence[float], velocity_km_s: Sequence[float], mu_km3_s2: float
+    ) -> CircularElements: ...
+    def to_cartesian(self, mu_km3_s2: float) -> tuple[list[float], list[float]]: ...
+    def eccentricity(self) -> float: ...
+
+class AnalyticKeplerianElements:
+    def __init__(
+        self,
+        a_km: float,
+        e: float,
+        i_rad: float,
+        arg_perigee_rad: float,
+        raan_rad: float,
+        mean_anomaly_rad: float,
+    ) -> None: ...
+    @property
+    def a_km(self) -> float: ...
+    @property
+    def e(self) -> float: ...
+    @property
+    def i_rad(self) -> float: ...
+    @property
+    def arg_perigee_rad(self) -> float: ...
+    @property
+    def raan_rad(self) -> float: ...
+    @property
+    def mean_anomaly_rad(self) -> float: ...
+    @staticmethod
+    def from_cartesian(
+        position_km: Sequence[float], velocity_km_s: Sequence[float], mu_km3_s2: float
+    ) -> AnalyticKeplerianElements: ...
+    def to_cartesian(self, mu_km3_s2: float) -> tuple[list[float], list[float]]: ...
+
+class ZonalHarmonics:
+    def __init__(
+        self,
+        mu_km3_s2: float,
+        re_km: float,
+        c20: float,
+        c30: float,
+        c40: float,
+        c50: float,
+        c60: float,
+    ) -> None: ...
+    @property
+    def mu_km3_s2(self) -> float: ...
+    @property
+    def re_km(self) -> float: ...
+    @property
+    def c20(self) -> float: ...
+    @property
+    def c30(self) -> float: ...
+    @property
+    def c40(self) -> float: ...
+    @property
+    def c50(self) -> float: ...
+    @property
+    def c60(self) -> float: ...
+    @staticmethod
+    def earth() -> ZonalHarmonics: ...
+    @staticmethod
+    def default() -> ZonalHarmonics: ...
+
+class MeanConversionOptions:
+    def __init__(self, tolerance: float, max_iterations: int) -> None: ...
+    @property
+    def tolerance(self) -> float: ...
+    @property
+    def max_iterations(self) -> int: ...
+    ECKSTEIN_HECHLER_DEFAULT: MeanConversionOptions
+    BROUWER_LYDDANE_DEFAULT: MeanConversionOptions
+
+class MeanElements:
+    @property
+    def elements(self) -> CircularElements | AnalyticKeplerianElements: ...
+    @property
+    def iterations(self) -> int: ...
+
+class EcksteinHechlerPropagator:
+    def __init__(
+        self,
+        initial: CartesianState,
+        gravity: ZonalHarmonics,
+        options: MeanConversionOptions,
+    ) -> None: ...
+    @staticmethod
+    def from_mean_elements(
+        epoch_tdb_seconds: float, mean: CircularElements, gravity: ZonalHarmonics
+    ) -> EcksteinHechlerPropagator: ...
+    def epoch_tdb_seconds(self) -> float: ...
+    def mean_elements(self) -> CircularElements: ...
+    def gravity(self) -> ZonalHarmonics: ...
+    def osculating_elements(self, epoch_tdb_seconds: float) -> CircularElements: ...
+    def propagate(self, epoch_tdb_seconds: float) -> CartesianState: ...
+    def ephemeris(
+        self, epochs_tdb_seconds: Sequence[float]
+    ) -> list[CartesianState]: ...
+
+def eckstein_hechler_mean_elements(
+    osculating: CartesianState, gravity: ZonalHarmonics, options: MeanConversionOptions
+) -> MeanElements: ...
+def eckstein_hechler_osculating_elements(
+    mean: CircularElements, gravity: ZonalHarmonics
+) -> CircularElements: ...
+
+class BrouwerLyddanePropagator:
+    def __init__(
+        self,
+        initial: CartesianState,
+        gravity: ZonalHarmonics,
+        m2_rad_s2: float,
+        options: MeanConversionOptions,
+    ) -> None: ...
+    @staticmethod
+    def from_mean_elements(
+        epoch_tdb_seconds: float,
+        mean: AnalyticKeplerianElements,
+        gravity: ZonalHarmonics,
+        m2_rad_s2: float,
+    ) -> BrouwerLyddanePropagator: ...
+    def epoch_tdb_seconds(self) -> float: ...
+    def mean_elements(self) -> AnalyticKeplerianElements: ...
+    def gravity(self) -> ZonalHarmonics: ...
+    def osculating_elements(
+        self, epoch_tdb_seconds: float
+    ) -> AnalyticKeplerianElements: ...
+    def propagate(self, epoch_tdb_seconds: float) -> CartesianState: ...
+    def ephemeris(
+        self, epochs_tdb_seconds: Sequence[float]
+    ) -> list[CartesianState]: ...
+    def m2_rad_s2(self) -> float: ...
+
+def brouwer_lyddane_mean_elements(
+    osculating: CartesianState, gravity: ZonalHarmonics, options: MeanConversionOptions
+) -> MeanElements: ...
+def brouwer_lyddane_osculating_elements(
+    mean: AnalyticKeplerianElements, gravity: ZonalHarmonics
+) -> AnalyticKeplerianElements: ...
+
+class Iers2010EopSample:
+    def __init__(
+        self,
+        mjd_utc: int,
+        xp_arcsec: float,
+        yp_arcsec: float,
+        ut1_minus_utc_s: float,
+        lod_s: float,
+        dx_arcsec: float,
+        dy_arcsec: float,
+        pole_rates_rad_s: Sequence[float] | None = None,
+    ) -> None: ...
+    @property
+    def mjd_utc(self) -> int: ...
+    @property
+    def xp_arcsec(self) -> float: ...
+    @property
+    def yp_arcsec(self) -> float: ...
+    @property
+    def ut1_minus_utc_s(self) -> float: ...
+    @property
+    def lod_s(self) -> float: ...
+    @property
+    def dx_arcsec(self) -> float: ...
+    @property
+    def dy_arcsec(self) -> float: ...
+    @property
+    def pole_rates_rad_s(self) -> list[float] | None: ...
+
+class EarthOrientation:
+    def iers2010_quaternion(self) -> list[float] | None: ...
+    def earth_rotation_vector_itrf_rad_s(self) -> list[float]: ...
+    def ut1_degraded(self) -> str | None: ...
+    def gcrf_to_itrf_matrix(self) -> npt.NDArray[np.float64]: ...
+    def itrf_to_gcrf_matrix(self) -> npt.NDArray[np.float64]: ...
+    def gcrf_to_itrf_rotation_rate_matrix(self) -> npt.NDArray[np.float64]: ...
+    def itrf_to_gcrf_rotation_rate_matrix(self) -> npt.NDArray[np.float64]: ...
+
+class Iers2010EarthOrientationProvider:
+    def __init__(self, samples: Sequence[Iers2010EopSample]) -> None: ...
+    def with_validity(
+        self, validity: ValidityMode
+    ) -> Iers2010EarthOrientationProvider: ...
+    def orientation_at_utc_mjd(
+        self, mjd_utc: int, seconds_in_day: float
+    ) -> EarthOrientation: ...
+    def orientation_at_tdb_seconds(
+        self, epoch_tdb_seconds: float
+    ) -> EarthOrientation: ...
+
+class PropagationContext:
+    def __init__(self) -> None: ...
+    def with_de_ephemeris(self, ephemeris: DeEphemeris) -> PropagationContext: ...
+    def de_ephemeris(self) -> DeEphemeris | None: ...
+    def with_body_fixed_frame_provider(
+        self, provider: Iers2010EarthOrientationProvider
+    ) -> PropagationContext: ...
+    def ut1_departure(self) -> str | None: ...
+
+class AttitudeMode:
+    NOMINAL: AttitudeMode
+    NOON_TURN: AttitudeMode
+    MIDNIGHT_TURN: AttitudeMode
+    SHADOW: AttitudeMode
+    ORBIT_NORMAL: AttitudeMode
+    MODIFIED_YAW_STEERING: AttitudeMode
+
+class CosineTurnStartAngle:
+    COLINEARITY: CosineTurnStartAngle
+    ORBIT_ANGLE: CosineTurnStartAngle
+
+class BeidouManufacturer:
+    CAST: BeidouManufacturer
+    SECM: BeidouManufacturer
+
+class BeidouOrbitClass:
+    GEO: BeidouOrbitClass
+    IGSO: BeidouOrbitClass
+    MEO: BeidouOrbitClass
+
+class GnssAttitudeError(SolveError):
+    detail: dict[str, Any]
+
+class GnssBlockError(SolveError):
+    detail: dict[str, Any]
+
+class GnssBlock:
+    GPS_IIA: GnssBlock
+    GPS_IIR: GnssBlock
+    GPS_IIRM: GnssBlock
+    GPS_IIF: GnssBlock
+    GPS_III: GnssBlock
+    GLONASS_M: GnssBlock
+    GALILEO_IOV: GnssBlock
+    GALILEO_FOC: GnssBlock
+    BEIDOU2_GEO: GnssBlock
+    BEIDOU2_IGSO: GnssBlock
+    BEIDOU2_MEO: GnssBlock
+    BEIDOU3_GEO: GnssBlock
+    BEIDOU3_IGSO: GnssBlock
+    @staticmethod
+    def beidou3_meo(manufacturer: BeidouManufacturer | None = None) -> GnssBlock: ...
+    @staticmethod
+    def from_igs_name(name: str) -> GnssBlock: ...
+    @staticmethod
+    def from_constellation_block_type(
+        system: GnssSystem,
+        block_type: str,
+        beidou_orbit: BeidouOrbitClass | None = None,
+    ) -> GnssBlock: ...
+    def igs_name(self) -> str: ...
+    def system(self) -> GnssSystem: ...
+    def __str__(self) -> str: ...
+
+class CosineTurnParameters:
+    def __init__(
+        self,
+        beta_limit_rad: float,
+        beta_limit_inclusive: bool,
+        start_angle: CosineTurnStartAngle,
+        start_angle_rad: float,
+        period_s: float,
+    ) -> None: ...
+    @property
+    def beta_limit_rad(self) -> float: ...
+    @property
+    def beta_limit_inclusive(self) -> bool: ...
+    @property
+    def start_angle(self) -> CosineTurnStartAngle: ...
+    @property
+    def start_angle_rad(self) -> float: ...
+    @property
+    def period_s(self) -> float: ...
+
+class GnssAttitudeLaw:
+    @property
+    def variant(self) -> str: ...
+    @property
+    def yaw_rate_rad_s(self) -> float | None: ...
+    @property
+    def yaw_bias_rad(self) -> float | None: ...
+    @property
+    def shadow_limit_rad(self) -> float | None: ...
+    @property
+    def beta_x_rad(self) -> float | None: ...
+    @property
+    def beta_y_rad(self) -> float | None: ...
+    @property
+    def ys_to_on_beta_rad(self) -> float | None: ...
+    @property
+    def on_to_ys_beta_rad(self) -> float | None: ...
+    @property
+    def beta0_rad(self) -> float | None: ...
+    @property
+    def secm_beta0_rad(self) -> float | None: ...
+    @property
+    def cosine_turn_parameters(self) -> CosineTurnParameters | None: ...
+    @property
+    def cast(self) -> CosineTurnParameters | None: ...
+    @staticmethod
+    def gps_iia(
+        yaw_rate_rad_s: float, yaw_bias_rad: float, shadow_limit_rad: float
+    ) -> GnssAttitudeLaw: ...
+    @staticmethod
+    def gps_iir(yaw_rate_rad_s: float) -> GnssAttitudeLaw: ...
+    @staticmethod
+    def gps_iif(
+        yaw_rate_rad_s: float, yaw_bias_rad: float, shadow_limit_rad: float
+    ) -> GnssAttitudeLaw: ...
+    @staticmethod
+    def glonass_m(
+        yaw_rate_rad_s: float, shadow_limit_rad: float
+    ) -> GnssAttitudeLaw: ...
+    @staticmethod
+    def galileo_iov(beta_x_rad: float, beta_y_rad: float) -> GnssAttitudeLaw: ...
+    @staticmethod
+    def cosine_turn(parameters: CosineTurnParameters) -> GnssAttitudeLaw: ...
+    @staticmethod
+    def beidou_orbit_normal_switch(
+        ys_to_on_beta_rad: float, on_to_ys_beta_rad: float
+    ) -> GnssAttitudeLaw: ...
+    @staticmethod
+    def fixed_beta_yaw_steering(beta0_rad: float) -> GnssAttitudeLaw: ...
+    @staticmethod
+    def beidou3_meo_unknown_manufacturer(
+        cast: CosineTurnParameters, secm_beta0_rad: float
+    ) -> GnssAttitudeLaw: ...
+    @staticmethod
+    def orbit_normal() -> GnssAttitudeLaw: ...
+    @staticmethod
+    def for_block(block: GnssBlock, prn: int | None = None) -> GnssAttitudeLaw: ...
+
+class AttitudeSample:
+    def __init__(
+        self,
+        position_m: Sequence[float],
+        velocity_m_s: Sequence[float],
+        sun_position_m: Sequence[float],
+    ) -> None: ...
+    @property
+    def position_m(self) -> list[float]: ...
+    @property
+    def velocity_m_s(self) -> list[float]: ...
+    @property
+    def sun_position_m(self) -> list[float]: ...
+
+class DybAxes:
+    @property
+    def d(self) -> list[float]: ...
+    @property
+    def y(self) -> list[float]: ...
+    @property
+    def b(self) -> list[float]: ...
+
+class NominalYaw:
+    @property
+    def yaw_rad(self) -> float: ...
+    @property
+    def beta_rad(self) -> float: ...
+    @property
+    def body_x(self) -> list[float]: ...
+    @property
+    def body_y(self) -> list[float]: ...
+    @property
+    def body_z(self) -> list[float]: ...
+
+class GnssAttitude:
+    @property
+    def mode(self) -> AttitudeMode: ...
+    @property
+    def yaw_rad(self) -> float: ...
+    @property
+    def nominal_yaw_rad(self) -> float: ...
+    @property
+    def beta_rad(self) -> float: ...
+    @property
+    def orbit_angle_rad(self) -> float: ...
+    @property
+    def body_x(self) -> list[float]: ...
+    @property
+    def body_y(self) -> list[float]: ...
+    @property
+    def body_z(self) -> list[float]: ...
+    @property
+    def dyb(self) -> DybAxes | None: ...
+
+class OrbitAttitudeTrajectory:
+    """GCRF orbit and Sun samples, queried in TDB seconds past J2000."""
+    @staticmethod
+    def from_sp3(
+        product: Sp3,
+        satellite: str,
+        orientation: Iers2010EarthOrientationProvider | None = None,
+    ) -> OrbitAttitudeTrajectory: ...
+    @staticmethod
+    def from_broadcast(
+        ephemeris: BroadcastEphemeris,
+        satellite: str,
+        orientation: Iers2010EarthOrientationProvider | None = None,
+    ) -> OrbitAttitudeTrajectory: ...
+    @staticmethod
+    def from_orbit_source(
+        source: PredictedSp3 | BroadcastOrbit | OrbitTrajectory,
+        satellite: str,
+        orientation: Iers2010EarthOrientationProvider | None = None,
+    ) -> OrbitAttitudeTrajectory: ...
+    @staticmethod
+    def from_eckstein_hechler(
+        propagator: EcksteinHechlerPropagator,
+    ) -> OrbitAttitudeTrajectory: ...
+    @staticmethod
+    def from_brouwer_lyddane(
+        propagator: BrouwerLyddanePropagator,
+    ) -> OrbitAttitudeTrajectory: ...
+    @staticmethod
+    def from_dense_output(output: DenseOutput) -> OrbitAttitudeTrajectory: ...
+    def with_de_ephemeris(self, ephemeris: DeEphemeris) -> OrbitAttitudeTrajectory: ...
+    def with_velocity_half_step_s(
+        self, half_step_s: float
+    ) -> OrbitAttitudeTrajectory: ...
+    def sample(self, t_s: float) -> AttitudeSample | None: ...
+
+def nominal_yaw(
+    position_m: Sequence[float],
+    velocity_m_s: Sequence[float],
+    sun_position_m: Sequence[float],
+) -> NominalYaw: ...
+def dyb_axes(
+    position_m: Sequence[float], sun_position_m: Sequence[float]
+) -> DybAxes: ...
+def gnss_attitude(
+    law: GnssAttitudeLaw, trajectory: OrbitAttitudeTrajectory, t_s: float
+) -> GnssAttitude: ...
+def gps_iia_default_yaw_rate_rad_s(prn: int) -> float | None: ...
+
+GPS_IIA_DEFAULT_YAW_BIAS_RAD: float
+
+GPS_IIR_DEFAULT_YAW_RATE_RAD_S: float
+
+GPS_IIF_DEFAULT_YAW_RATE_RAD_S: float
+
+GPS_IIF_DEFAULT_YAW_BIAS_RAD: float
+
+GPS_SHADOW_LIMIT_RAD: float
+
+GLONASS_M_DEFAULT_YAW_RATE_RAD_S: float
+
+GLONASS_M_SHADOW_LIMIT_RAD: float
+
+GALILEO_IOV_BETA_X_RAD: float
+
+GALILEO_IOV_BETA_Y_RAD: float
+
+GPS_III_BETA_X_RAD: float
+
+GPS_III_BETA_Y_RAD: float
+
+GALILEO_FOC_TURN: CosineTurnParameters
+
+BEIDOU3_CAST_MEO_TURN: CosineTurnParameters
+
+BEIDOU3_CAST_IGSO_TURN: CosineTurnParameters
+
+BEIDOU3_SECM_BETA0_RAD: float
+
+BEIDOU2_YS_TO_ON_BETA_RAD: float
+
+BEIDOU2_ON_TO_YS_BETA_RAD: float
+
+class ForceParameter:
+    def __init__(self, name: str, value: float) -> None: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def value(self) -> float: ...
+
+class AccelerationPartials:
+    @property
+    def wrt_position(self) -> list[list[float]]: ...
+    @property
+    def wrt_velocity(self) -> list[list[float]]: ...
+    @staticmethod
+    def zeros() -> AccelerationPartials: ...
+    @staticmethod
+    def position_only(
+        wrt_position: Sequence[Sequence[float]],
+    ) -> AccelerationPartials: ...
+
+ECOM1_COEFFICIENT_COUNT: int
+
+class Ecom1Coefficients:
+    def __init__(
+        self,
+        d0: float = 0.0,
+        dc: float = 0.0,
+        ds: float = 0.0,
+        y0: float = 0.0,
+        yc: float = 0.0,
+        ys: float = 0.0,
+        b0: float = 0.0,
+        bc: float = 0.0,
+        bs: float = 0.0,
+    ) -> None: ...
+    @property
+    def d0(self) -> float: ...
+    @property
+    def dc(self) -> float: ...
+    @property
+    def ds(self) -> float: ...
+    @property
+    def y0(self) -> float: ...
+    @property
+    def yc(self) -> float: ...
+    @property
+    def ys(self) -> float: ...
+    @property
+    def b0(self) -> float: ...
+    @property
+    def bc(self) -> float: ...
+    @property
+    def bs(self) -> float: ...
+    @staticmethod
+    def from_array(values: Sequence[float]) -> Ecom1Coefficients: ...
+    def to_array(self) -> list[float]: ...
+    NAMES: list[str]
+    PARAMETER_NAMES: list[str]
+
+ECOM2_D2B1_COEFFICIENT_COUNT: int
+
+class Ecom2D2b1Coefficients:
+    def __init__(
+        self,
+        b0: float = 0.0,
+        b1c: float = 0.0,
+        b1s: float = 0.0,
+        d0: float = 0.0,
+        d2c: float = 0.0,
+        d2s: float = 0.0,
+        y0: float = 0.0,
+    ) -> None: ...
+    @property
+    def b0(self) -> float: ...
+    @property
+    def b1c(self) -> float: ...
+    @property
+    def b1s(self) -> float: ...
+    @property
+    def d0(self) -> float: ...
+    @property
+    def d2c(self) -> float: ...
+    @property
+    def d2s(self) -> float: ...
+    @property
+    def y0(self) -> float: ...
+    @staticmethod
+    def from_array(values: Sequence[float]) -> Ecom2D2b1Coefficients: ...
+    def to_array(self) -> list[float]: ...
+    NAMES: list[str]
+    PARAMETER_NAMES: list[str]
+
+ECOM2_D4B1_COEFFICIENT_COUNT: int
+
+class Ecom2D4b1Coefficients:
+    def __init__(
+        self,
+        b0: float = 0.0,
+        b1c: float = 0.0,
+        b1s: float = 0.0,
+        d0: float = 0.0,
+        d2c: float = 0.0,
+        d4c: float = 0.0,
+        d2s: float = 0.0,
+        d4s: float = 0.0,
+        y0: float = 0.0,
+    ) -> None: ...
+    @property
+    def b0(self) -> float: ...
+    @property
+    def b1c(self) -> float: ...
+    @property
+    def b1s(self) -> float: ...
+    @property
+    def d0(self) -> float: ...
+    @property
+    def d2c(self) -> float: ...
+    @property
+    def d4c(self) -> float: ...
+    @property
+    def d2s(self) -> float: ...
+    @property
+    def d4s(self) -> float: ...
+    @property
+    def y0(self) -> float: ...
+    @staticmethod
+    def from_array(values: Sequence[float]) -> Ecom2D4b1Coefficients: ...
+    def to_array(self) -> list[float]: ...
+    NAMES: list[str]
+    PARAMETER_NAMES: list[str]
+
+class EcomGeometry:
+    @property
+    def dyb(self) -> DybAxes: ...
+    @property
+    def argument_of_latitude_rad(self) -> float | None: ...
+    @property
+    def delta_u_rad(self) -> float | None: ...
+    @property
+    def lighting_ratio(self) -> float: ...
+
+def ecom_geometry(
+    position_km: Sequence[float],
+    velocity_km_s: Sequence[float],
+    sun_position_km: Sequence[float],
+) -> EcomGeometry: ...
+def ecom_geometry_with_shadow(
+    position_km: Sequence[float],
+    velocity_km_s: Sequence[float],
+    sun_position_km: Sequence[float],
+    moon_position_km: Sequence[float] | None,
+    earth_shadow_model: EarthShadowModel,
+) -> EcomGeometry: ...
+
+class Ecom1SolarRadiationPressure:
+    def coefficients(self) -> Ecom1Coefficients: ...
+    def __init__(self, coefficients: Ecom1Coefficients) -> None: ...
+    def with_shadow_function(
+        self, function: ShadowFunction
+    ) -> Ecom1SolarRadiationPressure: ...
+    def with_earth_shadow_model(
+        self, model: EarthShadowModel
+    ) -> Ecom1SolarRadiationPressure: ...
+    def with_moon_eclipse(self, enabled: bool) -> Ecom1SolarRadiationPressure: ...
+    def shadow_function(self) -> ShadowFunction: ...
+    def earth_shadow_model(self) -> EarthShadowModel: ...
+    def moon_eclipse_enabled(self) -> bool: ...
+    def acceleration_with_sun(
+        self,
+        position_km: Sequence[float],
+        velocity_km_s: Sequence[float],
+        sun_position_km: Sequence[float],
+    ) -> list[float]: ...
+    def acceleration_with_sun_moon(
+        self,
+        position_km: Sequence[float],
+        velocity_km_s: Sequence[float],
+        sun_position_km: Sequence[float],
+        moon_position_km: Sequence[float],
+    ) -> list[float]: ...
+    def acceleration_partials_with_sun(
+        self,
+        position_km: Sequence[float],
+        velocity_km_s: Sequence[float],
+        sun_position_km: Sequence[float],
+    ) -> AccelerationPartials: ...
+    def acceleration_partials_with_sun_moon(
+        self,
+        position_km: Sequence[float],
+        velocity_km_s: Sequence[float],
+        sun_position_km: Sequence[float],
+        moon_position_km: Sequence[float],
+    ) -> AccelerationPartials: ...
+    def parameter_partials_with_sun(
+        self,
+        position_km: Sequence[float],
+        velocity_km_s: Sequence[float],
+        sun_position_km: Sequence[float],
+    ) -> list[list[float]]: ...
+    def parameter_partials_with_sun_moon(
+        self,
+        position_km: Sequence[float],
+        velocity_km_s: Sequence[float],
+        sun_position_km: Sequence[float],
+        moon_position_km: Sequence[float],
+    ) -> list[list[float]]: ...
+    def parameters(self) -> list[ForceParameter]: ...
+    def parameter_count(self) -> int: ...
+    def acceleration(
+        self, state: CartesianState, context: PropagationContext | None = None
+    ) -> list[float]: ...
+    def acceleration_with_parameters(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[float]: ...
+    def acceleration_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> AccelerationPartials: ...
+    def parameter_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[list[float]]: ...
+
+class Ecom2SolarRadiationPressure:
+    @staticmethod
+    def coefficient_count(n_d: int, n_b: int) -> int | None: ...
+    @staticmethod
+    def parameter_names(n_d: int, n_b: int) -> list[str]: ...
+    @staticmethod
+    def d2b1(coefficients: Ecom2D2b1Coefficients) -> Ecom2SolarRadiationPressure: ...
+    @staticmethod
+    def d4b1(coefficients: Ecom2D4b1Coefficients) -> Ecom2SolarRadiationPressure: ...
+    def n_d(self) -> int: ...
+    def n_b(self) -> int: ...
+    def coefficients(self) -> list[float]: ...
+    def __init__(self, n_d: int, n_b: int, coefficients: Sequence[float]) -> None: ...
+    def with_shadow_function(
+        self, function: ShadowFunction
+    ) -> Ecom2SolarRadiationPressure: ...
+    def with_earth_shadow_model(
+        self, model: EarthShadowModel
+    ) -> Ecom2SolarRadiationPressure: ...
+    def with_moon_eclipse(self, enabled: bool) -> Ecom2SolarRadiationPressure: ...
+    def shadow_function(self) -> ShadowFunction: ...
+    def earth_shadow_model(self) -> EarthShadowModel: ...
+    def moon_eclipse_enabled(self) -> bool: ...
+    def acceleration_with_sun(
+        self,
+        position_km: Sequence[float],
+        velocity_km_s: Sequence[float],
+        sun_position_km: Sequence[float],
+    ) -> list[float]: ...
+    def acceleration_with_sun_moon(
+        self,
+        position_km: Sequence[float],
+        velocity_km_s: Sequence[float],
+        sun_position_km: Sequence[float],
+        moon_position_km: Sequence[float],
+    ) -> list[float]: ...
+    def acceleration_partials_with_sun(
+        self,
+        position_km: Sequence[float],
+        velocity_km_s: Sequence[float],
+        sun_position_km: Sequence[float],
+    ) -> AccelerationPartials: ...
+    def acceleration_partials_with_sun_moon(
+        self,
+        position_km: Sequence[float],
+        velocity_km_s: Sequence[float],
+        sun_position_km: Sequence[float],
+        moon_position_km: Sequence[float],
+    ) -> AccelerationPartials: ...
+    def parameter_partials_with_sun(
+        self,
+        position_km: Sequence[float],
+        velocity_km_s: Sequence[float],
+        sun_position_km: Sequence[float],
+    ) -> list[list[float]]: ...
+    def parameter_partials_with_sun_moon(
+        self,
+        position_km: Sequence[float],
+        velocity_km_s: Sequence[float],
+        sun_position_km: Sequence[float],
+        moon_position_km: Sequence[float],
+    ) -> list[list[float]]: ...
+    def parameters(self) -> list[ForceParameter]: ...
+    def parameter_count(self) -> int: ...
+    def acceleration(
+        self, state: CartesianState, context: PropagationContext | None = None
+    ) -> list[float]: ...
+    def acceleration_with_parameters(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[float]: ...
+    def acceleration_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> AccelerationPartials: ...
+    def parameter_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[list[float]]: ...
+
+class RtnAxis:
+    RADIAL: RtnAxis
+    ALONG_TRACK: RtnAxis
+    CROSS_TRACK: RtnAxis
+    ALL: list[RtnAxis]
+
+class EmpiricalHarmonic:
+    CONSTANT: EmpiricalHarmonic
+    COSINE: EmpiricalHarmonic
+    SINE: EmpiricalHarmonic
+    ALL: list[EmpiricalHarmonic]
+
+class EmpiricalRtnAcceleration:
+    def __init__(self) -> None: ...
+    @staticmethod
+    def constant_terms() -> EmpiricalRtnAcceleration: ...
+    @staticmethod
+    def all_terms() -> EmpiricalRtnAcceleration: ...
+    @staticmethod
+    def with_zero_terms(
+        terms: Sequence[tuple[RtnAxis, EmpiricalHarmonic]],
+    ) -> EmpiricalRtnAcceleration: ...
+    def with_term(
+        self, axis: RtnAxis, harmonic: EmpiricalHarmonic, coefficient_km_s2: float
+    ) -> EmpiricalRtnAcceleration: ...
+    def coefficient_km_s2(
+        self, axis: RtnAxis, harmonic: EmpiricalHarmonic
+    ) -> float | None: ...
+    def terms(self) -> list[tuple[RtnAxis, EmpiricalHarmonic, float]]: ...
+    @staticmethod
+    def parameter_name(axis: RtnAxis, harmonic: EmpiricalHarmonic) -> str: ...
+    def parameters(self) -> list[ForceParameter]: ...
+    def parameter_count(self) -> int: ...
+    def acceleration(
+        self, state: CartesianState, context: PropagationContext | None = None
+    ) -> list[float]: ...
+    def acceleration_with_parameters(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[float]: ...
+    def acceleration_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> AccelerationPartials: ...
+    def parameter_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[list[float]]: ...
+
+class EarthRadiationPressure:
+    def __init__(self, cr: float, area_to_mass_m2_kg: float) -> None: ...
+    @property
+    def cr(self) -> float: ...
+    @property
+    def area_to_mass_m2_kg(self) -> float: ...
+    @property
+    def pressure_n_m2(self) -> float: ...
+    @property
+    def earth_radius_km(self) -> float: ...
+    @property
+    def au_km(self) -> float: ...
+    def with_moon_eclipse(self, enabled: bool) -> EarthRadiationPressure: ...
+    def moon_eclipse_enabled(self) -> bool: ...
+    def acceleration_with_sun_moon(
+        self,
+        state: CartesianState,
+        sun_pos_km: Sequence[float],
+        moon_pos_km: Sequence[float],
+    ) -> list[float]: ...
+    def parameters(self) -> list[ForceParameter]: ...
+    def parameter_count(self) -> int: ...
+    def acceleration(
+        self, state: CartesianState, context: PropagationContext | None = None
+    ) -> list[float]: ...
+    def acceleration_with_parameters(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[float]: ...
+    def acceleration_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> AccelerationPartials: ...
+    def parameter_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[list[float]]: ...
+
+class CompositeForceModel:
+    def __init__(self, models: Sequence[_ForceModelObject]) -> None: ...
+    def parameters(self) -> list[ForceParameter]: ...
+    def parameter_count(self) -> int: ...
+    def acceleration(
+        self, state: CartesianState, context: PropagationContext | None = None
+    ) -> list[float]: ...
+    def acceleration_with_parameters(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[float]: ...
+    def acceleration_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> AccelerationPartials: ...
+    def parameter_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[list[float]]: ...
+
+class IcgemError(SolveError):
+    detail: dict[str, Any]
+
+class IcgemErrors:
+    NO: IcgemErrors
+    CALIBRATED: IcgemErrors
+    FORMAL: IcgemErrors
+    CALIBRATED_AND_FORMAL: IcgemErrors
+
+class IcgemNormalization:
+    FULLY_NORMALIZED: IcgemNormalization
+    UNNORMALIZED: IcgemNormalization
+
+class IcgemFormat:
+    ICGEM1_0: IcgemFormat
+    ICGEM2_0: IcgemFormat
+
+class IcgemTermKind:
+    CONSTANT: IcgemTermKind
+    TREND: IcgemTermKind
+    @staticmethod
+    def cosine(period_years: float) -> IcgemTermKind: ...
+    @staticmethod
+    def sine(period_years: float) -> IcgemTermKind: ...
+    @property
+    def period_years(self) -> float | None: ...
+    @property
+    def label(self) -> str: ...
+
+class IcgemHeader:
+    @property
+    def model_name(self) -> str: ...
+    @property
+    def gravity_constant_m3_s2(self) -> float: ...
+    @property
+    def radius_m(self) -> float: ...
+    @property
+    def max_degree(self) -> int: ...
+    @property
+    def errors(self) -> IcgemErrors: ...
+    @property
+    def normalization(self) -> IcgemNormalization: ...
+    @property
+    def tide_system(self) -> TideSystem | None: ...
+    @property
+    def format(self) -> IcgemFormat: ...
+
+class IcgemSigmas:
+    def __init__(self) -> None: ...
+    @property
+    def calibrated(self) -> list[float] | None: ...
+    @property
+    def formal(self) -> list[float] | None: ...
+
+class IcgemTimeVariableTerm:
+    @property
+    def line(self) -> int: ...
+    @property
+    def kind(self) -> IcgemTermKind: ...
+    @property
+    def degree(self) -> int: ...
+    @property
+    def order(self) -> int: ...
+    @property
+    def c(self) -> float: ...
+    @property
+    def s(self) -> float: ...
+    @property
+    def sigmas(self) -> IcgemSigmas: ...
+    @property
+    def reference_tt_seconds(self) -> float: ...
+    @property
+    def valid_from_tt_seconds(self) -> float: ...
+    @property
+    def valid_until_tt_seconds(self) -> float: ...
+
+class SphericalHarmonicCoefficient:
+    @property
+    def degree(self) -> int: ...
+    @property
+    def order(self) -> int: ...
+    @property
+    def c(self) -> float: ...
+    @property
+    def s(self) -> float: ...
+
+class IcgemGravityField:
+    @staticmethod
+    def parse(text: str) -> IcgemGravityField: ...
+    @staticmethod
+    def parse_truncated(
+        text: str, max_degree: int, max_order: int
+    ) -> IcgemGravityField: ...
+    def header(self) -> IcgemHeader: ...
+    def stored_max_degree(self) -> int: ...
+    def stored_max_order(self) -> int: ...
+    def is_time_variable(self) -> bool: ...
+    def static_coefficient(
+        self, degree: int, order: int
+    ) -> SphericalHarmonicCoefficient | None: ...
+    def static_sigmas(self, degree: int, order: int) -> IcgemSigmas | None: ...
+    def time_variable_terms(self) -> list[IcgemTimeVariableTerm]: ...
+    def coefficient_at(
+        self, degree: int, order: int, epoch_tt_seconds: float
+    ) -> SphericalHarmonicCoefficient | None: ...
+    def with_assumed_tide_system(
+        self, tide_system: TideSystem
+    ) -> IcgemGravityField: ...
+    def gravity(self, max_degree: int, max_order: int) -> SphericalHarmonicGravity: ...
+    def gravity_in_tide_system(
+        self, max_degree: int, max_order: int, tide_system: TideSystem
+    ) -> SphericalHarmonicGravity: ...
+
+class SphericalHarmonicGravity:
+    def is_time_variable(self) -> bool: ...
+    def body_fixed_acceleration_km_s2(
+        self, position_body_fixed_km: Sequence[float]
+    ) -> list[float]: ...
+    def body_fixed_acceleration_at_km_s2(
+        self, position_body_fixed_km: Sequence[float], epoch_tt_seconds: float
+    ) -> list[float]: ...
+    def body_fixed_potential_km2_s2(
+        self, position_body_fixed_km: Sequence[float]
+    ) -> float: ...
+    def body_fixed_potential_at_km2_s2(
+        self, position_body_fixed_km: Sequence[float], epoch_tt_seconds: float
+    ) -> float: ...
+    def coefficient_at(
+        self, degree: int, order: int, epoch_tt_seconds: float
+    ) -> SphericalHarmonicCoefficient | None: ...
+    def parameters(self) -> list[ForceParameter]: ...
+    def parameter_count(self) -> int: ...
+    def acceleration(
+        self, state: CartesianState, context: PropagationContext | None = None
+    ) -> list[float]: ...
+    def acceleration_with_parameters(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[float]: ...
+    def acceleration_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> AccelerationPartials: ...
+    def parameter_partials(
+        self,
+        parameters: Sequence[float],
+        state: CartesianState,
+        context: PropagationContext | None = None,
+    ) -> list[list[float]]: ...
+
+class OrbitScoreError(SolveError):
+    detail: dict[str, Any]
+
+class TriadVelocity:
+    INERTIAL: TriadVelocity
+    EARTH_FIXED: TriadVelocity
+    @staticmethod
+    def default() -> TriadVelocity: ...
+
+class ClockDatum:
+    EPOCH_SYSTEM_MEDIAN: ClockDatum
+    UNADJUSTED: ClockDatum
+    @staticmethod
+    def default() -> ClockDatum: ...
+
+class OrbitScoreGapPolicy:
+    COUNT: OrbitScoreGapPolicy
+    REFUSE: OrbitScoreGapPolicy
+    @staticmethod
+    def default() -> OrbitScoreGapPolicy: ...
+
+class OrbitScoreReferencePoint:
+    CENTER_OF_MASS: OrbitScoreReferencePoint
+    ANTENNA_PHASE_CENTER: OrbitScoreReferencePoint
+
+class OrbitRegime:
+    MEO: OrbitRegime
+    IGSO: OrbitRegime
+    GEO: OrbitRegime
+    def __str__(self) -> str: ...
+    @staticmethod
+    def from_inertial_state(
+        position_m: Sequence[float], inertial_velocity_m_s: Sequence[float]
+    ) -> OrbitRegime | None: ...
+
+class ScoredProduct:
+    SOURCE: ScoredProduct
+    REFERENCE: ScoredProduct
+    def __str__(self) -> str: ...
+
+DEFAULT_VELOCITY_HALF_STEP_S: float
+
+MIN_VELOCITY_HALF_STEP_S: float
+
+class RtnComponents:
+    def __init__(
+        self, radial_m: float, transverse_m: float, normal_m: float
+    ) -> None: ...
+    @property
+    def radial_m(self) -> float: ...
+    @property
+    def transverse_m(self) -> float: ...
+    @property
+    def normal_m(self) -> float: ...
+
+class OrbitSourceState:
+    @property
+    def position_ecef_m(self) -> list[float]: ...
+    @property
+    def clock_s(self) -> float | None: ...
+
+class ErrorStats:
+    @property
+    def rms_m(self) -> float: ...
+    @property
+    def mean_m(self) -> float: ...
+    @property
+    def max_abs_m(self) -> float: ...
+
+class HorizonBinStats:
+    @property
+    def horizon_start_s(self) -> float: ...
+    @property
+    def horizon_end_s(self) -> float: ...
+    @property
+    def count(self) -> int: ...
+    @property
+    def radial(self) -> ErrorStats | None: ...
+    @property
+    def transverse(self) -> ErrorStats | None: ...
+    @property
+    def normal(self) -> ErrorStats | None: ...
+    @property
+    def orbit_3d(self) -> ErrorStats | None: ...
+    @property
+    def sisre_orbit(self) -> ErrorStats | None: ...
+    @property
+    def clock_count(self) -> int: ...
+    @property
+    def clock(self) -> ErrorStats | None: ...
+    @property
+    def sisre(self) -> ErrorStats | None: ...
+
+class ScoreCoverage:
+    def __init__(self) -> None: ...
+    @property
+    def epochs(self) -> int: ...
+    @property
+    def scored(self) -> int: ...
+    @property
+    def clocked(self) -> int: ...
+    @property
+    def outside_horizon_bins(self) -> int: ...
+    @property
+    def no_prediction_origin(self) -> int: ...
+    @property
+    def source_satellite_missing(self) -> int: ...
+    @property
+    def source_epoch_missing(self) -> int: ...
+    @property
+    def reference_satellite_missing(self) -> int: ...
+    @property
+    def reference_epoch_missing(self) -> int: ...
+
+class SatelliteScore:
+    @property
+    def satellite(self) -> str: ...
+    @property
+    def prediction_origin_j2000_s(self) -> float | None: ...
+    @property
+    def orbit_regime(self) -> OrbitRegime | None: ...
+    @property
+    def sisre_weights(self) -> SisreWeights | None: ...
+    @property
+    def bins(self) -> list[HorizonBinStats]: ...
+    @property
+    def coverage(self) -> ScoreCoverage: ...
+
+class SystemScore:
+    @property
+    def system(self) -> GnssSystem: ...
+    @property
+    def bins(self) -> list[HorizonBinStats]: ...
+    @property
+    def coverage(self) -> ScoreCoverage: ...
+
+class OrbitScoreReport:
+    @property
+    def horizon_bin_edges_s(self) -> list[float]: ...
+    @property
+    def frame(self) -> FrameAgreement: ...
+    @property
+    def source_reference_point(self) -> OrbitScoreReferencePoint: ...
+    @property
+    def per_satellite(self) -> list[SatelliteScore]: ...
+    @property
+    def per_system(self) -> list[SystemScore]: ...
+    @property
+    def coverage(self) -> ScoreCoverage: ...
+
+class TrajectorySample:
+    def __init__(
+        self,
+        satellite: str,
+        epoch: ClockInstant,
+        position_ecef_m: Sequence[float],
+        clock_s: float | None = None,
+    ) -> None: ...
+    @property
+    def satellite(self) -> str: ...
+    @property
+    def epoch(self) -> ClockInstant: ...
+    @property
+    def position_ecef_m(self) -> list[float]: ...
+    @property
+    def clock_s(self) -> float | None: ...
+
+class FrameAgreement:
+    SAME_LABEL: FrameAgreement
+    ASSERTED_EQUIVALENT: FrameAgreement
+    BROADCAST_DATUMS: FrameAgreement
+    @staticmethod
+    def helmert(
+        from_frame: TerrestrialFrame, to_frame: TerrestrialFrame
+    ) -> FrameAgreement: ...
+    @property
+    def from_frame(self) -> TerrestrialFrame | None: ...
+    @property
+    def to_frame(self) -> TerrestrialFrame | None: ...
+
+class SisreWeights:
+    def __init__(self, radial: float, transverse_normal_squared: float) -> None: ...
+    def radial(self) -> float: ...
+    def transverse_normal_squared(self) -> float: ...
+    @staticmethod
+    def montenbruck_2018(
+        system: GnssSystem, regime: OrbitRegime
+    ) -> SisreWeights | None: ...
+    def orbit_only_m(self, components: RtnComponents) -> float: ...
+    def with_clock_m(self, components: RtnComponents, clock_m: float) -> float: ...
+
+class OrbitFrame:
+    BROADCAST_DATUMS: OrbitFrame
+    @staticmethod
+    def label(label: str) -> OrbitFrame: ...
+    @property
+    def frame_label(self) -> str | None: ...
+
+class ScoreEpochs:
+    REFERENCE_RECORDS: ScoreEpochs
+    def __init__(self) -> None: ...
+    @staticmethod
+    def instants(instants: Sequence[ClockInstant]) -> ScoreEpochs: ...
+    @property
+    def epoch_instants(self) -> list[ClockInstant] | None: ...
+
+class SisreWeightSelection:
+    MONTENBRUCK_2018: SisreWeightSelection
+    def __init__(self) -> None: ...
+    @staticmethod
+    def fixed(weights: SisreWeights) -> SisreWeightSelection: ...
+    @property
+    def fixed_weights(self) -> SisreWeights | None: ...
+
+class Sp3FrameReconciliationOptions:
+    def __init__(
+        self,
+        asserted_equivalent_label_sets: Sequence[Sequence[str]] = (),
+        helmert: bool | None = None,
+    ) -> None: ...
+    @property
+    def asserted_equivalent_label_sets(self) -> list[list[str]]: ...
+    @property
+    def helmert(self) -> bool: ...
+
+class OrbitScoreOptions:
+    def __init__(
+        self,
+        horizon_bin_edges_s: Sequence[float],
+        *,
+        epochs: ScoreEpochs | None = None,
+        triad: TriadVelocity | None = None,
+        velocity_half_step_s: float | None = None,
+        sisre_weights: SisreWeightSelection | None = None,
+        clock_datum: ClockDatum | None = None,
+        gaps: OrbitScoreGapPolicy | None = None,
+        frame_reconciliation: Sp3FrameReconciliationOptions | None = None,
+    ) -> None: ...
+    @property
+    def epochs(self) -> ScoreEpochs: ...
+    @property
+    def horizon_bin_edges_s(self) -> list[float]: ...
+    @property
+    def triad(self) -> TriadVelocity: ...
+    @property
+    def velocity_half_step_s(self) -> float: ...
+    @property
+    def sisre_weights(self) -> SisreWeightSelection: ...
+    @property
+    def clock_datum(self) -> ClockDatum: ...
+    @property
+    def gaps(self) -> OrbitScoreGapPolicy: ...
+    @property
+    def frame_reconciliation(self) -> Sp3FrameReconciliationOptions: ...
+
+class PredictedSp3:
+    @staticmethod
+    def from_prediction_flags(product: Sp3) -> PredictedSp3: ...
+    @staticmethod
+    def with_cutoff(product: Sp3, cutoff: ClockInstant) -> PredictedSp3: ...
+    def product(self) -> Sp3: ...
+    def time_scale(self) -> TimeScale: ...
+    def sp3_time_system(self) -> str | None: ...
+    def frame(self) -> OrbitFrame: ...
+    def reference_point(self) -> OrbitScoreReferencePoint: ...
+    def clock_includes_relativity(self) -> bool: ...
+    def state_at_j2000_s(
+        self, satellite: str, t_j2000_s: float
+    ) -> OrbitSourceState: ...
+    def prediction_origin_j2000_s(self, satellite: str) -> float | None: ...
+
+class BroadcastOrbit:
+    def __init__(
+        self, ephemeris: BroadcastEphemeris, prediction_origin: ClockInstant
+    ) -> None: ...
+    def time_scale(self) -> TimeScale: ...
+    def sp3_time_system(self) -> str | None: ...
+    def frame(self) -> OrbitFrame: ...
+    def reference_point(self) -> OrbitScoreReferencePoint: ...
+    def clock_includes_relativity(self) -> bool: ...
+    def state_at_j2000_s(
+        self, satellite: str, t_j2000_s: float
+    ) -> OrbitSourceState: ...
+    def prediction_origin_j2000_s(self, satellite: str) -> float | None: ...
+
+class OrbitTrajectory:
+    def __init__(
+        self,
+        frame_label: str,
+        prediction_origin: ClockInstant,
+        samples: Sequence[TrajectorySample],
+    ) -> None: ...
+    def with_clock_relativity_included(self, included: bool) -> OrbitTrajectory: ...
+    def epochs(self) -> list[ClockInstant]: ...
+    def satellites(self) -> list[str]: ...
+    def time_scale(self) -> TimeScale: ...
+    def sp3_time_system(self) -> str | None: ...
+    def frame(self) -> OrbitFrame: ...
+    def reference_point(self) -> OrbitScoreReferencePoint: ...
+    def clock_includes_relativity(self) -> bool: ...
+    def state_at_j2000_s(
+        self, satellite: str, t_j2000_s: float
+    ) -> OrbitSourceState: ...
+    def prediction_origin_j2000_s(self, satellite: str) -> float | None: ...
+
+def score_orbit(
+    source: PredictedSp3 | BroadcastOrbit | OrbitTrajectory,
+    reference: Sp3,
+    satellites: Sequence[str],
+    options: OrbitScoreOptions,
+) -> OrbitScoreReport: ...
+def rtn_components(
+    difference_m: Sequence[float],
+    position_m: Sequence[float],
+    velocity_m_s: Sequence[float],
+) -> RtnComponents: ...
+def inertial_velocity_from_earth_fixed(
+    position_ecef_m: Sequence[float], velocity_ecef_m_s: Sequence[float]
+) -> list[float]: ...
+
+class IntegratorOptions:
+    def __init__(
+        self,
+        abs_tol: float | None = None,
+        rel_tol: float | None = None,
+        min_step: float | None = None,
+        max_step: float | None = None,
+        initial_step: float | None = None,
+        max_steps: int | None = None,
+        dense_output: bool | None = None,
+    ) -> None: ...
+    @property
+    def abs_tol(self) -> float: ...
+    @property
+    def rel_tol(self) -> float: ...
+    @property
+    def min_step(self) -> float: ...
+    @property
+    def max_step(self) -> float: ...
+    @property
+    def initial_step(self) -> float: ...
+    @property
+    def max_steps(self) -> int: ...
+    @property
+    def dense_output(self) -> bool: ...
+
+class VariationalEpoch:
+    def __init__(self, tdb_j2000_s: float, elapsed_tt_s: float) -> None: ...
+    @property
+    def tdb_j2000_s(self) -> float: ...
+    @property
+    def elapsed_tt_s(self) -> float: ...
+    @staticmethod
+    def from_tdb_seconds(
+        initial_tdb_j2000_s: float, tdb_j2000_s: float
+    ) -> VariationalEpoch: ...
+
+class VariationalEquations:
+    def __init__(
+        self,
+        force: _ForceModelObject,
+        parameters: Sequence[float],
+        sensitivity_parameters: Sequence[int],
+    ) -> None: ...
+    @property
+    def force(self) -> _ForceModelObject: ...
+    @property
+    def parameters(self) -> list[float]: ...
+    @property
+    def sensitivity_parameters(self) -> list[int]: ...
+
+class VariationalState:
+    @property
+    def state(self) -> CartesianState: ...
+    @property
+    def state_transition(self) -> npt.NDArray[np.float64]: ...
+    @property
+    def sensitivity(self) -> npt.NDArray[np.float64]: ...
+
+def propagate_variational(
+    initial: CartesianState,
+    epochs: Sequence[VariationalEpoch],
+    equations: VariationalEquations,
+    integrator: Integrator,
+    options: IntegratorOptions | None = None,
+    context: PropagationContext | None = None,
+) -> list[VariationalState]: ...
+
+class DenseOutput:
+    """Continuous Cartesian output from an accepted-step DP54 arc."""
+
+    @property
+    def coverage(self) -> tuple[float, float] | None: ...
+    def eval(self, t: float) -> CartesianState: ...
+
+class PropagationResult:
+    @property
+    def final_state(self) -> CartesianState: ...
+    @property
+    def dense(self) -> DenseOutput | None: ...
+
+class StatePropagator:
+    def __init__(
+        self,
+        initial: CartesianState,
+        force_model: ForceModelKind,
+        integrator: Integrator,
+        options: IntegratorOptions | None = None,
+        drag: DragParameters | None = None,
+        space_weather_table: SpaceWeatherTable | None = None,
+    ) -> None: ...
+    def propagate_to(
+        self,
+        epoch_tdb_seconds: float,
+        context: PropagationContext | None = None,
+        *,
+        additional_forces: Sequence[_ForceModelObject] = (),
+    ) -> PropagationResult: ...
+    def ephemeris_with_context(
+        self,
+        epochs_tdb_seconds: Sequence[float],
+        context: PropagationContext,
+        *,
+        additional_forces: Sequence[_ForceModelObject] = (),
+    ) -> list[CartesianState]: ...
+    def state_transition_matrix_to_with_context(
+        self, epoch_tdb_seconds: float, context: PropagationContext
+    ) -> npt.NDArray[np.float64]: ...
+    def propagate_covariance_with_context(
+        self,
+        initial: LabeledCovariance6,
+        epochs_tdb_seconds: Sequence[float],
+        context: PropagationContext,
+        *,
+        process_noise: ProcessNoise | None = None,
+        output_frame: CovarianceFrame = ...,
+    ) -> CovarianceEphemeris: ...
+    def propagate_state_with_covariance_with_context(
+        self,
+        covariance0: npt.NDArray[np.float64],
+        span_seconds: float,
+        context: PropagationContext,
+    ) -> tuple[CartesianState, npt.NDArray[np.float64]]: ...
+
+class OrbitParameterFitError(SolveError):
+    detail: dict[str, Any]
+
+STATE_PARAMETER_NAMES: list[str]
+
+class InertialPositionSample:
+    def __init__(
+        self, epoch: ClockInstant, position_gcrf_m: Sequence[float]
+    ) -> None: ...
+    @property
+    def epoch(self) -> ClockInstant: ...
+    @property
+    def position_gcrf_m(self) -> list[float]: ...
+
+class EstimatedForceParameter:
+    @property
+    def name(self) -> str: ...
+    @property
+    def initial_value(self) -> float: ...
+    @property
+    def value(self) -> float: ...
+
+class OrbitRtnResidual:
+    @property
+    def epoch_tdb_j2000_s(self) -> float: ...
+    @property
+    def elapsed_tt_s(self) -> float: ...
+    @property
+    def radial_m(self) -> float: ...
+    @property
+    def along_m(self) -> float: ...
+    @property
+    def cross_m(self) -> float: ...
+    def variational_epoch(self) -> VariationalEpoch: ...
+
+class OrbitParameterFit:
+    @property
+    def satellite(self) -> str: ...
+    @property
+    def initial_state(self) -> CartesianState: ...
+    @property
+    def force_parameters(self) -> list[EstimatedForceParameter]: ...
+    @property
+    def parameter_names(self) -> list[str]: ...
+    @property
+    def covariance(self) -> OrbitParameterCovariance: ...
+    @property
+    def residuals(self) -> list[OrbitRtnResidual]: ...
+    @property
+    def residual_stats(self) -> OrbitResidualStats: ...
+    @property
+    def seed_rms_3d_m(self) -> float: ...
+    @property
+    def iterations(self) -> int: ...
+    @property
+    def condition_number(self) -> float: ...
+    def sigma(self, name: str) -> float | None: ...
+    def correlation(self, first: str, second: str) -> float | None: ...
+    def force_parameter(self, name: str) -> EstimatedForceParameter | None: ...
+
+class OrbitParameterCovariance:
+    UNBOUNDED: OrbitParameterCovariance
+    @property
+    def is_estimated(self) -> bool: ...
+    @property
+    def matrix(self) -> npt.NDArray[np.float64] | None: ...
+    @property
+    def correlation(self) -> npt.NDArray[np.float64] | None: ...
+    @property
+    def variance_factor(self) -> float | None: ...
+    @property
+    def degrees_of_freedom(self) -> int | None: ...
+
+class OrbitParameterFitOptions:
+    def __init__(
+        self,
+        *,
+        force_model: ForceModelKind | None = None,
+        drag: DragParameters | None = None,
+        space_weather: SpaceWeatherTable | None = None,
+        additional_forces: Sequence[_ForceModelObject] = (),
+        estimated_parameters: Sequence[str] = (),
+        integrator: Integrator | None = None,
+        integrator_options: IntegratorOptions | None = None,
+        propagation_context: PropagationContext | None = None,
+        observation_sigma_m: float | None = None,
+        max_iterations: int | None = None,
+        convergence_threshold: float | None = None,
+        max_condition_number: float | None = None,
+        min_ledger_samples: int | None = None,
+    ) -> None: ...
+    @property
+    def force_model(self) -> ForceModelKind: ...
+    @property
+    def drag(self) -> DragParameters | None: ...
+    @property
+    def space_weather(self) -> SpaceWeatherTable | None: ...
+    @property
+    def additional_forces(self) -> list[_ForceModelObject]: ...
+    @property
+    def estimated_parameters(self) -> list[str]: ...
+    @property
+    def integrator(self) -> Integrator: ...
+    @property
+    def integrator_options(self) -> IntegratorOptions: ...
+    @property
+    def propagation_context(self) -> PropagationContext: ...
+    @property
+    def observation_sigma_m(self) -> float: ...
+    @property
+    def max_iterations(self) -> int: ...
+    @property
+    def convergence_threshold(self) -> float: ...
+    @property
+    def max_condition_number(self) -> float: ...
+    @property
+    def min_ledger_samples(self) -> int: ...
+
+def fit_inertial_orbit_parameters(
+    samples: Sequence[InertialPositionSample],
+    satellite: str,
+    initial_state: CartesianState | None,
+    options: OrbitParameterFitOptions,
+) -> OrbitParameterFit: ...
+def fit_inertial_orbit_parameters_with_validity(
+    samples: Sequence[InertialPositionSample],
+    satellite: str,
+    initial_state: CartesianState | None,
+    options: OrbitParameterFitOptions,
+    mode: ValidityMode,
+) -> tuple[OrbitParameterFit, str | None]: ...
+def fit_sp3_ecef_orbit_parameters(
+    product: Sp3,
+    satellite: str,
+    orientation_provider: Iers2010EarthOrientationProvider,
+    initial_state: CartesianState | None,
+    options: OrbitParameterFitOptions,
+) -> OrbitParameterFit: ...
+def fit_sp3_ecef_orbit_parameters_with_validity(
+    product: Sp3,
+    satellite: str,
+    orientation_provider: Iers2010EarthOrientationProvider,
+    initial_state: CartesianState | None,
+    options: OrbitParameterFitOptions,
+    mode: ValidityMode,
+) -> tuple[OrbitParameterFit, str | None]: ...
+def estimate_decay_with_context(
+    epoch_tdb_seconds: float,
+    position_km: Sequence[float],
+    velocity_km_s: Sequence[float],
+    drag: DragParameters,
+    context: PropagationContext,
+    *,
+    reentry_altitude_km: float = ...,
+    scan_step_s: float = ...,
+    crossing_tolerance_s: float = ...,
+    max_duration_s: float = ...,
+    max_scan_samples: int = ...,
+) -> DecayEstimate: ...
+def estimate_decay_with_source_and_context(
+    epoch_tdb_seconds: float,
+    position_km: Sequence[float],
+    velocity_km_s: Sequence[float],
+    drag: DragParameters,
+    source: SpaceWeatherTable,
+    context: PropagationContext,
+    *,
+    reentry_altitude_km: float = ...,
+    scan_step_s: float = ...,
+    crossing_tolerance_s: float = ...,
+    max_duration_s: float = ...,
+    max_scan_samples: int = ...,
+) -> DecayEstimate: ...
+
+_ForceModelObject = (
+    Ecom1SolarRadiationPressure
+    | Ecom2SolarRadiationPressure
+    | EmpiricalRtnAcceleration
+    | EarthRadiationPressure
+    | CompositeForceModel
+    | SolarRadiationPressure
+    | DragForce
+    | SourcedDragForce
+    | SphericalHarmonicGravity
+    | ForceModel
+    | DragParameters
+)

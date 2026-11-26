@@ -1,6 +1,3168 @@
 {
   "source": "scripts/core_goldens",
-  "core_revision": "012c6c38ea054b61293e83fc95ac60ff6d11fb8b",
+  "core_revision": "3c61740f5e3d71f930ce40a6504fc9ce320c0fa7",
+  "orbital_dynamics": {
+    "celestial": {
+      "sun_moon": [
+        [
+          [
+            "0x4218ac735eee63fc",
+            "0xc23ee8d7ffed6613",
+            "0xc22acd4686032d35"
+          ],
+          [
+            "0xc1b164337fbdc0c8",
+            "0xc1afc9573f03476e",
+            "0xc192141124cfab0d"
+          ]
+        ],
+        [
+          [
+            "0xc1ff1cc6e4a665f7",
+            "0x42403795fb3b28bd",
+            "0x422c1ed1e295536f"
+          ],
+          [
+            "0xc1aeaefb71ea1e6c",
+            "0x41acefa7efd482ca",
+            "0x419f577cbcba2c28"
+          ]
+        ],
+        [
+          [
+            "0x4218ac735ef9cce2",
+            "0xc23ee8d7ffeceae6",
+            "0xc22acd468602c266"
+          ],
+          [
+            "0xc1b164337fae00fe",
+            "0xc1afc9573f23e4eb",
+            "0xc192141124ed3312"
+          ]
+        ]
+      ],
+      "gcrs_to_mean": [
+        [
+          "0x3fefffe5db8e6ef9",
+          "0xbf72c200831d746d",
+          "0xbf604cb3097a2a49"
+        ],
+        [
+          "0x3f72c2008b2538f5",
+          "0x3fefffea0245877e",
+          "0xbed2dce448772ed1"
+        ],
+        [
+          "0x3f604cb2e4833c74",
+          "0xbed35b03075ed7b8",
+          "0x3feffffbd948e759"
+        ]
+      ],
+      "mean_to_gcrs": [
+        [
+          "0x3fefffe5db8e6ef9",
+          "0x3f72c2008b2538f5",
+          "0x3f604cb2e4833c74"
+        ],
+        [
+          "0xbf72c200831d746d",
+          "0x3fefffea0245877e",
+          "0xbed35b03075ed7b8"
+        ],
+        [
+          "0xbf604cb3097a2a49",
+          "0xbed2dce448772ed1",
+          "0x3feffffbd948e759"
+        ]
+      ],
+      "time": [
+        "0xbf191a2c344d6f44",
+        "0xbf191a2c344d6f44",
+        "0x3f191a2c34298872"
+      ],
+      "de": {
+        "coverage": [
+          "0xc1b2d494c0000000",
+          "0x41f1a3ffb4000000"
+        ],
+        "epoch": "0xc1b2d492cc000000",
+        "version": 440,
+        "record_size": 8144,
+        "constants": {
+          "AM": "0x409b280000000000",
+          "ASUN": "0x41253d8000000000",
+          "AU": "0x41a1d55d5d666666",
+          "BETA": "0x3ff0000000000000",
+          "C21M": "0x3def4ed92fccc6e7",
+          "C22M": "0x3ef777d05652e7e0",
+          "C31M": "0x3efddd409d7acd0c",
+          "C32M": "0x3ed44d6f3eebf4f7",
+          "C33M": "0x3ebcb77cc122d9ab",
+          "C41M": "0xbed7ed9100c5f8c3",
+          "C42M": "0xbebab240a47efb18",
+          "C43M": "0xbe75a7fcf21109c2",
+          "C44M": "0xbe8108faca8a0d5c",
+          "C51M": "0xbead11579193e198",
+          "C52M": "0x3ea7e3fe104e1b79",
+          "C53M": "0x3e5088e4518a88d9",
+          "C54M": "0x3e5706ad41280b9d",
+          "C55M": "0x3e4072e412ab1d48",
+          "C61M": "0x3eb42c62f1c7e6e6",
+          "C62M": "0xbea25b07f5ae16aa",
+          "C63M": "0xbe7276e103038e09",
+          "C64M": "0x3e1630d90c5d177d",
+          "C65M": "0x3e142a7c71a3b804",
+          "C66M": "0xbe12bfbde9e89bf8",
+          "C71M": "0x0000000000000000",
+          "C72M": "0x0000000000000000",
+          "C73M": "0x0000000000000000",
+          "C74M": "0x0000000000000000",
+          "C75M": "0x0000000000000000",
+          "C76M": "0x0000000000000000",
+          "C77M": "0x0000000000000000",
+          "C81M": "0x0000000000000000",
+          "C82M": "0x0000000000000000",
+          "C83M": "0x0000000000000000",
+          "C84M": "0x0000000000000000",
+          "C85M": "0x0000000000000000",
+          "C86M": "0x0000000000000000",
+          "C87M": "0x0000000000000000",
+          "C88M": "0x0000000000000000",
+          "C91M": "0x0000000000000000",
+          "C92M": "0x0000000000000000",
+          "C93M": "0x0000000000000000",
+          "C94M": "0x0000000000000000",
+          "C95M": "0x0000000000000000",
+          "C96M": "0x0000000000000000",
+          "C97M": "0x0000000000000000",
+          "C98M": "0x0000000000000000",
+          "C99M": "0x0000000000000000",
+          "CENTER": "0x0000000000000000",
+          "CLIGHT": "0x41124c41d4fdf3b6",
+          "COBLAT": "0x3f2a36e2eb1c432d",
+          "DENUM": "0x407b800000000000",
+          "DROTEX": "0x0000000000000000",
+          "DROTEY": "0x0000000000000000",
+          "EMRAT": "0x4054533c827e6309",
+          "GAMMA": "0x3ff0000000000000",
+          "GM1": "0x3dcb01bab9492df9",
+          "GM2": "0x3e08e36876185207",
+          "GM4": "0x3dda3fe5c8340f80",
+          "GM5": "0x3e92f5e83c24598f",
+          "GM6": "0x3e76b57737982648",
+          "GM7": "0x3e4bbefdbc860415",
+          "GM8": "0x3e505e1f1f5b4ac2",
+          "GM9": "0x3d8321e1be9690af",
+          "GMB": "0x3e0ee9dadb9b28b6",
+          "GMS": "0x3f33649541cf2bdd",
+          "GMSDOT": "0xbd39552ef775510e",
+          "IFAC": "0x3f3a36e2eb1c432d",
+          "J2E": "0x3f51bcdc2935275a",
+          "J2EDOT": "0xbd99f2cf3823b940",
+          "J2ET2": "0x3d6faa7ab552a552",
+          "J2M": "0x3f2aa2be0fcc8a3c",
+          "J2SUN": "0x3e8d79e06d407cf1",
+          "J3E": "0xbec53e4f1ee2cb67",
+          "J3M": "0x3ee1bdbcde4910c7",
+          "J3SUN": "0x0000000000000000",
+          "J4E": "0xbebb2d68afd2d9f5",
+          "J4M": "0xbee45a0135837dd9",
+          "J4SUN": "0x0000000000000000",
+          "J5E": "0xbe8e90e5d8ab71aa",
+          "J5M": "0x3ea8e79d3c41a0e9",
+          "J6M": "0xbeecdf64ff104347",
+          "J7M": "0x0000000000000000",
+          "J8M": "0x0000000000000000",
+          "J9M": "0x0000000000000000",
+          "JDEPOC": "0x41429e6840000000",
+          "K2E0": "0x3fd570a3d70a3d71",
+          "K2E1": "0x3fd1ba5e353f7cee",
+          "K2E2": "0x3fd21cac083126e9",
+          "K2M": "0x3f98c5436b8f9b13",
+          "KVC": "0x3e43abf7d2bdc0a6",
+          "LBET": "0x3f44af0f80cd2add",
+          "LENUM": "0x407b800000000000",
+          "LGAM": "0x3f2ddb547ae09914",
+          "MA0001": "0x3d43a73f75ab587b",
+          "MA0002": "0x3d21275ae03f4a20",
+          "MA0003": "0x3cf34934d9f24ce7",
+          "MA0004": "0x3d25b35a307da64f",
+          "MA0005": "0x3cb72cd45b0c4a2d",
+          "MA0006": "0x3cd9fbb5284bf53e",
+          "MA0007": "0x3ce6e488b72a0db2",
+          "MA0008": "0x3cc4ae762414f64a",
+          "MA0009": "0x3cda1a658dbb3458",
+          "MA0010": "0x3d0c3e46d708776e",
+          "MA0011": "0x3cd27ae98370624d",
+          "MA0012": "0x3cb7aa8d9fecc810",
+          "MA0013": "0x3cd484735c4e346d",
+          "MA0014": "0x3cd55f35b695219a",
+          "MA0015": "0x3cf450933d5ed515",
+          "MA0016": "0x3cefed0faae850fa",
+          "MA0017": "0x3ca34f3dd6ea9120",
+          "MA0018": "0x3cc15bed3c59d48f",
+          "MA0019": "0x3cd654ba0e12dad2",
+          "MA0020": "0x3cc495b2c96fda1f",
+          "MA0021": "0x3cac7a29f7017e68",
+          "MA0022": "0x3ccfb9a29afe3d6d",
+          "MA0023": "0x3cb3f0c7a69a00c3",
+          "MA0024": "0x3cd79d89ad983599",
+          "MA0026": "0x3ca9abb217a17394",
+          "MA0028": "0x3cb887ff32b95920",
+          "MA0029": "0x3ce005cf064b5a4e",
+          "MA0030": "0x3c9072153d69f7cd",
+          "MA0031": "0x3ce5ad79a5e7daa6",
+          "MA0032": "0x3c96b25c59386192",
+          "MA0034": "0x3cb69ed41d6ccaa8",
+          "MA0035": "0x3c97d6dd36c9b88e",
+          "MA0036": "0x3cc2103a364d6fd5",
+          "MA0037": "0x3cb17f1c3ba106a8",
+          "MA0038": "0x3c978998ee510b13",
+          "MA0039": "0x3cdd407e2369083e",
+          "MA0040": "0x3cbaf1f189127ac0",
+          "MA0041": "0x3cd5b7abede3c531",
+          "MA0042": "0x3cab001715d08cf6",
+          "MA0043": "0x3ca24762fc4abfb5",
+          "MA0044": "0x3c9767806b800c9b",
+          "MA0045": "0x3cccf55155a0671a",
+          "MA0047": "0x3cd1337243857f04",
+          "MA0048": "0x3ce130bd1d424fbe",
+          "MA0049": "0x3cccef331c7acc99",
+          "MA0050": "0x3c9a2163c585074e",
+          "MA0051": "0x3cc429f50af0ea5d",
+          "MA0052": "0x3cfaf14622072594",
+          "MA0054": "0x3cb274e221ed9f64",
+          "MA0056": "0x3cbf39c8acd7882d",
+          "MA0057": "0x3c9589d607d125fa",
+          "MA0058": "0x3ca9f57113099efd",
+          "MA0059": "0x3cc6109e3b17a637",
+          "MA0060": "0x3c7117e2d2e5fdd3",
+          "MA0062": "0x3ca5ecc3abb20f36",
+          "MA0063": "0x3cb49b8dbd9970a7",
+          "MA0065": "0x3ce2d72c2211ddec",
+          "MA0068": "0x3ca0def64b444bc8",
+          "MA0069": "0x3cd4343b58c4a2aa",
+          "MA0070": "0x3ca198be7568b60e",
+          "MA0071": "0x3ca2e8b701893524",
+          "MA0072": "0x3ca5be1c05f0c3f1",
+          "MA0074": "0x3cab6615e599d4d2",
+          "MA0075": "0x3c90b9aba8a92808",
+          "MA0076": "0x3cc9eda1c0a2ce25",
+          "MA0077": "0x3c8e64c71d7342c2",
+          "MA0078": "0x3cad5a806cb48f4c",
+          "MA0079": "0x3c8bcf4d667c2226",
+          "MA0080": "0x3c9046d5f1ddc243",
+          "MA0081": "0x3ca23e72ffd23f3a",
+          "MA0082": "0x3c8611f740995212",
+          "MA0083": "0x3caa9a8083e1a22f",
+          "MA0084": "0x3c959ad93ea7de15",
+          "MA0085": "0x3cce4d613f7fad5c",
+          "MA0086": "0x3ca4b4b348943dcc",
+          "MA0087": "0x3cf5c5de731da090",
+          "MA0088": "0x3ce7e5458739e2d7",
+          "MA0089": "0x3cc48923fd735c13",
+          "MA0090": "0x3cb30b418c8380af",
+          "MA0091": "0x3ca475620ef3ad7c",
+          "MA0092": "0x3cad24c90e7a4a88",
+          "MA0093": "0x3cc5396d141c168a",
+          "MA0094": "0x3ce18af99cac42d1",
+          "MA0095": "0x3cc095311be693c7",
+          "MA0096": "0x3cd0fc8d913652ba",
+          "MA0097": "0x3c9d987b7ede4b9f",
+          "MA0098": "0x3cb6f5ed9eed1249",
+          "MA0099": "0x3c8ce8410aa06d54",
+          "MA0100": "0x3c98a56c30e2ba20",
+          "MA0102": "0x3c94f53e93aa0fec",
+          "MA0103": "0x3ca28d80ae16baaf",
+          "MA0104": "0x3cbfcde3437890d3",
+          "MA0105": "0x3ca43f4afedfbd89",
+          "MA0106": "0x3c911a821693e1f5",
+          "MA0107": "0x3cecfed4631f9360",
+          "MA0109": "0x3c992cc53ab799f8",
+          "MA0110": "0x3ca03f1af7d35b3c",
+          "MA0112": "0x3c8197e6e371e605",
+          "MA0113": "0x3c81c437dab79cbb",
+          "MA0114": "0x3cb1ee4cd70324a6",
+          "MA0115": "0x3c94199093896b18",
+          "MA0117": "0x3ccfb08a0b46cd9c",
+          "MA0118": "0x3c6e569f7de29c2e",
+          "MA0120": "0x3cd21a6a086a7704",
+          "MA0121": "0x3cb5a324aa4567ec",
+          "MA0124": "0x3ca44b8819e52014",
+          "MA0127": "0x3cb1d6792a001ea7",
+          "MA0128": "0x3cceee11507d843c",
+          "MA0129": "0x3ca3bc5b69164ab9",
+          "MA0130": "0x3cd7e903dcf26f8a",
+          "MA0132": "0x3c742e5f81b93e07",
+          "MA0134": "0x3ca15a86eedfd40f",
+          "MA0135": "0x3ca4eb7a79cc344a",
+          "MA0137": "0x3cb2f1f4e5abff54",
+          "MA0140": "0x3cb81ac25c22c4aa",
+          "MA0141": "0x3caf8bbd2132e26a",
+          "MA0143": "0x3cb20095946368df",
+          "MA0144": "0x3cbd5ae7a2de846d",
+          "MA0145": "0x3cb6916d438913f0",
+          "MA0146": "0x3ccab6b78a830638",
+          "MA0147": "0x3cb1e9992cf3fa16",
+          "MA0148": "0x3cb3e9c78b3da329",
+          "MA0150": "0x3cb36366d29991b1",
+          "MA0154": "0x3ce12b99f39b348a",
+          "MA0159": "0x3cabb8e984e66ad1",
+          "MA0160": "0x3c92c6ab4934f0f8",
+          "MA0162": "0x3c9c89d8d19b4eaa",
+          "MA0163": "0x3ca375258c8f821f",
+          "MA0164": "0x3cb35a1fe5af3cb6",
+          "MA0165": "0x3cb30ff4fa7346c2",
+          "MA0168": "0x3ccddaaf3a75ae64",
+          "MA0171": "0x3cb5ce73a2a12dc2",
+          "MA0172": "0x3c8adb371fc3585d",
+          "MA0173": "0x3cb92e1d227ace05",
+          "MA0175": "0x3c95139dded18240",
+          "MA0176": "0x3ca6ac10295c04bf",
+          "MA0177": "0x3c826ad1b70267c9",
+          "MA0181": "0x3cc275726e404be3",
+          "MA0185": "0x3ca4f4b7608320c2",
+          "MA0187": "0x3cc93752eca2c7fe",
+          "MA0191": "0x3c9ab8171e2a2daf",
+          "MA0192": "0x3c9777d4b5c609df",
+          "MA0194": "0x3cb1b2cd5f6cdd69",
+          "MA0195": "0x3c9974a4890e3cd5",
+          "MA0196": "0x3cc9e619aea274c6",
+          "MA0198": "0x3c83ff7b99c48a08",
+          "MA0200": "0x3ca5b58a5288f621",
+          "MA0201": "0x3ca803942d54832d",
+          "MA0203": "0x3cc2aa2607b35554",
+          "MA0205": "0x3c8e2f9bc7b82663",
+          "MA0206": "0x3ca9332995177c69",
+          "MA0209": "0x3ce192eea2c1a6ca",
+          "MA0210": "0x3c9616a7a362a489",
+          "MA0211": "0x3c95ca6d98e65932",
+          "MA0212": "0x3cc012184f0ac4f2",
+          "MA0213": "0x3c94fcbb804069ea",
+          "MA0216": "0x3cbdd9fc625de165",
+          "MA0221": "0x3ca4f27df85702fb",
+          "MA0223": "0x3c8fd3ae5445fd2e",
+          "MA0224": "0x3c8abd24fca7faf4",
+          "MA0225": "0x3c91b90cb88146b5",
+          "MA0227": "0x3cc313c019f55cbc",
+          "MA0230": "0x3cb32109bbcbab06",
+          "MA0233": "0x3caccb2e2a6694e7",
+          "MOISUN": "0x3fb19f7f8ca8198f",
+          "OMEGAX": "0x3f07ee579a51c8e6",
+          "OMEGAY": "0xbec29b6783ded07b",
+          "OMEGAZ": "0x3fcd6ed548828f17",
+          "OMGCX": "0xbf7bb3a7c682e83e",
+          "OMGCY": "0xbf516f3f6b033793",
+          "OMGCZ": "0x3fcd6e418de3bdd6",
+          "OMGSUN": "0x3fcfb030fb7e81e3",
+          "PHI": "0x3f7501486fba06f5",
+          "PHIC": "0xbf63d2eae59f3551",
+          "PSI": "0x3ff4b4e94280283d",
+          "PSIC": "0xbfdda357e4621eaf",
+          "PSIDOT": "0x0000000000000000",
+          "RE": "0x40b8ea22f837b4a2",
+          "ROTEX": "0x3f75e394d2bca993",
+          "ROTEY": "0xbf918a37fa084522",
+          "S21M": "0x3e16ec82f3989b4e",
+          "S22M": "0x0000000000000000",
+          "S31M": "0x3ed8b60733664d5d",
+          "S32M": "0x3ebbf413eea643d4",
+          "S33M": "0xbe909a9c11380a6b",
+          "S41M": "0x3eba7d5e8a96842a",
+          "S42M": "0xbeb96c9168343d76",
+          "S43M": "0xbeaaf5f12952d96e",
+          "S44M": "0x3e7645295fe542e1",
+          "S51M": "0xbecd96aa7f7a73a1",
+          "S52M": "0x3e86f657fff02894",
+          "S53M": "0x3e9348da4ee0fb9d",
+          "S54M": "0x3e0217b609dae4df",
+          "S55M": "0xbe3d21477c5eba84",
+          "S61M": "0xbec1285c279bb87e",
+          "S62M": "0xbe9218df6074faeb",
+          "S63M": "0xbe7313788c450bb5",
+          "S64M": "0xbe507e935642a447",
+          "S65M": "0xbe41ec88935e75f3",
+          "S66M": "0x3e1cf020dd131489",
+          "S71M": "0x0000000000000000",
+          "S72M": "0x0000000000000000",
+          "S73M": "0x0000000000000000",
+          "S74M": "0x0000000000000000",
+          "S75M": "0x0000000000000000",
+          "S76M": "0x0000000000000000",
+          "S77M": "0x0000000000000000",
+          "S81M": "0x0000000000000000",
+          "S82M": "0x0000000000000000",
+          "S83M": "0x0000000000000000",
+          "S84M": "0x0000000000000000",
+          "S85M": "0x0000000000000000",
+          "S86M": "0x0000000000000000",
+          "S87M": "0x0000000000000000",
+          "S88M": "0x0000000000000000",
+          "S91M": "0x0000000000000000",
+          "S92M": "0x0000000000000000",
+          "S93M": "0x0000000000000000",
+          "S94M": "0x0000000000000000",
+          "S95M": "0x0000000000000000",
+          "S96M": "0x0000000000000000",
+          "S97M": "0x0000000000000000",
+          "S98M": "0x0000000000000000",
+          "S99M": "0x0000000000000000",
+          "TAUE0": "0x3fb3b645a1cac083",
+          "TAUE1": "0xbf847ae147ae147b",
+          "TAUE2": "0xbfcadb762f2a2b29",
+          "TAUER1": "0x3f886e4bc3302c0a",
+          "TAUER2": "0xbf485363df781f00",
+          "TAUM": "0x3fc295b690a4d342",
+          "TDATEB": "0x42475b18822c0000",
+          "TDATEF": "0x42475b1886f20000",
+          "THT": "0x3fd8791de2b89c6f",
+          "THTC": "0x3fda4e2495ed4064",
+          "X1": "0x3fd7271bb6fc0fa1",
+          "X2": "0x3fe39ba869136117",
+          "X4": "0xbfbc3533fbf93e0e",
+          "X5": "0xc01584d20b6b8462",
+          "X6": "0x401f93daf45a2d6d",
+          "X7": "0xc03243f189025829",
+          "X8": "0xc0300e16fc865a58",
+          "X9": "0xc03e7bba727f8297",
+          "XB": "0x3fbeda2e4f3a7b08",
+          "XC": "0x0000000000000000",
+          "XD1": "0x3f6b96258dcd0148",
+          "XD2": "0x3f866e09be1ea79e",
+          "XD4": "0x3f8da88e92487f19",
+          "XD5": "0x3f51e43ba931ca8c",
+          "XD6": "0xbf6a5bb481677d3b",
+          "XD7": "0x3f2cfdee1a489881",
+          "XD8": "0x3f65a64a615fa7c0",
+          "XD9": "0x3f351dbe2bd26ebf",
+          "XDB": "0x3f9136f91e67bbd8",
+          "XDC": "0x0000000000000000",
+          "XDM": "0x3f43b243d08ec203",
+          "XDS": "0xbe979afcf8c9ed75",
+          "XM": "0xbf4a7b7b9fc966d3",
+          "XS": "0x3f727072f6ae1e68",
+          "Y1": "0xbfb73d820f0330d4",
+          "Y2": "0xbfd64b9f972f5b84",
+          "Y4": "0xbff53dd940b5af11",
+          "Y5": "0xbfea934e349ed7b4",
+          "Y6": "0x401262cb102aaf68",
+          "Y7": "0xbff297603a6c0e3a",
+          "Y8": "0xc037f133889fd55d",
+          "Y9": "0xbfebeac7053e7981",
+          "YB": "0xbfeda078ac388d1a",
+          "YC": "0x0000000000000000",
+          "YD1": "0x3f997df2fe8ac639",
+          "YD2": "0x3f8ffc2a18eec0f4",
+          "YD4": "0x3f2fc7b5fd014887",
+          "YD5": "0xbf7ab2bd91d67a02",
+          "YD6": "0x3f71c26d39a3d516",
+          "YD7": "0xbf6ed27b438bac2d",
+          "YD8": "0xbf588c60ad354a2d",
+          "YD9": "0xbf69c08e951a8b7d",
+          "YDB": "0x3f5ca4f0bd166490",
+          "YDC": "0x0000000000000000",
+          "YDM": "0xbf25f2899c556a76",
+          "YDS": "0x3ed5b76ee618b860",
+          "YM": "0xbf60570ad26e3a45",
+          "YS": "0x3f49200c0eedeed8",
+          "Z1": "0xbfb5f167e67072f6",
+          "Z2": "0xbfc8fedfa29e2ff3",
+          "Z4": "0xbfe36371486a9259",
+          "Z5": "0xbfccc7317e33edbc",
+          "Z6": "0x3ff8f06b3b528d92",
+          "Z7": "0xbfd001b98d847429",
+          "Z8": "0xc022cce1685b2b41",
+          "Z9": "0x4021d2b983774cad",
+          "ZB": "0xbfd9b2d518edea92",
+          "ZC": "0x0000000000000000",
+          "ZD1": "0x3f8a839705fe2bce",
+          "ZD2": "0x3f79eea53ea24f2a",
+          "ZD4": "0xbf32732258aff17d",
+          "ZD5": "0xbf671b9c5d7f8ae9",
+          "ZD6": "0x3f5f995432f83dff",
+          "ZD7": "0xbf5b0cdbcf46323b",
+          "ZD8": "0xbf4640379565f7d9",
+          "ZD9": "0xbf51a93f8d8c78b2",
+          "ZDB": "0x3f48d8444e2ce63c",
+          "ZDC": "0x0000000000000000",
+          "ZDM": "0xbf166dfa5e2a7ebd",
+          "ZDS": "0x3ec2b2efa5d88642",
+          "ZM": "0xbf51d04f6a4a2834",
+          "ZS": "0x3f317270e8501cf2"
+        },
+        "astronomical_unit_m": "0x42416a5d2d360000",
+        "earth_moon_mass_ratio": "0x4054533c827e6309",
+        "gm": [
+          "0x441cc705344ebf28",
+          "0x42b409b1b2e0e803",
+          "0x42f277508fa78002",
+          "0x42f6efbeb0672084",
+          "0x42f6a86655d9f4ec",
+          "0x4291d616a34ae634",
+          "0x42c379e1103b260f",
+          "0x437c22c966cb038f",
+          "0x4360d95859421d29",
+          "0x4334961e4bda5bff",
+          "0x433849c90153d231",
+          "0x426c640a97600002",
+          "0x441cd0e7da96ef8a"
+        ],
+        "sun_state": [
+          [
+            "0x420e6c3c9663ae20",
+            "0xc23f3b9b8cb6f202",
+            "0xc22b1583f8bcb55c"
+          ],
+          [
+            "0x40dd65803f88b795",
+            "0x40a881dbb440fe7c",
+            "0x409544a0193bfd3a"
+          ]
+        ],
+        "moon_state": [
+          [
+            "0x417f84b81ec75869",
+            "0xc1b4dc5edca37fc6",
+            "0xc1a530b5444ca438"
+          ],
+          [
+            "0x408f106690a2fb77",
+            "0x405477e9c5490455",
+            "0x405b9ce36707b550"
+          ]
+        ],
+        "positions": [
+          [
+            "0x420e6c3c9663ae20",
+            "0xc23f3b9b8cb6f202",
+            "0xc22b1583f8bcb55c"
+          ],
+          [
+            "0x417f84b81ec75869",
+            "0xc1b4dc5edca37fc6",
+            "0xc1a530b5444ca438"
+          ]
+        ]
+      }
+    },
+    "radiation": {
+      "ecom1": {
+        "parameters": [
+          [
+            "ecom1.d0",
+            "0x3e212e0be826d695"
+          ],
+          [
+            "ecom1.dc",
+            "0x0000000000000000"
+          ],
+          [
+            "ecom1.ds",
+            "0x0000000000000000"
+          ],
+          [
+            "ecom1.y0",
+            "0x0000000000000000"
+          ],
+          [
+            "ecom1.yc",
+            "0x0000000000000000"
+          ],
+          [
+            "ecom1.ys",
+            "0x0000000000000000"
+          ],
+          [
+            "ecom1.b0",
+            "0x0000000000000000"
+          ],
+          [
+            "ecom1.bc",
+            "0x0000000000000000"
+          ],
+          [
+            "ecom1.bs",
+            "0x0000000000000000"
+          ]
+        ],
+        "acceleration": [
+          "0x3d59572541ad1007",
+          "0xbd7fc0e36a52503e",
+          "0xbd6b88949a090d7d"
+        ],
+        "acceleration_with_parameters": [
+          "0x3d59572541ad1007",
+          "0xbd7fc0e36a52503e",
+          "0xbd6b88949a090d7d"
+        ],
+        "partials": {
+          "position": [
+            [
+              "0xbbcf0fed1d7d393b",
+              "0xbba4ddd5fd8e6a2f",
+              "0xbb9217eb830ea55f"
+            ],
+            [
+              "0xbba4ddd5fd8e6a2f",
+              "0xbba7d2898f3aa553",
+              "0x3bb6ac262ea604b3"
+            ],
+            [
+              "0xbb9217eb830ea55f",
+              "0x3bb6ac262ea604b3",
+              "0xbbcb302a002797b7"
+            ]
+          ],
+          "velocity": [
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ]
+          ]
+        },
+        "parameter_partials": [
+          [
+            "0x3f2799a0053f2a7f",
+            "0xbf4d929e02097f9e",
+            "0xbf39a4808aa80463"
+          ],
+          [
+            "0x3f26c91b25fe58f4",
+            "0xbf4c8d53b3be6e64",
+            "0xbf38c1efc808f1f6"
+          ],
+          [
+            "0x3f089642c37e9e79",
+            "0xbf2ecf3065603753",
+            "0xbf1ab7009c0e8cbe"
+          ],
+          [
+            "0x3eff44b0bacc30bc",
+            "0xbf39ba7bbf362e36",
+            "0x3f4e1f1411b81e3b"
+          ],
+          [
+            "0x3efe306b29f93305",
+            "0xbf38d728c554a419",
+            "0x3f4d14f0b76b0a73"
+          ],
+          [
+            "0x3ee049b4e796b0f0",
+            "0xbf1acde71f0ccf94",
+            "0x3f2f6186130663e9"
+          ],
+          [
+            "0xbf501bdbd6a92f6c",
+            "0xbf2739290fa21f08",
+            "0xbf06f356663f67d6"
+          ],
+          [
+            "0xbf4f1b0ed75d8b31",
+            "0xbf266bf88113ba0a",
+            "0xbf06288ec38ab04e"
+          ],
+          [
+            "0xbf30c84d29f679bf",
+            "0xbf0831c329d41385",
+            "0xbee7e9050eb6e00a"
+          ]
+        ]
+      },
+      "ecom2": {
+        "parameters": [
+          [
+            "ecom2.b0",
+            "0x0000000000000000"
+          ],
+          [
+            "ecom2.b1c",
+            "0x0000000000000000"
+          ],
+          [
+            "ecom2.b1s",
+            "0x0000000000000000"
+          ],
+          [
+            "ecom2.d0",
+            "0x3e212e0be826d695"
+          ],
+          [
+            "ecom2.d2c",
+            "0x0000000000000000"
+          ],
+          [
+            "ecom2.d2s",
+            "0x0000000000000000"
+          ],
+          [
+            "ecom2.y0",
+            "0x0000000000000000"
+          ]
+        ],
+        "acceleration": [
+          "0x3d59572541ad1007",
+          "0xbd7fc0e36a52503f",
+          "0xbd6b88949a090d7d"
+        ],
+        "acceleration_with_parameters": [
+          "0x3d59572541ad1007",
+          "0xbd7fc0e36a52503f",
+          "0xbd6b88949a090d7d"
+        ],
+        "partials": {
+          "position": [
+            [
+              "0xbbcf0fed1d7d393b",
+              "0xbba4ddd5fd8e6a2f",
+              "0xbb9217eb830ea560"
+            ],
+            [
+              "0xbba4ddd5fd8e6a2f",
+              "0xbba7d2898f3aa54b",
+              "0x3bb6ac262ea604b4"
+            ],
+            [
+              "0xbb9217eb830ea560",
+              "0x3bb6ac262ea604b4",
+              "0xbbcb302a002797b7"
+            ]
+          ],
+          "velocity": [
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ]
+          ]
+        },
+        "parameter_partials": [
+          [
+            "0xbf501bdbd6a92f6d",
+            "0xbf2739290fa21f08",
+            "0xbf06f356663f67d8"
+          ],
+          [
+            "0xbf0558901cf8e69c",
+            "0xbedec5fc85e9c250",
+            "0xbebe6976a53b1aa7"
+          ],
+          [
+            "0xbf5018524eafad6b",
+            "0xbf27340f9a2a4696",
+            "0xbf06ee4c45c26e5b"
+          ],
+          [
+            "0x3f2799a0053f2a7f",
+            "0xbf4d929e02097f9f",
+            "0xbf39a4808aa80463"
+          ],
+          [
+            "0xbf2784e7bb92a966",
+            "0x3f4d78a754a3eabb",
+            "0x3f398dfd30b22a10"
+          ],
+          [
+            "0x3eef3ef21880a0dc",
+            "0xbf1393a5075f1b20",
+            "0xbf00f99c3a104e2e"
+          ],
+          [
+            "0x3eff44b0bacc30bd",
+            "0xbf39ba7bbf362e38",
+            "0x3f4e1f1411b81e3c"
+          ]
+        ]
+      },
+      "empirical": {
+        "parameters": [
+          [
+            "empirical.radial.constant",
+            "0x3e45798ee2308c3a"
+          ]
+        ],
+        "acceleration": [
+          "0x3e45402118726f03",
+          "0x3e18494a65151128",
+          "0x3df36dd51daa7420"
+        ],
+        "acceleration_with_parameters": [
+          "0x3e45402118726f03",
+          "0x3e18494a65151128",
+          "0x3df36dd51daa7420"
+        ],
+        "partials": {
+          "position": [
+            [
+              "0x3d208a28a63d87fa",
+              "0xbd4bd4c952ceec54",
+              "0xbd2643d4423f2377"
+            ],
+            [
+              "0xbd4bd4c952ceec54",
+              "0x3d785f46f9e3491b",
+              "0xbcf972172723963e"
+            ],
+            [
+              "0xbd2643d4423f2377",
+              "0xbcf972172723963e",
+              "0x3d78d96a9c38c0b9"
+            ]
+          ],
+          "velocity": [
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ]
+          ]
+        },
+        "parameter_partials": [
+          [
+            "0x3fefaa6ca0ee0af8",
+            "0x3fc2183e12d12ad7",
+            "0x3f9cf3968481de24"
+          ]
+        ]
+      },
+      "srp": {
+        "parameters": [
+          [
+            "srp.cr",
+            "0x3ff8000000000000"
+          ]
+        ],
+        "acceleration": [
+          "0xbdbc028a33fa3984",
+          "0x3de18c9de5ae167d",
+          "0x3dce6f1ea344ccbd"
+        ],
+        "acceleration_with_parameters": [
+          "0xbdbc028a33fa3984",
+          "0x3de18c9de5ae167d",
+          "0x3dce6f1ea344ccbd"
+        ],
+        "partials": {
+          "position": [
+            [
+              "0x3c30044f81bd174e",
+              "0x3c214c6eb14f8d05",
+              "0x3c0dffcf8e6aae16"
+            ],
+            [
+              "0x3c214c6eb14f8d04",
+              "0xbc399c42c06d9431",
+              "0xbc32cbb1c6e5f564"
+            ],
+            [
+              "0x3c0dffcf8e6aae14",
+              "0xbc32cbb1c6e5f563",
+              "0x3c232fe67d60f9c3"
+            ]
+          ],
+          "velocity": [
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ]
+          ]
+        },
+        "parameter_partials": [
+          [
+            "0xbdb2ac5c22a6d102",
+            "0x3dd76627dce81dfb",
+            "0x3dc44a146cd8887e"
+          ]
+        ]
+      },
+      "erp": {
+        "parameters": [],
+        "acceleration": [
+          "0x3db944fc9f3d546d",
+          "0x3d92501703ffeb5e",
+          "0x3d741b5746b1ec4b"
+        ],
+        "acceleration_with_parameters": [
+          "0x3db944fc9f3d546d",
+          "0x3d92501703ffeb5e",
+          "0x3d741b5746b1ec4b"
+        ],
+        "partials": {
+          "position": [
+            [
+              "0xbcf8bebdf5648932",
+              "0xbcee6da43230a131",
+              "0xbcd9dd7750650af2"
+            ],
+            [
+              "0xbcd2783edc18ed28",
+              "0x3ce32390e7581f93",
+              "0xbcc002fb59f667bb"
+            ],
+            [
+              "0xbca09abb688a2344",
+              "0xbcb0a0ecd4a1dc9c",
+              "0x3cede76050e2cc93"
+            ]
+          ],
+          "velocity": [
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ]
+          ]
+        },
+        "parameter_partials": []
+      },
+      "drag": {
+        "parameters": [],
+        "acceleration": [
+          "0x3d975a98504449ae",
+          "0xbdc6025378fa5d77",
+          "0xbd942701448a4f26"
+        ],
+        "acceleration_with_parameters": [
+          "0x3d975a98504449ae",
+          "0xbdc6025378fa5d77",
+          "0xbd942701448a4f26"
+        ],
+        "partials": {
+          "position": [
+            [
+              "0xbd323ae67cff347f",
+              "0xbd075ca83cfbcf8c",
+              "0xbce4f9003c286fee"
+            ],
+            [
+              "0x3d6131ecf259ff94",
+              "0x3d35215ca93b54f2",
+              "0x3d13c3cffc3fd92a"
+            ],
+            [
+              "0x3d2f764184f22c5d",
+              "0x3d035903407d428f",
+              "0x3ce218f48d7d7222"
+            ]
+          ],
+          "velocity": [
+            [
+              "0xbd999eee2bd94c86",
+              "0x3d69ef1f1c7f7cdc",
+              "0x3d37bf08c16052e3"
+            ],
+            [
+              "0x3d69ef1f1c7f7cdc",
+              "0xbda8d0d61b9a56e9",
+              "0xbd6660fb4cd17483"
+            ],
+            [
+              "0x3d37bf08c1a07fc7",
+              "0xbd6660fb4cc1694a",
+              "0xbd9982d1baec4db5"
+            ]
+          ]
+        },
+        "parameter_partials": []
+      },
+      "sourced_drag": {
+        "parameters": [],
+        "acceleration": [
+          "0x3d9c57dd427c7386",
+          "0xbdcab60b7b4f4b5a",
+          "0xbd98752f7955b7b7"
+        ],
+        "acceleration_with_parameters": [
+          "0x3d9c57dd427c7386",
+          "0xbdcab60b7b4f4b5a",
+          "0xbd98752f7955b7b7"
+        ],
+        "partials": {
+          "position": [
+            [
+              "0xbd36a889fa6904f2",
+              "0xbd0bda41eea28305",
+              "0xbce318de1396cce6"
+            ],
+            [
+              "0x3d655f169c56437c",
+              "0x3d392c49803c0f8f",
+              "0x3d11ff54639c0c6c"
+            ],
+            [
+              "0x3d338d5d35e50680",
+              "0x3d070cbed57f7235",
+              "0x3ce07ab32c1e67ad"
+            ]
+          ],
+          "velocity": [
+            [
+              "0xbd9f182cf8fc3f8a",
+              "0x3d6f797fd8cac5b7",
+              "0x3d3cd1c436c26f55"
+            ],
+            [
+              "0x3d6f797fd90af29b",
+              "0xbdae1e0d3d116dad",
+              "0xbd6b28ed6c8d298b"
+            ],
+            [
+              "0x3d3cd1c437029c39",
+              "0xbd6b28ed6cd55c0c",
+              "0xbd9ef60f286cedf5"
+            ]
+          ]
+        },
+        "parameter_partials": []
+      },
+      "geopotential": {
+        "parameters": [],
+        "acceleration": [
+          "0xbee58c71acbddde3",
+          "0xbeb8a081e9fd8fdf",
+          "0xbeada1a5ede68c64"
+        ],
+        "acceleration_with_parameters": [
+          "0xbee58c71acbddde3",
+          "0xbeb8a081e9fd8fdf",
+          "0xbeada1a5ede68c64"
+        ],
+        "partials": {
+          "position": [
+            [
+              "0x3e38836a2d08b7de",
+              "0x3e119c35ee4c0219",
+              "0x3e053625a15a0124"
+            ],
+            [
+              "0x3e119c35ee2521a8",
+              "0xbe16b3c91a8253f4",
+              "0x3dd83de1dd00b897"
+            ],
+            [
+              "0x3e053625a1662c02",
+              "0x3dd83de1dd355086",
+              "0xbe32d677e66fb5fb"
+            ]
+          ],
+          "velocity": [
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ]
+          ]
+        },
+        "parameter_partials": []
+      },
+      "zonal": {
+        "parameters": [],
+        "acceleration": [
+          "0xbf802a185b2a0997",
+          "0xbf52794068300af5",
+          "0xbf2da2c176f9e38d"
+        ],
+        "acceleration_with_parameters": [
+          "0xbf802a185b2a0997",
+          "0xbf52794068300af5",
+          "0xbf2da2c176f9e38d"
+        ],
+        "partials": {
+          "position": [
+            [
+              "0x3ec259fb9ab6b5a7",
+              "0x3e9fc86938adba39",
+              "0x3e7989b5f8c73714"
+            ],
+            [
+              "0x3e9fc86938adba39",
+              "0xbeb1c82ae297d3ee",
+              "0x3e4d2fab6575f5cc"
+            ],
+            [
+              "0x3e7989b5f8c73714",
+              "0x3e4d2fab6575f5cc",
+              "0xbeb2ebcc52d5975f"
+            ]
+          ],
+          "velocity": [
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ]
+          ]
+        },
+        "parameter_partials": []
+      },
+      "composite": {
+        "parameters": [
+          [
+            "empirical.radial.constant",
+            "0x3e45798ee2308c3a"
+          ]
+        ],
+        "acceleration": [
+          "0xbf8024a7e34e6466",
+          "0xbf52730903c74e2b",
+          "0xbf2d84db393ee378"
+        ],
+        "acceleration_with_parameters": [
+          "0xbf8024a7e34e6466",
+          "0xbf52730903c74e2b",
+          "0xbf2d84db393ee378"
+        ],
+        "partials": {
+          "position": [
+            [
+              "0x3ec24d9e8b8a996c",
+              "0x3e9fb6a4d1ab2890",
+              "0x3e795eea4155ba0c"
+            ],
+            [
+              "0x3e9fb6a4d1ab2890",
+              "0xbeb1c26fbe103743",
+              "0x3e4cfec293cfb00d"
+            ],
+            [
+              "0x3e795eea4155ba0c",
+              "0x3e4cfec293cfb00d",
+              "0xbeb2d8ca3d34cddd"
+            ]
+          ],
+          "velocity": [
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ]
+          ]
+        },
+        "parameter_partials": [
+          [
+            "0x3fefaa6ca0ee0af8",
+            "0x3fc2183e12d12ad7",
+            "0x3f9cf3968481de24"
+          ]
+        ]
+      },
+      "gravity": {
+        "parameters": [],
+        "acceleration": [
+          "0xbf8024a9375075ed",
+          "0xbf52730a885bf47c",
+          "0xbf2d84dda6f9872d"
+        ],
+        "acceleration_with_parameters": [
+          "0xbf8024a9375075ed",
+          "0xbf52730a885bf47c",
+          "0xbf2d84dda6f9872d"
+        ],
+        "partials": {
+          "position": [
+            [
+              "0x3ec24d9e87680f42",
+              "0x3e9fb6a5b0517326",
+              "0x3e795eeaf3745c1e"
+            ],
+            [
+              "0x3e9fb6a5b0517326",
+              "0xbeb1c2714404a6e1",
+              "0x3e4cfec35f606946"
+            ],
+            [
+              "0x3e795eeaf3745c1e",
+              "0x3e4cfec35f606946",
+              "0xbeb2d8cbcacb77a1"
+            ]
+          ],
+          "velocity": [
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ]
+          ]
+        },
+        "parameter_partials": []
+      },
+      "standalone_gravity": {
+        "two_body": [
+          "0xbf7e57e3be6ac7a1",
+          "0x3f54faf0d9f7e91d",
+          "0xbf568a6eaab5b8de"
+        ],
+        "j2": [
+          "0xbee07d96c8564cc6",
+          "0x3eb6cddac0311f90",
+          "0xbed4be654c44c079"
+        ]
+      },
+      "geometry": [
+        [
+          "0x3fefe1df8b675cc9",
+          "0x3fb39e759a2e14e1",
+          "0x3fa39ec2c144dd90"
+        ],
+        [
+          "0xbfa9492f477d78e3",
+          "0x3fc2f6e3759e1aa9",
+          "0x3fef9b7b195cd71d"
+        ],
+        [
+          "0x3fb1ecbf4019453b",
+          "0xbfef8d3a2e9fdea8",
+          "0x3fc3610e172d5a84"
+        ],
+        "0x3fb04c543e228329",
+        "0x3fd0dd0f1467415a",
+        "0x3ff0000000000000"
+      ],
+      "geometry_with_shadow": [
+        [
+          "0x3fefe1df8b675cc9",
+          "0x3fb39e759a2e14e1",
+          "0x3fa39ec2c144dd90"
+        ],
+        [
+          "0xbfa9492f477d78e3",
+          "0x3fc2f6e3759e1aa9",
+          "0x3fef9b7b195cd71d"
+        ],
+        [
+          "0x3fb1ecbf4019453b",
+          "0xbfef8d3a2e9fdea8",
+          "0x3fc3610e172d5a84"
+        ],
+        "0x3fb04c543e228329",
+        "0x3fd0dd0f1467415a",
+        "0x3ff0000000000000"
+      ],
+      "ecom1_sun": [
+        [
+          "0x3d8187098991d78f",
+          "0x3d459240a35a7c45",
+          "0x3d35929577e7cd37"
+        ],
+        {
+          "position": [
+            [
+              "0xbb6101a518a77c43",
+              "0x3b961bdd20099e02",
+              "0x3b861c3411c0d5ba"
+            ],
+            [
+              "0x3b961bdd20099e02",
+              "0xbbd1fda7a124dab6",
+              "0x3b4b361527a0594b"
+            ],
+            [
+              "0x3b861c3411c0d5ba",
+              "0x3b4b361527a0594b",
+              "0xbbd2120fab411aac"
+            ]
+          ],
+          "velocity": [
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ]
+          ]
+        },
+        [
+          [
+            "0x3f5052e10bfb93db",
+            "0x3f1416ff97bc7fdf",
+            "0x3f04174e98d9f968"
+          ],
+          [
+            "0x3f4f854cfddb496d",
+            "0x3f13657e8cef2217",
+            "0x3f0365cad4014a1d"
+          ],
+          [
+            "0x3f31019f5b73305b",
+            "0x3ef4ee0eaa0ea2c6",
+            "0x3ee4ee60f8e71c8a"
+          ],
+          [
+            "0xbf09e48a86a558f9",
+            "0x3f236b67e4fc02bb",
+            "0x3f502ed69427579c"
+          ],
+          [
+            "0xbf08ffc3f2b8c1b5",
+            "0x3f22bfd2f60a9149",
+            "0x3f4f3fb4ef66f223"
+          ],
+          [
+            "0xbeeaf9b81f554c8e",
+            "0x3f043b4a177ff96c",
+            "0x3f30dc1313954fd9"
+          ],
+          [
+            "0x3f125ae0832c4f13",
+            "0xbf50278a554fce28",
+            "0x3f23d81ed00dac91"
+          ],
+          [
+            "0x3f11b8b38304231c",
+            "0xbf4f319d678ac0cc",
+            "0x3f2328c95499c15c"
+          ],
+          [
+            "0x3ef31f5d53b7ac61",
+            "0xbf30d478b56ff6ab",
+            "0x3f04ac8cc89e25ea"
+          ]
+        ]
+      ],
+      "ecom1_sun_moon": [
+        [
+          "0x3d8187098991d78f",
+          "0x3d459240a35a7c45",
+          "0x3d35929577e7cd37"
+        ],
+        {
+          "position": [
+            [
+              "0xbb6101a518a77c43",
+              "0x3b961bdd20099e02",
+              "0x3b861c3411c0d5ba"
+            ],
+            [
+              "0x3b961bdd20099e02",
+              "0xbbd1fda7a124dab6",
+              "0x3b4b361527a0594b"
+            ],
+            [
+              "0x3b861c3411c0d5ba",
+              "0x3b4b361527a0594b",
+              "0xbbd2120fab411aac"
+            ]
+          ],
+          "velocity": [
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ]
+          ]
+        },
+        [
+          [
+            "0x3f5052e10bfb93db",
+            "0x3f1416ff97bc7fdf",
+            "0x3f04174e98d9f968"
+          ],
+          [
+            "0x3f4f854cfddb496d",
+            "0x3f13657e8cef2217",
+            "0x3f0365cad4014a1d"
+          ],
+          [
+            "0x3f31019f5b73305b",
+            "0x3ef4ee0eaa0ea2c6",
+            "0x3ee4ee60f8e71c8a"
+          ],
+          [
+            "0xbf09e48a86a558f9",
+            "0x3f236b67e4fc02bb",
+            "0x3f502ed69427579c"
+          ],
+          [
+            "0xbf08ffc3f2b8c1b5",
+            "0x3f22bfd2f60a9149",
+            "0x3f4f3fb4ef66f223"
+          ],
+          [
+            "0xbeeaf9b81f554c8e",
+            "0x3f043b4a177ff96c",
+            "0x3f30dc1313954fd9"
+          ],
+          [
+            "0x3f125ae0832c4f13",
+            "0xbf50278a554fce28",
+            "0x3f23d81ed00dac91"
+          ],
+          [
+            "0x3f11b8b38304231c",
+            "0xbf4f319d678ac0cc",
+            "0x3f2328c95499c15c"
+          ],
+          [
+            "0x3ef31f5d53b7ac61",
+            "0xbf30d478b56ff6ab",
+            "0x3f04ac8cc89e25ea"
+          ]
+        ]
+      ],
+      "ecom2_sun": [
+        [
+          "0x3d8187098991d790",
+          "0x3d459240a35a7c46",
+          "0x3d35929577e7cd37"
+        ],
+        {
+          "position": [
+            [
+              "0xbb6101a518a77bdb",
+              "0x3b961bdd20099e05",
+              "0x3b861c3411c0d5bb"
+            ],
+            [
+              "0x3b961bdd20099e05",
+              "0xbbd1fda7a124dab7",
+              "0x3b4b361527a0594c"
+            ],
+            [
+              "0x3b861c3411c0d5bb",
+              "0x3b4b361527a0594c",
+              "0xbbd2120fab411aac"
+            ]
+          ],
+          "velocity": [
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ]
+          ]
+        },
+        [
+          [
+            "0x3f125ae0832c4f16",
+            "0xbf50278a554fce29",
+            "0x3f23d81ed00dac8f"
+          ],
+          [
+            "0x3f12515b84828158",
+            "0xbf501f2980f20241",
+            "0x3f23cdd417a5ac54"
+          ],
+          [
+            "0x3ed2af353d3282f4",
+            "0xbf1071c2d7624b77",
+            "0x3ee4334b23fd9dd3"
+          ],
+          [
+            "0x3f5052e10bfb93dc",
+            "0x3f1416ff97bc7fe0",
+            "0x3f04174e98d9f968"
+          ],
+          [
+            "0x3f50310c9a3bf71d",
+            "0x3f13ed5d13880a79",
+            "0x3f03edab70ea550a"
+          ],
+          [
+            "0x3f2095427811e0c7",
+            "0x3ee468b19bc9e247",
+            "0x3ed46901de2cd6f4"
+          ],
+          [
+            "0xbf09e48a86a558f9",
+            "0x3f236b67e4fc02b9",
+            "0x3f502ed69427579c"
+          ]
+        ]
+      ],
+      "ecom2_sun_moon": [
+        [
+          "0x3d8187098991d790",
+          "0x3d459240a35a7c46",
+          "0x3d35929577e7cd37"
+        ],
+        {
+          "position": [
+            [
+              "0xbb6101a518a77bdb",
+              "0x3b961bdd20099e05",
+              "0x3b861c3411c0d5bb"
+            ],
+            [
+              "0x3b961bdd20099e05",
+              "0xbbd1fda7a124dab7",
+              "0x3b4b361527a0594c"
+            ],
+            [
+              "0x3b861c3411c0d5bb",
+              "0x3b4b361527a0594c",
+              "0xbbd2120fab411aac"
+            ]
+          ],
+          "velocity": [
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ],
+            [
+              "0x0000000000000000",
+              "0x0000000000000000",
+              "0x0000000000000000"
+            ]
+          ]
+        },
+        [
+          [
+            "0x3f125ae0832c4f16",
+            "0xbf50278a554fce29",
+            "0x3f23d81ed00dac8f"
+          ],
+          [
+            "0x3f12515b84828158",
+            "0xbf501f2980f20241",
+            "0x3f23cdd417a5ac54"
+          ],
+          [
+            "0x3ed2af353d3282f4",
+            "0xbf1071c2d7624b77",
+            "0x3ee4334b23fd9dd3"
+          ],
+          [
+            "0x3f5052e10bfb93dc",
+            "0x3f1416ff97bc7fe0",
+            "0x3f04174e98d9f968"
+          ],
+          [
+            "0x3f50310c9a3bf71d",
+            "0x3f13ed5d13880a79",
+            "0x3f03edab70ea550a"
+          ],
+          [
+            "0x3f2095427811e0c7",
+            "0x3ee468b19bc9e247",
+            "0x3ed46901de2cd6f4"
+          ],
+          [
+            "0xbf09e48a86a558f9",
+            "0x3f236b67e4fc02b9",
+            "0x3f502ed69427579c"
+          ]
+        ]
+      ],
+      "srp_sun_moon": [
+        "0xbde8a07090e51ae3",
+        "0xbdae4ef3c81b59cd",
+        "0xbd9e4f6af8999013"
+      ],
+      "erp_sun_moon": [
+        "0x3dcf206a58012fe8",
+        "0x3da20b965b41925d",
+        "0x3d68d44a19830077"
+      ]
+    },
+    "analytic": {
+      "gravity": [
+        "0x41185421c467381d",
+        "0x40b8ea23126e978d",
+        "0xbf51bcdd8bccd56e",
+        "0x3ec53ed6a09ccc3d",
+        "0x3ebb2c38c5b5c93e",
+        "0x3e8e81d57d0e1c6e",
+        "0xbea2246a9e5f011b"
+      ],
+      "eccentricity": "0x3f62515fdab8464d",
+      "circular_cartesian": [
+        [
+          "0x40b5a9b3799ce31b",
+          "0x40ae4e4acc93cd3e",
+          "0x409b341e3b4dbe0c"
+        ],
+        [
+          "0xc011820ec926e1f0",
+          "0x4010e4be7a9fd0ef",
+          "0x4011f3a155f8a6ae"
+        ]
+      ],
+      "keplerian_cartesian": [
+        [
+          "0x40b119e35d0641f4",
+          "0x40b1bb8ddcec2c7d",
+          "0x40a4063f2dfc7736"
+        ],
+        [
+          "0xc016c5939a5d4209",
+          "0x400a917f7a3611d2",
+          "0x40105b89137f2556"
+        ]
+      ],
+      "nominal": [
+        "0x0000000000000000",
+        "0x0000000000000000",
+        [
+          "0x0000000000000000",
+          "0x3ff0000000000000",
+          "0x3ca1a62633145c07"
+        ],
+        [
+          "0x8000000000000000",
+          "0x3ca1a62633145c07",
+          "0xbff0000000000000"
+        ],
+        [
+          "0xbff0000000000000",
+          "0x8000000000000000",
+          "0x8000000000000000"
+        ]
+      ],
+      "eckstein_hechler": [
+        [
+          [
+            "0x40b5a6efc87141c8",
+            "0x40ae4c3e0904cabf",
+            "0x409b2ec562590ebd"
+          ],
+          [
+            "0xc011858d687e6496",
+            "0x4010e55108cb53d4",
+            "0x4011f8144c7dd401"
+          ]
+        ],
+        [
+          [
+            "0x409ebe597681cb7c",
+            "0x40b548f37f3f8404",
+            "0x40ae6c5737bafa93"
+          ],
+          [
+            "0xc01c76a57c430f80",
+            "0x3fea75025fa0d8da",
+            "0x400379cdadf24a12"
+          ]
+        ],
+        [
+          "0x40bb5606235945ab",
+          "0x3f50548f44163d34",
+          "0x3f63016b5969b12a",
+          "0x3fe66506ca2cc497",
+          "0x3fd32f8f2efcb5d4",
+          "0x3ff0c49cc19acd42"
+        ],
+        [
+          "0x40bb5ac4d89b043a",
+          "0x3f5c2e34b0cd912e",
+          "0x3f640b798f947f8f",
+          "0x3fe6684c195c493b",
+          "0x3fd3394adf241d56",
+          "0x3fd999d78a621eb9"
+        ],
+        5,
+        [
+          "0x40bb5811522245d1",
+          "0x3f507b9635018d95",
+          "0x3f60786cf3d62aba",
+          "0x3fe666695f7eba9d",
+          "0x3fd33336f8d0819e",
+          "0x3fd999d495c732df"
+        ],
+        [
+          "0x40bb5ad63376e3e5",
+          "0x3f5c4779c50781c9",
+          "0x3f642198f5ef1410",
+          "0x3fe6684f0ca343c3",
+          "0x3fd3394eb57fcb6e",
+          "0x3fd99a127c9f5b94"
+        ]
+      ],
+      "brouwer_lyddane": [
+        [
+          [
+            "0x40b11b1b81a01b38",
+            "0x40b1b54d5291c107",
+            "0x40a3f7d5c9dcb520"
+          ],
+          [
+            "0xc016c94375a1873c",
+            "0x400a98992aeadb60",
+            "0x4010623abc654853"
+          ]
+        ],
+        [
+          [
+            "0x40703640a57bce98",
+            "0x40b51549dd65b90e",
+            "0x40b0b49438c196e8"
+          ],
+          [
+            "0xc01e077d4f436f8c",
+            "0xbfe0d8f0979f2db4",
+            "0x3ff710b0983433b8"
+          ]
+        ],
+        [
+          "0x40bb5497e99b5a22",
+          "0x3f9ed4348debea24",
+          "0x3fe664017c84c1ec",
+          "0x3fcd2d29115a5284",
+          "0x3fd32c4ef9163952",
+          "0x3ff052838f95161c"
+        ],
+        [
+          "0x40bb598d9cbafac7",
+          "0x3f9f721a6f413fc8",
+          "0x3fe667475d5721b8",
+          "0x3fce423a120931f0",
+          "0x3fd33bbfcc4a6fe8",
+          "0x3fd74669e3702c99"
+        ],
+        5,
+        [
+          "0x40bb57fffffffe9a",
+          "0x3f9eb851eb85060e",
+          "0x3fe666666666668b",
+          "0x3fc9999999993d46",
+          "0x3fd3333333332ffa",
+          "0x3fd999999999cba8"
+        ],
+        [
+          "0x40bb598d9cbafac3",
+          "0x3f9f721a6f413f6f",
+          "0x3fe667475d5721b9",
+          "0x3fce423a1209311e",
+          "0x3fd33bbfcc4a6fe8",
+          "0x3fd74669e3702cff"
+        ]
+      ],
+      "turn": [
+        "0x3fd08290632d75c6",
+        [
+          "0x3fee65f328dda37f",
+          "0x3fd1153281a2b573",
+          "0xbfc4c802b3717d80"
+        ],
+        [
+          "0xbfd00a65b9536852",
+          "0x3fd5d0aa4345a6a2",
+          "0xbfecfead0a8cacb1"
+        ],
+        [
+          "0xbfc7df9f7054a467",
+          "0x3fecd87a9c4cdba8",
+          "0x3fd901331416a8fa"
+        ]
+      ],
+      "attitude": [
+        "0x0000000000000000",
+        "0xc0040e1608862055",
+        "0x3fd2da2688331964",
+        "0xbfdb2daf058a10a0",
+        [
+          "0xbfee17d6ce81e824",
+          "0x3fbc08aabb9748f1",
+          "0x3fd49a74770df057"
+        ],
+        [
+          "0xbfc858a86e267773",
+          "0x3fe3b110f750d4c2",
+          "0xbfe87a782820b4b1"
+        ],
+        [
+          "0xbfd20a28fe2a5e3f",
+          "0xbfe8faaa8e62f216",
+          "0xbfe1da09ffc123ee"
+        ]
+      ]
+    },
+    "attitude_trajectories": {
+      "sp3": {
+        "epoch": "0x41c8c2a30797bd9a",
+        "sample": [
+          [
+            "0x4172a8daee67aa19",
+            "0xc16db71526495221",
+            "0xc160d52628355206"
+          ],
+          [
+            "0x40a1c377c9be82d5",
+            "0x409314db1df870d7",
+            "0x40a6a0eebc3e0ab1"
+          ],
+          [
+            "0x423afa1574e0d5c5",
+            "0x423494ef1cff74a0",
+            "0x4221d7e5d974d443"
+          ]
+        ],
+        "attitude": [
+          "0x0000000000000000",
+          "0x3fe2bef8a53dde54",
+          "0xbfe28b0c92fa12b8",
+          "0x3ffbc8c75f931b31",
+          [
+            "0x3fe2c70e1348289a",
+            "0x3fd41c1e27c7a7c4",
+            "0x3fe7e188e5ae2d7b"
+          ],
+          [
+            "0x3fd55d3f9ddbb0d0",
+            "0x3fe7dd9d994219c7",
+            "0xbfe272a2d3a22ac6"
+          ],
+          [
+            "0xbfe79b6b5601bcf4",
+            "0x3fe2cc08fc191ecf",
+            "0x3fd54bb3e5123421"
+          ],
+          [
+            "0x3fe899ec5169f856",
+            "0x3fe2c69a1354a22a",
+            "0x3fd0474dfcf3a81c"
+          ],
+          [
+            "0xbfa7b0b1a722c700",
+            "0x3fdca79151f985c9",
+            "0xbfec933a36dd8782"
+          ],
+          [
+            "0xbfe46911df23c31d",
+            "0x3fe59775892bbd46",
+            "0x3fd7c44f323e6595"
+          ]
+        ]
+      },
+      "predicted": {
+        "epoch": "0x41c8c2a30797bd9a",
+        "sample": [
+          [
+            "0x4172a8daee67aa19",
+            "0xc16db71526495221",
+            "0xc160d52628355206"
+          ],
+          [
+            "0x40a1c377c9be82d5",
+            "0x409314db1df870d7",
+            "0x40a6a0eebc3e0ab1"
+          ],
+          [
+            "0x423afa1574e0d5c5",
+            "0x423494ef1cff74a0",
+            "0x4221d7e5d974d443"
+          ]
+        ],
+        "attitude": [
+          "0x0000000000000000",
+          "0x3fe2bef8a53dde54",
+          "0xbfe28b0c92fa12b8",
+          "0x3ffbc8c75f931b31",
+          [
+            "0x3fe2c70e1348289a",
+            "0x3fd41c1e27c7a7c4",
+            "0x3fe7e188e5ae2d7b"
+          ],
+          [
+            "0x3fd55d3f9ddbb0d0",
+            "0x3fe7dd9d994219c7",
+            "0xbfe272a2d3a22ac6"
+          ],
+          [
+            "0xbfe79b6b5601bcf4",
+            "0x3fe2cc08fc191ecf",
+            "0x3fd54bb3e5123421"
+          ],
+          [
+            "0x3fe899ec5169f856",
+            "0x3fe2c69a1354a22a",
+            "0x3fd0474dfcf3a81c"
+          ],
+          [
+            "0xbfa7b0b1a722c700",
+            "0x3fdca79151f985c9",
+            "0xbfec933a36dd8782"
+          ],
+          [
+            "0xbfe46911df23c31d",
+            "0x3fe59775892bbd46",
+            "0x3fd7c44f323e6595"
+          ]
+        ]
+      },
+      "broadcast": {
+        "epoch": "0x41c3431c5b97964a",
+        "sample": [
+          [
+            "0xc16765bc7319ea33",
+            "0x415e78b910aecdfd",
+            "0x4174eaf0b6aa30fc"
+          ],
+          [
+            "0xc0a0c818780be5b2",
+            "0xc0a97236bc427d2c",
+            "0x40319be45e187033"
+          ],
+          [
+            "0xc202be0d2f867c84",
+            "0x424034e162b1ad52",
+            "0x422c1a2124639a29"
+          ]
+        ],
+        "attitude": [
+          "0x0000000000000000",
+          "0x4006902e401df998",
+          "0xbfcf6cba5103a688",
+          "0xc0024f9536448555",
+          [
+            "0xbfe1838a30d55601",
+            "0xbfeac8233562c3df",
+            "0xbf5540a32c263780"
+          ],
+          [
+            "0xbfe643846daea57e",
+            "0x3fdd2c7160a4699e",
+            "0xbfe1c385a513e114"
+          ],
+          [
+            "0x3fddc59c55cfd86a",
+            "0xbfd362fefabd550d",
+            "0xbfea9dde279d5578"
+          ],
+          [
+            "0xbfb0ebc5ad1e10a2",
+            "0x3fed4c1703f61ecb",
+            "0x3fd9648faba3fe66"
+          ],
+          [
+            "0x3feaa77c814b905b",
+            "0xbfc58b24268c0508",
+            "0x3fe0de50c79160f1"
+          ],
+          [
+            "0x3fe194a24fa4084b",
+            "0x3fd76178a3bc64b5",
+            "0xbfe80c0760be9f2e"
+          ]
+        ]
+      },
+      "broadcast_state": [
+        "0x41c3431c42000000",
+        [
+          "0xc16b8ce9d0072b06",
+          "0x4143c0a7cf6f2acd",
+          "0x4174e50e5aec7cc0"
+        ],
+        "0x3ef0d00962288554"
+      ],
+      "broadcast_source": {
+        "epoch": "0x41c3431c5b97964a",
+        "sample": [
+          [
+            "0xc16765bc7319ea33",
+            "0x415e78b910aecdfd",
+            "0x4174eaf0b6aa30fc"
+          ],
+          [
+            "0xc0a0c818780be5b2",
+            "0xc0a97236bc427d2c",
+            "0x40319be45e187033"
+          ],
+          [
+            "0xc202be0d2f867c84",
+            "0x424034e162b1ad52",
+            "0x422c1a2124639a29"
+          ]
+        ],
+        "attitude": [
+          "0x0000000000000000",
+          "0x4006902e401df998",
+          "0xbfcf6cba5103a688",
+          "0xc0024f9536448555",
+          [
+            "0xbfe1838a30d55601",
+            "0xbfeac8233562c3df",
+            "0xbf5540a32c263780"
+          ],
+          [
+            "0xbfe643846daea57e",
+            "0x3fdd2c7160a4699e",
+            "0xbfe1c385a513e114"
+          ],
+          [
+            "0x3fddc59c55cfd86a",
+            "0xbfd362fefabd550d",
+            "0xbfea9dde279d5578"
+          ],
+          [
+            "0xbfb0ebc5ad1e10a2",
+            "0x3fed4c1703f61ecb",
+            "0x3fd9648faba3fe66"
+          ],
+          [
+            "0x3feaa77c814b905b",
+            "0xbfc58b24268c0508",
+            "0x3fe0de50c79160f1"
+          ],
+          [
+            "0x3fe194a24fa4084b",
+            "0x3fd76178a3bc64b5",
+            "0xbfe80c0760be9f2e"
+          ]
+        ]
+      },
+      "sampled_source": {
+        "epoch": "0x0000000000000000",
+        "sample": [
+          [
+            "0x41698608ae282d18",
+            "0xc17115aa8dc0ebde",
+            "0x413e83f2e5eb2d45"
+          ],
+          [
+            "0x40946b336e5802fb",
+            "0x408e7f28d76c0669",
+            "0x3fb002d4866a4a19"
+          ],
+          [
+            "0x4218ac735ef9cce2",
+            "0xc23ee8d7ffeceae6",
+            "0xc22acd468602c266"
+          ]
+        ],
+        "attitude": [
+          "0x0000000000000000",
+          "0x4002380493c035ba",
+          "0xbfdedc1d79840998",
+          "0xc0056d8152c2b7d5",
+          [
+            "0x3fe9a31b6ed8dc5f",
+            "0x3fe3267f886484ba",
+            "0x3efc6637671fb000"
+          ],
+          [
+            "0x3fab4e53e6d71e63",
+            "0xbfb2441dd028c595",
+            "0xbfefdf6e918d615d"
+          ],
+          [
+            "0xbfe312fdf2d49a6a",
+            "0x3fe98906d7517e44",
+            "0xbfb6cdffbf3401db"
+          ],
+          [
+            "0x3fc70b4e291ab05b",
+            "0xbfece101fe2b5157",
+            "0xbfd90b9c479db428"
+          ],
+          [
+            "0xbfe49b8ddf76239c",
+            "0xbfda2abf26becc5b",
+            "0x3fe4b1154b20b3c3"
+          ],
+          [
+            "0xbfe7cb29fe12a3f7",
+            "0x3fc15b6b300d7ed2",
+            "0xbfe4f40229893fad"
+          ]
+        ]
+      },
+      "analytic": {
+        "epoch": "0x4082c00000000000",
+        "sample": [
+          [
+            "0x410fa9f64335cf81",
+            "0x415496ca223556b8",
+            "0x41505058bf6d0d5f"
+          ],
+          [
+            "0xc0bd53505f67daef",
+            "0xc08073daf41172a2",
+            "0x4096864c74a2fa82"
+          ],
+          [
+            "0x4218b0b62c67337e",
+            "0xc23ee8a9fc04f817",
+            "0xc22acd1e9f8372dd"
+          ]
+        ],
+        "attitude": [
+          "0x0000000000000000",
+          "0xc000ac916564063a",
+          "0x3fd2d8518f21df88",
+          "0xbfc5ff9e13ba5480",
+          [
+            "0xbfef64c682829832",
+            "0xbfb6d289c115bf2d",
+            "0x3fc604a74a369b7e"
+          ],
+          [
+            "0xbfc853b486bb28fc",
+            "0x3fe3b0a0defa2144",
+            "0xbfe87b211aa11995"
+          ],
+          [
+            "0xbfa345be1690bf1f",
+            "0xbfe9103212fb6798",
+            "0xbfe3dbeac520431c"
+          ],
+          [
+            "0x3fc7113c4efc2e37",
+            "0xbfece0eafa6dc28c",
+            "0xbfd90aa906272626"
+          ],
+          [
+            "0xbfe85ba747cc2275",
+            "0xbfd8502eaa48da68",
+            "0x3fe0d1daa18628a4"
+          ],
+          [
+            "0xbfe3ef8745e04ffc",
+            "0x3fc9ff8ba6f476d9",
+            "0xbfe82c3e0d51332d"
+          ]
+        ]
+      },
+      "analytic_de": {
+        "epoch": "0xc1b2d492cc000000",
+        "sample": [
+          [
+            "0xc15503bc7ab70f4f",
+            "0xc1405e281da1a787",
+            "0x4149e0b1070587be"
+          ],
+          [
+            "0x408b913782a5d9f4",
+            "0xc0bb4af58c07dc34",
+            "0xc0a93832229165a8"
+          ],
+          [
+            "0x420e6c3c9663ae20",
+            "0xc23f3b9b8cb6f202",
+            "0xc22b1583f8bcb55c"
+          ]
+        ],
+        "attitude": [
+          "0x0000000000000000",
+          "0xbf91df187950b780",
+          "0x3f91df184f0b1700",
+          "0x3ff92428302ded6e",
+          [
+            "0x3fb9f1783918dea2",
+            "0xbfed052e5a32365a",
+            "0xbfda2d52534bcc52"
+          ],
+          [
+            "0xbfe28fc744591a64",
+            "0x3fd1ee13ec19c5ae",
+            "0xbfe879f5eb907f08"
+          ],
+          [
+            "0x3fe9dd32a75caf9f",
+            "0x3fd4251a7ec962e6",
+            "0xbfdfd97261bde1d7"
+          ],
+          [
+            "0x3fbc6e32f37362b9",
+            "0xbfed2d59d17dde52",
+            "0xbfd94da52538abc9"
+          ],
+          [
+            "0xbfe280910c32da8e",
+            "0x3fd0ea132800f249",
+            "0xbfe8b37b2cee617e"
+          ],
+          [
+            "0x3fe9dda3bad149d8",
+            "0x3fd41ddd2fc447ec",
+            "0xbfdfdc96510d6aa2"
+          ]
+        ]
+      },
+      "dense": {
+        "epoch": "0x405ec00000000000",
+        "sample": [
+          [
+            "0x415a021d420ff0ff",
+            "0x413d2a6684df3391",
+            "0x4112179d49d77272"
+          ],
+          [
+            "0xc09e8f02e212c9ad",
+            "0x40bc82af9b68a7d8",
+            "0x4087ed5c69e67a1d"
+          ],
+          [
+            "0x4218ad52fccb7a78",
+            "0xc23ee8ce91add14b",
+            "0xc22acd3e5896bb6f"
+          ]
+        ],
+        "attitude": [
+          "0x0000000000000000",
+          "0x4006bc61abf993c2",
+          "0xbfd319d8031332a0",
+          "0xbff7aedddf625670",
+          [
+            "0xbfd1729a40578c4c",
+            "0x3fee9ede1797b81b",
+            "0x3fb9a4cd9977d331"
+          ],
+          [
+            "0x3f8aa34e5f20a349",
+            "0x3fbb96da503d3b6a",
+            "0xbfefcf974e2c1e6e"
+          ],
+          [
+            "0xbfeec8fb5fba14da",
+            "0xbfd142dc7e3a645c",
+            "0xbfa56a488d001e29"
+          ],
+          [
+            "0x3fc70cd87135b13a",
+            "0xbfece12708b7e64c",
+            "0xbfd90a96b50e5474"
+          ],
+          [
+            "0x3fb16ac78f232974",
+            "0xbfd8aa4ac71ed318",
+            "0x3fed729c6e2264c0"
+          ],
+          [
+            "0xbfef66c79b27c84d",
+            "0xbfc89e7e6af0e7f8",
+            "0xbf80628e44e8d1c4"
+          ]
+        ]
+      },
+      "dense_state": [
+        [
+          "0x40baa1e8b655f4bb",
+          "0x409ddd98155f7032",
+          "0x407286c5ed67e1bc"
+        ],
+        [
+          "0xbfff4ac376dbf155",
+          "0x401d31dabbcf84f6",
+          "0x3fe8805ea1b09dd0"
+        ]
+      ],
+      "dense_first_step_end": "0x402da1ca20a34e2b",
+      "final_state": [
+        [
+          "0x40b8d2e16bde0940",
+          "0x40a8b4df5504f0ba",
+          "0x407a9fdd44160e89"
+        ],
+        [
+          "0xc00a11f560d503a2",
+          "0x401b302a314f57de",
+          "0x3fe63730279cb735"
+        ]
+      ]
+    },
+    "broadcast_scores": {
+      "epochs": [
+        646330500,
+        646330800,
+        646331100
+      ],
+      "count": 3,
+      "clock_count": 3,
+      "statistics": [
+        [
+          "0xbff1e2e53f055471",
+          "0x3ff1e2e55f2bb21a",
+          "0x3ff1e594e023448c"
+        ],
+        [
+          "0x3fc4892bf83b0ff8",
+          "0x3fc4e8462e4165fb",
+          "0x3fc94c12c874356c"
+        ],
+        [
+          "0x3fd8339519de8889",
+          "0x3fd833f8df2e3e71",
+          "0x3fd8776dcc584e2b"
+        ],
+        [
+          "0x3ff30fd33178ed53",
+          "0x3ff30fe27be31020",
+          "0x3ff32cfb5e82c421"
+        ],
+        [
+          "0x3ff18dc962e85f75",
+          "0x3ff18dc992d3d906",
+          "0x3ff1910187bd1605"
+        ],
+        [
+          "0xbff4963d1fd9f55f",
+          "0x3ff496477b6cb621",
+          "0x3ff4ae788fdd899f"
+        ],
+        [
+          "0x3fc99a4009cc984b",
+          "0x3fc99c04940689ab",
+          "0x3fca4baf2269e4f3"
+        ]
+      ]
+    },
+    "additional_force_propagation": {
+      "base": {
+        "ephemeris": [
+          [
+            [
+              "0x40ba3b867dd4f509",
+              "0x408c09dcddd281ea",
+              "0x404de851b56f874f"
+            ],
+            [
+              "0xbff0a32b0632726a",
+              "0x401db92ff2c07536",
+              "0x3fdfb43ff15c65cb"
+            ]
+          ],
+          [
+            [
+              "0x40b9811d73afb15e",
+              "0x409bc79ad229625f",
+              "0x405da171150dc0a6"
+            ],
+            [
+              "0xc00080937b10646f",
+              "0x401ce593cf3c758f",
+              "0x3fded1e35b3b9b17"
+            ]
+          ]
+        ],
+        "final_state": [
+          [
+            "0x40b9811d73afb168",
+            "0x409bc79ad229626f",
+            "0x405da171150dc0b6"
+          ],
+          [
+            "0xc00080937b106461",
+            "0x401ce593cf3c7580",
+            "0x3fded1e35b3b9b04"
+          ]
+        ],
+        "dense_state": [
+          [
+            "0x40ba3b867dd4f4d7",
+            "0x408c09dcddd27c02",
+            "0x404de851b56f810c"
+          ],
+          [
+            "0xbff0a32b0632943e",
+            "0x401db92ff2c07424",
+            "0x3fdfb43ff15c64a6"
+          ]
+        ]
+      },
+      "fixed": {
+        "ephemeris": [
+          [
+            [
+              "0x40ba3b867dded0d0",
+              "0x408c09dcd72ae626",
+              "0x404de851add62325"
+            ],
+            [
+              "0xbff0a32b02424821",
+              "0x401db92fe493c3de",
+              "0x3fdfb43fe12cc929"
+            ]
+          ],
+          [
+            [
+              "0x40b9811d73ff085e",
+              "0x409bc79ac4cfccac",
+              "0x405da17105cf5f5f"
+            ],
+            [
+              "0xc0008093730abe03",
+              "0x401ce593b27c5b75",
+              "0x3fded1e33a683ae2"
+            ]
+          ]
+        ],
+        "final_state": [
+          [
+            "0x40b9811d73ff086a",
+            "0x409bc79ac4cfccbc",
+            "0x405da17105cf5f6f"
+          ],
+          [
+            "0xc0008093730abdf4",
+            "0x401ce593b27c5b66",
+            "0x3fded1e33a683ad2"
+          ]
+        ],
+        "dense_state": [
+          [
+            "0x40ba3b867ddeb5dd",
+            "0x408c09dcd730d9f7",
+            "0x404de851addc7c8b"
+          ],
+          [
+            "0xbff0a32b0245f658",
+            "0x401db92fe493a475",
+            "0x3fdfb43fe12ca78f"
+          ]
+        ]
+      },
+      "sourced": {
+        "ephemeris": [
+          [
+            [
+              "0x40ba3b867de73f73",
+              "0x408c09dcd18275a8",
+              "0x404de851a7602139"
+            ],
+            [
+              "0xbff0a32afedfc0d1",
+              "0x401db92fd875e8a4",
+              "0x3fdfb43fd356c510"
+            ]
+          ],
+          [
+            [
+              "0x40b9811d74438d80",
+              "0x409bc79ab95eac46",
+              "0x405da170f8bebd95"
+            ],
+            [
+              "0xc00080936c17fdec",
+              "0x401ce59399b7d126",
+              "0x3fded1e31e20ee91"
+            ]
+          ]
+        ],
+        "final_state": [
+          [
+            "0x40b9811d74438d8b",
+            "0x409bc79ab95eac59",
+            "0x405da170f8bebda9"
+          ],
+          [
+            "0xc00080936c17fddf",
+            "0x401ce59399b7d116",
+            "0x3fded1e31e20ee82"
+          ]
+        ],
+        "dense_state": [
+          [
+            "0x40ba3b867de743ee",
+            "0x408c09dcd18164ba",
+            "0x404de851a75efe25"
+          ],
+          [
+            "0xbff0a32afedf4415",
+            "0x401db92fd875ecdf",
+            "0x3fdfb43fd356c995"
+          ]
+        ]
+      }
+    },
+    "terrestrial": {
+      "orientation": [
+        [
+          "0x3fe60f4e1a4f6e1d",
+          "0x3f474b32959a1375",
+          "0x3f460468acefc73b",
+          "0x3fe72e5eabc2c404"
+        ],
+        [
+          "0x3dc38fdf9e712970",
+          "0xbdd36c26a54a0a53",
+          "0x3f131da7d4384af5"
+        ],
+        [
+          [
+            "0xbfa95d8751dce010",
+            "0x3feff5f0cdf5d3b4",
+            "0x3f1b23d995ab5358"
+          ],
+          [
+            "0xbfeff5eccc3bbbd8",
+            "0xbfa95d8aef4ea670",
+            "0x3f6000f4cb7420fe"
+          ],
+          [
+            "0x3f6006ae917ca533",
+            "0xbedbc42b1c485180",
+            "0x3feffffbfca4c146"
+          ]
+        ],
+        [
+          [
+            "0xbfa95d8751dce010",
+            "0xbfeff5eccc3bbbd8",
+            "0x3f6006ae917ca533"
+          ],
+          [
+            "0x3feff5f0cdf5d3b4",
+            "0xbfa95d8aef4ea670",
+            "0xbedbc42b1c485180"
+          ],
+          [
+            "0x3f1b23d995ab5358",
+            "0x3f6000f4cb7420fe",
+            "0x3feffffbfca4c146"
+          ]
+        ],
+        [
+          [
+            "0xbf1317a316a22f6e",
+            "0xbece4e1898dacf67",
+            "0x3e832139d0116686"
+          ],
+          [
+            "0x3ece4e1450eb9586",
+            "0xbf1317a57bfb27d2",
+            "0xbe4022e027f7b9b4"
+          ],
+          [
+            "0x3dc5765f3fea3af4",
+            "0xbdd2e9fef201bdab",
+            "0xbd35a02b4801d6a4"
+          ]
+        ],
+        [
+          [
+            "0xbf1317a316a22f6e",
+            "0x3ece4e1450eb9586",
+            "0x3dc5765f3fea3af4"
+          ],
+          [
+            "0xbece4e1898dacf67",
+            "0xbf1317a57bfb27d2",
+            "0xbdd2e9fef201bdab"
+          ],
+          [
+            "0x3e832139d0116686",
+            "0xbe4022e027f7b9b4",
+            "0xbd35a02b4801d6a4"
+          ]
+        ]
+      ],
+      "orientation_tdb": [
+        "0x3fe60f4e1e76ad27",
+        "0x3f474b3291a6a25b",
+        "0x3f460468b11c8b63",
+        "0x3fe72e5ea7cef3bc"
+      ],
+      "field": "product_type gravity_field\nmodelname TEST\nearth_gravity_constant 3.986e14\nradius 6378000\nmax_degree 2\nerrors no\ntide_system tide_free\nend_of_head\ngfc 2 0 -4.8e-4 0\ngfc 2 1 0 0\ngfc 2 2 0 0\n",
+      "gravity": [
+        [
+          "0xbee58c71acbddde3",
+          "0xbeb8a081e9fd8fdf",
+          "0xbeada1a5ede68c64"
+        ],
+        [
+          "0xbee58c71acbddde3",
+          "0xbeb8a081e9fd8fdf",
+          "0xbeada1a5ede68c64"
+        ],
+        "0x3f991cb5ae32ed2d",
+        "0x3f991cb5ae32ed2d"
+      ],
+      "eclipse": [
+        "0x3feb1c513ce7f07b",
+        "0x3ff0000000000000",
+        "0x3ff0000000000000",
+        [
+          "0x3ff0000000000000",
+          [
+            "0x0000000000000000",
+            "0x0000000000000000",
+            "0x0000000000000000"
+          ]
+        ],
+        [
+          "0x3ff0000000000000",
+          [
+            "0x0000000000000000",
+            "0x0000000000000000",
+            "0x0000000000000000"
+          ]
+        ],
+        [
+          "0x3ff0000000000000",
+          [
+            "0x8000000000000000",
+            "0x8000000000000000",
+            "0x8000000000000000"
+          ]
+        ]
+      ]
+    },
+    "estimation": {
+      "variational": {
+        "epoch": "0x405dffffffd517af",
+        "state": [
+          [
+            "0x40bb580004b64be1",
+            "0x408c20000174e806",
+            "0x404e0000018dc44c"
+          ],
+          [
+            "0x3eb413cdb11f9afe",
+            "0x401e00000527d918",
+            "0x3fe0000002bfeb40"
+          ]
+        ],
+        "stm": [
+          [
+            "0x3ff000000001efd0",
+            "0xbdfe118badfdda32",
+            "0xbdc0095b8ffedac3",
+            "0x405dffffffd7446c",
+            "0xbe5c1e97ff5b3f53",
+            "0xbe1dfe7fff504392"
+          ],
+          [
+            "0xbdfe118bacf5245a",
+            "0x3ff0000002bfed72",
+            "0xbd807434a9204307",
+            "0xbe5c1e97ff08a29c",
+            "0x405e0000018b9a04",
+            "0xbde279cec1837e83"
+          ],
+          [
+            "0xbdc0095b8f71acff",
+            "0xbd807434a920430c",
+            "0x3ff0000002c1d8de",
+            "0xbe1dfe7ffef824e2",
+            "0xbde279cec1837e86",
+            "0x405e0000018dc1d6"
+          ],
+          [
+            "0x3d70721d2d49847e",
+            "0xbda7efbbdf384655",
+            "0xbd69883fdd08d38f",
+            "0x3ff000000005c5ae",
+            "0xbe0dd8ba693bd9d0",
+            "0xbdcfd61c2bfb92fd"
+          ],
+          [
+            "0xbda7efbbddd8dc2f",
+            "0x3de75e4ae8ba9462",
+            "0xbd3176eae1b37938",
+            "0xbe0dd8ba68b837ac",
+            "0x3ff0000002ba2c1c",
+            "0xbd9884de10d950eb"
+          ],
+          [
+            "0xbd69883fdb91fbee",
+            "0xbd3176eae1b37938",
+            "0x3de77ee49f2cb032",
+            "0xbdcfd61c2b6f2a50",
+            "0xbd9884de10d950ed",
+            "0x3ff0000002bfe4b7"
+          ]
+        ],
+        "sensitivity": [
+          "0x40bc1616398d2ec4",
+          "0x40733ceb2dab3692",
+          "0x4034853f1fa58f87",
+          "0x405deae76dfd5e4f",
+          "0x401ebae841a08c86",
+          "0x3fe063af11ef39e0"
+        ]
+      },
+      "force_fit": {
+        "observations": [
+          [
+            "0x415ab3f000000000",
+            "0x0000000000000000",
+            "0x0000000000000000"
+          ],
+          [
+            "0x415a7ad17c7c0853",
+            "0x412b63a7a3262b62",
+            "0x40ed3719368f1d37"
+          ],
+          [
+            "0x4159d064b35d4df1",
+            "0x413b290d5e8f41e4",
+            "0x40fcf896cb43797d"
+          ],
+          [
+            "0x4158b77290fe3fa7",
+            "0x414415fdf806a804",
+            "0x41056ccaa2293bc0"
+          ],
+          [
+            "0x4157349427d02868",
+            "0x414a415fb2674f13",
+            "0x410c017724b2767c"
+          ]
+        ],
+        "name": "empirical.radial.constant",
+        "initial": "0x0000000000000000",
+        "value": "0x3e45798ecbf094b9",
+        "condition": "0x4068f1400e4bb71a"
+      },
+      "conditioning_refusal": {
+        "kind": "ill_conditioned_normal_equations",
+        "satellite": "G01",
+        "condition_number": "0x402aacb3b317ee44",
+        "limit": "0x3ff8000000000000",
+        "weakest": [
+          [
+            "x_km",
+            "0x3fe69e4dc342486f"
+          ],
+          [
+            "vx_km_s",
+            "0xbfe69e37d5deb365"
+          ]
+        ]
+      },
+      "fit": {
+        "covariance": [
+          [
+            [
+              "0x3b80f956e6c3dc8e",
+              "0x3b0964667005d61f",
+              "0x3acb15c2999fcfcd",
+              "0xbafa4f2c4e18afa3",
+              "0xba98fe6834016f79",
+              "0xba5aa8f7aef07172"
+            ],
+            [
+              "0x3b0964667005d61f",
+              "0x3b8059ba67e93323",
+              "0x3aa3bd00a953b405",
+              "0xba9980080f5e6ade",
+              "0xbaf635644909b9be",
+              "0xba29a2f2fdeb1004"
+            ],
+            [
+              "0x3acb15c2999fcfcd",
+              "0x3aa3bd00a953b405",
+              "0x3b80551f5f39280e",
+              "0xba5b333bcc206fcc",
+              "0xba29a2f2fdeb1e3f",
+              "0xbaf6296d936007ae"
+            ],
+            [
+              "0xbafa4f2c4e18afa3",
+              "0xba9980080f5e6ade",
+              "0xba5b333bcc206fcc",
+              "0x3a7bd69617fd1df8",
+              "0x39fd34ab3ff1e097",
+              "0x39bf271d1101e98a"
+            ],
+            [
+              "0xba98fe6834016f79",
+              "0xbaf635644909b9be",
+              "0xba29a2f2fdeb1e3f",
+              "0x39fd34ab3ff1e097",
+              "0x3a77eb9366b8d9dd",
+              "0xb9b003b75c8b56c2"
+            ],
+            [
+              "0xba5aa8f7aef07172",
+              "0xba29a2f2fdeb1004",
+              "0xbaf6296d936007ae",
+              "0x39bf271d1101e98a",
+              "0xb9b003b75c8b56c2",
+              "0x3a77fa85cd97c247"
+            ]
+          ],
+          [
+            [
+              "0x3ff0000000000000",
+              "0x3f7863225fa370f4",
+              "0x3f3a07028a49e904",
+              "0xbfeb62db4219b0e3",
+              "0xbf8c1117ddb5780d",
+              "0xbf4de6c3526c8214"
+            ],
+            [
+              "0x3f7863225fa370f4",
+              "0x3ff0000000000000",
+              "0x3f135367d122bbc6",
+              "0xbf8b0b953ef61594",
+              "0xbfe968ffed8b00c0",
+              "0xbf1d4beb255f47c0"
+            ],
+            [
+              "0x3f3a07028a49e904",
+              "0x3f135367d122bbc6",
+              "0x3ff0000000000000",
+              "0xbf4cdd38b62f3393",
+              "0xbf1d593361845107",
+              "0xbfe956f92f2a82e1"
+            ],
+            [
+              "0xbfeb62db4219b0e3",
+              "0xbf8b0b953ef61594",
+              "0xbf4cdd38b62f3393",
+              "0x3ff0000000000000",
+              "0x3f721bcd08471806",
+              "0x3f334ad497d0560f"
+            ],
+            [
+              "0xbf8c1117ddb5780d",
+              "0xbfe968ffed8b00c0",
+              "0xbf1d593361845107",
+              "0x3f721bcd08471806",
+              "0x3ff0000000000000",
+              "0xbf2565d6c82df529"
+            ],
+            [
+              "0xbf4de6c3526c8214",
+              "0xbf1d4beb255f47c0",
+              "0xbfe956f92f2a82e1",
+              "0x3f334ad497d0560f",
+              "0xbf2565d6c82df529",
+              "0x3ff0000000000000"
+            ]
+          ],
+          "0x3cca509779ce87ce",
+          9
+        ],
+        "rms_3d_m": "0x3e63775974f800e8",
+        "epochs": [
+          0,
+          120,
+          240,
+          360,
+          480
+        ],
+        "observations": [
+          [
+            "0x415ab3f000000000",
+            "0x0000000000000000",
+            "0x0000000000000000"
+          ],
+          [
+            "0x415a7ad177debeda",
+            "0x412b63a7a18f5935",
+            "0x40ed371934dd2bf7"
+          ],
+          [
+            "0x4159d064a0d563bb",
+            "0x413b290d5817d770",
+            "0x40fcf896c45db29b"
+          ],
+          [
+            "0x4158b772670cbb41",
+            "0x414415fdeccfc1ef",
+            "0x41056cca9632f100"
+          ],
+          [
+            "0x41573493dcb9074b",
+            "0x414a415f96d9f133",
+            "0x410c0177074edf26"
+          ]
+        ],
+        "initial_state": [
+          [
+            "0x40bb580000000000",
+            "0x3dca675e9de717f4",
+            "0x3d8c6ef81435ca94"
+          ],
+          [
+            "0xbd457dcb664b99f0",
+            "0x401e000000000112",
+            "0x3fe0000000000090"
+          ]
+        ],
+        "initial_epoch": "0x3db0000000000000",
+        "iterations": 2,
+        "condition_number": "0x402aacb3b09628bb",
+        "seed_rms_3d_m": "0x40258b197cf5fdda",
+        "residuals": [
+          [
+            "0x3db0000000000000",
+            "0x0000000000000000",
+            "0xbb7902e86b203d46",
+            "0xbe69d7e12188bb59",
+            "0xbdc0cd60da7d83c0"
+          ],
+          [
+            "0x405e0000000000c1",
+            "0x405dffffffd513b3",
+            "0x3e4044f3aa678ebb",
+            "0x3e6030969d110712",
+            "0x3dbea93e45185000"
+          ],
+          [
+            "0x406dffffffffff8b",
+            "0x406dffffffd514d9",
+            "0x3e414559bdec8282",
+            "0x3e680a54403a08a0",
+            "0x3dbb05fa22dd0680"
+          ],
+          [
+            "0x40767fffffffffdb",
+            "0x40767fffffdfd06d",
+            "0x3e28f610f9a107b0",
+            "0x3e344a65dba41f71",
+            "0x3dc2b55e66e7c810"
+          ],
+          [
+            "0x407dfffffffffff2",
+            "0x407dffffffd5166c",
+            "0xbe4bb50311f7246d",
+            "0xbe612ac70f648544",
+            "0x3dbf2e4800d7a200"
+          ]
+        ],
+        "sigma": "0x3db74e52eaec5a2b",
+        "correlation": "0x3ff0000000000000"
+      }
+    },
+    "covariance_transport": {
+      "position": [
+        "0x40bb1d6f1cd28713",
+        "0x408c0be8c7698dab",
+        "0x405dea83231f5eff"
+      ],
+      "covariance": [
+        [
+          "0x3ec4e2eab2cfe67c",
+          "0x3e37d11d936ac922",
+          "0x3e10fe05f37af33e",
+          "0x3e4af3e1dded17b5",
+          "0x3dd218871dc8683a",
+          "0x3da539814e46250c"
+        ],
+        [
+          "0x3e37d11d936ac922",
+          "0x3ed44364f59ec99d",
+          "0x3dd79c9b43c61d08",
+          "0x3dde914fe93614bf",
+          "0x3e59329b6b1e8c5e",
+          "0x3d79f608c10492f0"
+        ],
+        [
+          "0x3e10fe05f37af33e",
+          "0x3dd79c9b43c61d08",
+          "0x3ede6410c5e3ba6e",
+          "0x3db80edc88f2e690",
+          "0x3d8207559fac9431",
+          "0x3e62e385fe4d5103"
+        ],
+        [
+          "0x3e4af3e1dded17b5",
+          "0x3dde914fe93614bf",
+          "0x3db80edc88f2e690",
+          "0x3ddc6e4846094dc0",
+          "0x3d66a2a7db6b0a04",
+          "0x3d400eeda4a3ba77"
+        ],
+        [
+          "0x3dd218871dc8683a",
+          "0x3e59329b6b1e8c5e",
+          "0x3d8207559fac9431",
+          "0x3d66a2a7db6b0a04",
+          "0x3deb0be038b50dcf",
+          "0x3d0edd6ba8458eac"
+        ],
+        [
+          "0x3da539814e46250c",
+          "0x3d79f608c10492f0",
+          "0x3e62e385fe4d5103",
+          "0x3d400eeda4a3ba77",
+          "0x3d0edd6ba8458eac",
+          "0x3df4468c6ea348c1"
+        ]
+      ],
+      "interpolated": [
+        [
+          "0x3ebefabc24fef42e",
+          "0x3e26e229cbb169cf",
+          "0x3e00572132743663",
+          "0x3e434d9f5deb1ec8",
+          "0x3dc2831127f15511",
+          "0x3d958ce2e249103d"
+        ],
+        [
+          "0x3e26e229cbb169cf",
+          "0x3ece5b412f598036",
+          "0x3dc555bc02a024ed",
+          "0x3dcfad615622e454",
+          "0x3e523dbaf3673f69",
+          "0x3d6880b1955376ac"
+        ],
+        [
+          "0x3e00572132743663",
+          "0x3dc555bc02a024ed",
+          "0x3ed6c40241c143a8",
+          "0x3da9001f6f700dd0",
+          "0x3d710230b27b2944",
+          "0x3e5b5a3f3f03c8a4"
+        ],
+        [
+          "0x3e434d9f5deb1ec8",
+          "0x3dcfad615622e454",
+          "0x3da9001f6f700dd0",
+          "0x3ddaea0c7d41a0e8",
+          "0x3d55b58d48ca99f5",
+          "0x3d2ecfd0559ebb5a"
+        ],
+        [
+          "0x3dc2831127f15511",
+          "0x3e523dbaf3673f69",
+          "0x3d710230b27b2944",
+          "0x3d55b58d48ca99f5",
+          "0x3dea27225b17616e",
+          "0x3cfb34dc6826c14a"
+        ],
+        [
+          "0x3d958ce2e249103d",
+          "0x3d6880b1955376ac",
+          "0x3e5b5a3f3f03c8a4",
+          "0x3d2ecfd0559ebb5a",
+          "0x3cfb34dc6826c14a",
+          "0x3df39c4e40fbb486"
+        ]
+      ],
+      "conjunction_count": 32,
+      "collision": [
+        "0x0000000000000000",
+        "0x40a6ad4fb60629f0",
+        "0x3fe758348dea795e",
+        "0x3f8bea3210ee05e9"
+      ]
+    },
+    "terrestrial_parameter_fit": {
+      "position": [
+        "0x40c2bd942c48eeaa",
+        "0xc0d1437afa728dd3",
+        "0xc0d0e85929fbb0aa"
+      ],
+      "velocity": [
+        "0x400afbc68b2e8334",
+        "0xbfa07e72f3e46087",
+        "0x3ffe946869df6b7a"
+      ],
+      "condition": "0x4049474f566ea3eb",
+      "rms_3d_m": "0x400738b5ee2476a3",
+      "observation_count": 11
+    }
+  },
   "spp_trace_default": {
     "position_m": [
       "0x41511b0a63f49487",
@@ -1197,8 +4359,8 @@
     ]
   },
   "precise_orbit_fit": {
-    "fit_rms_3d_m": "0x40617561cc5216db",
-    "ledger_rms_3d_m": "0x40617561cc5216db"
+    "fit_rms_3d_m": "0x40617560523be426",
+    "ledger_rms_3d_m": "0x40617560523be426"
   },
   "sp3_merge": {
     "coverage_fixture": {

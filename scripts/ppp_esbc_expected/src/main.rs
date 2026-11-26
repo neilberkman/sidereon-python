@@ -465,7 +465,7 @@ fn core_revision(fixtures: &Path) -> String {
     core_source_identity::revision_from_lock_or_checkout(
         include_str!("../Cargo.lock"),
         fixtures,
-        include_str!("../Cargo.toml"),
+        Path::new(env!("CARGO_MANIFEST_DIR")),
     )
     .unwrap_or_else(|error| panic!("resolve engine source revision: {error}"))
 }

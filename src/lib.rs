@@ -21,6 +21,7 @@ use pyo3::sync::GILOnceCell;
 use pyo3::types::{PyAny, PyDict, PyModule, PyTuple, PyType};
 
 mod almanac;
+mod analytic;
 mod angles;
 mod anomaly;
 pub(crate) mod antex;
@@ -31,6 +32,7 @@ mod bodies;
 mod body_observe;
 mod broadcast_comparison;
 mod cdm;
+mod celestial;
 mod clock_stability;
 mod conjunction;
 mod constellation;
@@ -38,9 +40,12 @@ mod core_error_detail;
 mod covariance;
 mod coverage;
 mod data_catalog;
+mod de;
 mod defaults;
 mod dgnss;
 mod doppler;
+mod earth_orientation;
+mod eclipse;
 mod elements;
 mod emission;
 mod ephemeris;
@@ -51,6 +56,7 @@ mod events;
 mod exact_cache;
 mod exact_time;
 mod fallback;
+mod force_models;
 mod forces;
 mod format_diagnostics;
 mod frame_catalog;
@@ -62,6 +68,8 @@ mod geofence;
 mod geoid;
 mod geometry;
 mod geometry_quality;
+mod gnss_attitude;
+mod gravity_field;
 mod ils;
 mod iod;
 mod ionex;
@@ -79,6 +87,8 @@ mod oem;
 mod omm;
 mod opm;
 mod orbit_determination;
+mod orbit_parameters;
+mod orbit_scoring;
 mod ppp;
 mod ppp_corrections;
 mod ppp_precise;
@@ -94,6 +104,7 @@ mod rinex_clock;
 mod rtcm;
 mod sgp4_elements;
 mod spp_error_detail;
+mod variational;
 pub(crate) use fallback::selection_error_detail;
 pub(crate) use rtcm::to_rtcm_encode_err;
 pub(crate) use spp_error_detail::spp_detail;
@@ -946,8 +957,35 @@ pub(crate) fn to_tle_err<E: std::fmt::Display>(err: E) -> PyErr {
     TleParseError::new_err(err.to_string())
 }
 
-/// Map a solve / propagation failure into [`SolveError`], preserving the engine
-/// message.
+/// Build the detail dictionary for a domain failure.
+pub(crate) fn binding_error_detail<'py>(
+    py: Python<'py>,
+    kind: &str,
+    set_fields: impl FnOnce(&Bound<'_, PyDict>) -> PyResult<()>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let detail = PyDict::new(py);
+    detail.set_item("kind", kind)?;
+    set_fields(&detail)?;
+    Ok(detail)
+}
+
+/// Attach a typed failure kind and fields to a domain exception.
+pub(crate) fn binding_error(
+    error: PyErr,
+    kind: &str,
+    set_fields: impl FnOnce(&Bound<'_, PyDict>) -> PyResult<()>,
+) -> PyErr {
+    Python::with_gil(|py| {
+        match binding_error_detail(py, kind, set_fields)
+            .and_then(|detail| error.value(py).setattr("detail", detail))
+        {
+            Ok(()) => error,
+            Err(attachment_error) => attachment_error,
+        }
+    })
+}
+
+/// Map a solve or propagation failure into [`SolveError`].
 pub(crate) fn to_solve_err<E: std::fmt::Display>(err: E) -> PyErr {
     SolveError::new_err(err.to_string())
 }
@@ -1147,6 +1185,17 @@ fn _sidereon(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     exact_cache::register(m)?;
     elements::register(m)?;
     almanac::register(m)?;
+    orbit_parameters::register(m)?;
+    variational::register(m)?;
+    orbit_scoring::register(m)?;
+    gravity_field::register(m)?;
+    force_models::register(m)?;
+    gnss_attitude::register(m)?;
+    earth_orientation::register(m)?;
+    analytic::register(m)?;
+    de::register(m)?;
+    eclipse::register(m)?;
+    celestial::register(m)?;
     anomaly::register(m)?;
     bias::register(m)?;
     equinoctial::register(m)?;

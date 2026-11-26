@@ -7,6 +7,7 @@ tolerances, and Pc options into the core finders and packages the results.
 import numpy as np
 import pytest
 import sidereon
+from _helpers import core_goldens, hex_to_f64
 
 # A committed ISS TLE (also used by the propagation tests).
 PRIMARY_L1 = "1 25544U 98067A   18184.80969102  .00001614  00000-0  31745-4 0  9993"
@@ -127,12 +128,12 @@ def test_find_tca_conjunctions_with_propagated_covariance_is_pinned():
         hard_body_radius_km=0.02,
     )
 
-    assert len(conjunctions) == 32
+    golden = core_goldens()["orbital_dynamics"]["covariance_transport"]
+    assert len(conjunctions) == golden["conjunction_count"]
     first = conjunctions[0]
-    assert first.pc == 0.0
-    assert first.miss_km == pytest.approx(2902.655685608501)
-    assert first.sigma_x_km == pytest.approx(0.7295172470964373)
-    assert first.sigma_z_km == pytest.approx(0.013630286161606853)
+    assert [first.pc, first.miss_km, first.sigma_x_km, first.sigma_z_km] == [
+        hex_to_f64(value) for value in golden["collision"]
+    ]
 
 
 def test_screen_tca_conjunctions_with_propagated_covariance_matches_pairwise():

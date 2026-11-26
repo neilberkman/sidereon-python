@@ -4,6 +4,47 @@ All notable changes to the Sidereon Python interface are documented here.
 
 ## Unreleased
 
+### Added
+
+- GNSS block identification, inspectable yaw laws, body axes, and Sun-fixed
+  DYB axes. `OrbitAttitudeTrajectory` supports SP3, broadcast navigation,
+  orbit-scoring sources, analytic propagators, and DP54 dense output in GCRF.
+  Queries use TDB seconds past J2000.
+- Single-epoch `StatePropagator.propagate_to` returns the final state and optional
+  DP54 dense output with interpolation and epoch coverage.
+- `propagate_state`, `StatePropagator.propagate_to`, and
+  `StatePropagator.ephemeris_with_context` accept an ordered
+  `additional_forces` list after the configured gravity and drag.
+- ECOM1 and ECOM2 solar radiation pressure, Earth radiation pressure, and
+  empirical RTN acceleration. Force objects expose estimable parameters and
+  state and parameter derivatives.
+- Variational propagation and joint estimation of orbital state and force
+  parameters from inertial positions or SP3 products.
+- ICGEM gravity fields, time-variable geopotential evaluation, and the
+  Eckstein–Hechler and Brouwer–Lyddane analytic propagators.
+- Prediction-horizon orbit and clock scoring with SP3, broadcast, and sampled
+  orbit sources.
+- Lunar eclipses and shadow gradients, geocentric GCRS Sun and Moon positions,
+  GCRS and mean-of-date rotations, and TT/TDB conversion.
+- IERS 2010 Earth orientation, JPL DE ephemerides, and propagation contexts
+  for covariance transport and orbital decay.
+
+### Fixed
+
+- `estimate_decay` and `SourcedDragForce.acceleration` include typed details
+  on their `ValueError` exceptions.
+- Force evaluations return finite values or typed errors, validate the inputs
+  they read, and recover representable results when intermediates overflow.
+
+### Changed
+
+- Numerical integration uses elapsed TT and drag uses UT1. Solar radiation
+  pressure defaults to apparent-disc occultation with a WGS84 oblate Earth
+  and lunar eclipses.
+- Numerical force evaluation uses GCRS Sun and Moon positions. Spherical
+  harmonic gravity uses the Holmes–Featherstone evaluation.
+- J2 gravity uses the Orekit evaluation order.
+
 ## [4.1.0] - 2026-11-19
 
 ### Added
