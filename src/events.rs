@@ -237,6 +237,15 @@ impl From<PyEarthShadowModel> for core_eclipse::EarthShadowModel {
     }
 }
 
+impl From<core_eclipse::EarthShadowModel> for PyEarthShadowModel {
+    fn from(value: core_eclipse::EarthShadowModel) -> Self {
+        match value {
+            core_eclipse::EarthShadowModel::Spherical => Self::SPHERICAL,
+            core_eclipse::EarthShadowModel::Wgs84Oblate => Self::WGS84_OBLATE,
+        }
+    }
+}
+
 #[pymethods]
 impl PyEarthShadowModel {
     /// Stable lowercase model label.

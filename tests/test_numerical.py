@@ -119,17 +119,19 @@ def test_first_sample_is_initial_state():
 
 
 def test_two_body_circular_returns_to_start():
-    # Analytic cross-check independent of the fixture: a circular orbit returns
-    # to its start after exactly one period.
+    # A circular orbit returns to its start after one dynamical period in TT.
     mu = 398600.4418
     r = 7000.0
     v = (mu / r) ** 0.5
-    period = 2.0 * np.pi * (r**3 / mu) ** 0.5
+    period_tt = 2.0 * np.pi * (r**3 / mu) ** 0.5
+    end_tdb = sidereon.tdb_from_tt_j2000_seconds(
+        sidereon.tt_from_tdb_j2000_seconds(0.0) + period_tt
+    )
     eph = sidereon.propagate_state(
         0.0,
         np.asarray([r, 0.0, 0.0]),
         np.asarray([0.0, v, 0.0]),
-        np.asarray([0.0, period]),
+        np.asarray([0.0, end_tdb]),
         force_model="two_body",
         integrator="dp54",
         abs_tol=1e-12,

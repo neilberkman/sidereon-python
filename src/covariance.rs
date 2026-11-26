@@ -346,7 +346,7 @@ impl PyCovarianceNode {
 #[pyclass(module = "sidereon._sidereon", name = "CovarianceEphemeris")]
 #[derive(Clone)]
 pub struct PyCovarianceEphemeris {
-    inner: CoreCovarianceEphemeris,
+    pub(crate) inner: CoreCovarianceEphemeris,
 }
 
 #[pymethods]

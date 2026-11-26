@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 import sidereon
+from _helpers import core_goldens, hex_to_f64
 
 
 def _state():
@@ -29,30 +30,20 @@ def test_covariance_propagation_and_interpolation_are_pinned():
     assert eph.epoch_count == 3
     assert not eph.is_empty
     assert eph.nodes[-1].frame == sidereon.CovarianceFrame.INERTIAL
-    np.testing.assert_allclose(
+    golden = core_goldens()["orbital_dynamics"]["covariance_transport"]
+    np.testing.assert_array_equal(
         eph.nodes[-1].state.position_km,
-        np.array([6941.43403351, 897.48866190, 119.66425402]),
-        rtol=0.0,
-        atol=5e-9,
+        [hex_to_f64(value) for value in golden["position"]],
     )
-    covariance_diag = np.diag(eph.nodes[-1].covariance)
-    np.testing.assert_allclose(
-        covariance_diag,
-        np.array(
-            [
-                2.48985214e-06,
-                4.831137920730805e-06,
-                7.24575067e-06,
-                1.03430613e-10,
-                1.96788387e-10,
-                2.95048526e-10,
-            ]
-        ),
-        rtol=0.0,
-        atol=5e-14,
+    np.testing.assert_array_equal(
+        eph.nodes[-1].covariance,
+        [[hex_to_f64(value) for value in row] for row in golden["covariance"]],
     )
-    assert float(covariance_diag[1]).hex() == "0x1.44365146e509ep-18"
-    np.testing.assert_allclose(eph.covariance_at(60.0), eph.nodes[1].covariance)
+    np.testing.assert_array_equal(
+        eph.covariance_at(90.0),
+        [[hex_to_f64(value) for value in row] for row in golden["interpolated"]],
+    )
+    np.testing.assert_array_equal(eph.covariance_at(60.0), eph.nodes[1].covariance)
 
 
 def test_covariance_conversions_and_rtn_helpers_are_pinned():

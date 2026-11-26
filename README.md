@@ -388,6 +388,80 @@ computes, returned as numpy arrays, typed objects, and real Python exceptions
 (`sidereon.SidereonError` and friends). Full signatures live in the bundled type
 stubs (`sidereon/__init__.pyi`).
 
+### GNSS attitude and orbit scores
+
+`GnssBlock` identifies IGS/ANTEX spacecraft blocks and `GnssAttitudeLaw`
+selects their published yaw laws or accepts explicit parameters. The law exposes
+its `variant` and any parameters applicable to that variant.
+`gnss_attitude` returns yaw, body axes, and Sun-fixed DYB axes.
+Build an `OrbitAttitudeTrajectory` from SP3, broadcast navigation, an orbit-scoring
+source, an Eckstein–Hechler or Brouwer–Lyddane propagator, or DP54 dense
+output. For dense output, set `IntegratorOptions(dense_output=True)` on a
+`StatePropagator` and pass `propagate_to(end_tdb_seconds).dense` to
+`OrbitAttitudeTrajectory.from_dense_output`. Use `DenseOutput.coverage` for
+the earliest and latest covered epochs and `DenseOutput.eval(t)` to
+interpolate a Cartesian state.
+
+Both `gnss_attitude` and `OrbitAttitudeTrajectory.sample` take TDB seconds past
+J2000. Samples contain GCRF position and velocity in metres and metres per
+second and the GCRF Sun position in metres. Analytic and dense-output orbits
+must be in GCRF. Earth-fixed sources use the default
+TDB Earth-orientation provider or a supplied `Iers2010EarthOrientationProvider`.
+Use `with_velocity_half_step_s` to set the velocity difference half step in the
+source's time scale. For a node-only source, choose a step that reaches an
+adjacent node. The trajectory uses the analytic Sun ephemeris by default.
+Use `with_de_ephemeris` to supply a JPL DE ephemeris.
+
+`score_orbit` compares a `PredictedSp3`, `BroadcastOrbit`, or sampled
+`OrbitTrajectory` with a reference SP3. It reports radial, transverse, and
+normal errors, clock errors, SISRE, and coverage by prediction horizon,
+satellite, and constellation. Choose the evaluation epochs, clock datum,
+SISRE weights, gap policy, and terrestrial frame reconciliation through
+`OrbitScoreOptions`. Supply epochs as scale-aware `ClockInstant` values.
+
+### Force estimation and orbital dynamics
+
+`Ecom1SolarRadiationPressure`, `Ecom2SolarRadiationPressure`,
+`EmpiricalRtnAcceleration`, and `EarthRadiationPressure` are force objects.
+`IcgemGravityField` reads static and time-variable ICGEM coefficients and
+builds `SphericalHarmonicGravity` at a selected degree, order, and tide
+system. The gravity model provides body-fixed acceleration and potential at
+TT epochs.
+
+Force objects report ordered `ForceParameter` values and evaluate acceleration
+and derivatives with respect to the Cartesian state and force parameters.
+Pass force objects in `additional_forces` to `propagate_state`,
+`StatePropagator.propagate_to`, or `StatePropagator.ephemeris_with_context`.
+The propagator evaluates the configured gravity and optional drag first, then
+sums the additional forces in list order. Supply `DragParameters` for fixed
+space weather and add a `space_weather_table` for time-varying conditions.
+For example, choose `force_model=ForceModelKind.two_body_j2()` and pass
+`additional_forces=[empirical]` to integrate two-body gravity, J2, and an
+empirical acceleration together.
+
+Use `CompositeForceModel` to evaluate a sum of force objects directly and
+`propagate_variational` with `VariationalEquations` for state-transition and
+sensitivity matrices. The inertial and SP3 orbit-parameter fits accept the
+same `additional_forces` list through `OrbitParameterFitOptions` and can
+estimate selected parameters alongside the initial Cartesian state.
+
+Numerical propagation integrates in elapsed TT and accepts and returns
+absolute TDB epochs. Atmospheric drag uses UT1. Cannonball solar radiation
+pressure defaults to apparent-disc occultation with a WGS84 oblate Earth
+and the Moon enabled. Earth radiation pressure offers opt-in lunar
+occultation for reflected sunlight. Standalone lunar eclipse functions and
+shadow-fraction gradients use inertial vectors in kilometres.
+
+### Terrestrial orientation and ephemerides
+
+`Iers2010EarthOrientationProvider` evaluates GCRF–ITRF rotations and rates
+from daily EOP samples, including celestial pole offsets and subdaily
+corrections. Attach the provider or a JPL DE binary ephemeris to
+`PropagationContext` for numerical propagation, covariance transport,
+orbit fitting, and decay estimation. For analytic body positions use
+`sun_moon_gcrs`, `sun_moon_gcrs_at`, or `sun_moon_gcrs_at_tdb_seconds`.
+Mean-of-date rotations and the TT/TDB functions are available independently.
+
 ## One engine, every language
 
 sidereon is one validated core with first-class interfaces, so the numbers are

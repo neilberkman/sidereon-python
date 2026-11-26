@@ -14,9 +14,17 @@ from _helpers import CORE_FIXTURES, sp3_bytes_for_date
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 STUB = ROOT / "python" / "sidereon" / "__init__.pyi"
 INSTANCE_ONLY_STUB_ATTRIBUTES = {
+    "AnalyticPropagationError": {"detail"},
+    "DeError": {"detail"},
+    "GnssAttitudeError": {"detail"},
+    "GnssBlockError": {"detail"},
+    "IcgemError": {"detail"},
+    "OrbitParameterFitError": {"detail"},
+    "OrbitScoreError": {"detail"},
     "BiasError": {"kind", "details"},
     "ExactSp3ValidationError": {"kind", "detail"},
     "ScenarioError": {"detail"},
+    "ShadowGradientError": {"detail"},
 }
 
 
@@ -133,9 +141,17 @@ def test_time_scale_stub_members_match_runtime():
 
 def test_instance_only_stub_attribute_allowlist_is_exact():
     assert INSTANCE_ONLY_STUB_ATTRIBUTES == {
+        "AnalyticPropagationError": {"detail"},
+        "DeError": {"detail"},
+        "GnssAttitudeError": {"detail"},
+        "GnssBlockError": {"detail"},
+        "IcgemError": {"detail"},
+        "OrbitParameterFitError": {"detail"},
+        "OrbitScoreError": {"detail"},
         "BiasError": {"kind", "details"},
         "ExactSp3ValidationError": {"kind", "detail"},
         "ScenarioError": {"detail"},
+        "ShadowGradientError": {"detail"},
     }
     _functions, classes, _variables = _stub_defs()
     assert INSTANCE_ONLY_STUB_ATTRIBUTES["BiasError"] <= classes["BiasError"]

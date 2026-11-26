@@ -240,19 +240,31 @@ def _source_identity(manifest_path, lock_path, cargo_home=None):
     return "registry", revision, tuple(sorted(checksums))
 
 
+def _core_patch(manifest_path):
+    files = [manifest_path]
+    for parent in (manifest_path.parent, *manifest_path.parent.parents):
+        files.extend((parent / ".cargo/config.toml", parent / ".cargo/config"))
+    for path in files:
+        if not path.is_file():
+            continue
+        config = tomllib.loads(path.read_text())
+        patch = config.get("patch", {}).get("crates-io", {}).get("sidereon-core", {})
+        if "path" in patch:
+            base = path.parent.parent if path.parent.name == ".cargo" else path.parent
+            return (base / patch["path"]).resolve()
+    return None
+
+
 def test_root_and_generators_resolve_the_fixture_source():
-    manifest = tomllib.loads((_ROOT / "Cargo.toml").read_text())
-    core_patch = manifest.get("patch", {}).get("crates-io", {}).get("sidereon-core")
-    if core_patch and "path" in core_patch:
-        patch = Path(core_patch["path"]).resolve()
+    patch = _core_patch(_ROOT / "Cargo.toml")
+    if patch and all(
+        "source" not in package
+        for _, _, lock_path in _PROJECTS
+        for package in _locked_packages(lock_path).values()
+    ):
         assert patch.name == "sidereon-core" and patch.is_dir()
-        for _, manifest_path, lock_path in _PROJECTS:
-            project = tomllib.loads(manifest_path.read_text())
-            assert (
-                Path(project["patch"]["crates-io"]["sidereon-core"]["path"]).resolve()
-                == patch
-            )
-            assert "source" not in _locked_packages(lock_path)["sidereon-core"]
+        for _, manifest_path, _ in _PROJECTS:
+            assert _core_patch(manifest_path) == patch
         assert not subprocess.check_output(
             ["git", "-C", str(patch), "status", "--porcelain"], text=True
         ).strip()

@@ -74,7 +74,7 @@ pub fn revision_from_lock(lock: &str) -> Result<String, String> {
 pub fn revision_from_lock_or_checkout(
     lock: &str,
     fixtures: &Path,
-    manifest: &str,
+    manifest_dir: &Path,
 ) -> Result<String, String> {
     let packages = lock
         .split("[[package]]")
@@ -95,20 +95,42 @@ pub fn revision_from_lock_or_checkout(
         .and_then(Path::parent)
         .ok_or("invalid core fixtures path")?
         .to_path_buf();
-    let patch = manifest
-        .split("[patch.crates-io]")
-        .nth(1)
-        .ok_or("missing core patch")?
-        .lines()
-        .find(|line| line.trim_start().starts_with("sidereon-core"))
-        .ok_or("missing core path")?;
-    let path = patch
-        .split_once("path")
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .map(|(path, _)| path)
-        .ok_or("invalid core patch path")?;
-    if Path::new(path).canonicalize().map_err(|e| e.to_string())? != crate_dir {
+    let mut candidates = vec![manifest_dir.join("Cargo.toml")];
+    for directory in manifest_dir.ancestors() {
+        candidates.push(directory.join(".cargo/config.toml"));
+        candidates.push(directory.join(".cargo/config"));
+    }
+    let matches_patch = candidates.iter().any(|candidate| {
+        let Ok(config) = fs::read_to_string(candidate) else {
+            return false;
+        };
+        let Some(section) = config
+            .split_once("[patch.crates-io]")
+            .map(|(_, section)| section)
+        else {
+            return false;
+        };
+        section
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with('['))
+            .find_map(|line| {
+                let (key, value) = line.split_once('=')?;
+                if key.trim() != "sidereon-core" {
+                    return None;
+                }
+                let (_, value) = value.split_once("path")?.1.split_once('"')?;
+                let (path, _) = value.split_once('"')?;
+                let base = candidate.parent()?;
+                let base = if base.ends_with(".cargo") {
+                    base.parent()?
+                } else {
+                    base
+                };
+                base.join(path).canonicalize().ok()
+            })
+            .is_some_and(|path| path == crate_dir)
+    });
+    if !matches_patch {
         return Err("core fixture path does not match patched core".into());
     }
     let crate_manifest =

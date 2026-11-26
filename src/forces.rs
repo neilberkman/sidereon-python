@@ -18,12 +18,20 @@ use sidereon_core::astro::forces::{
 use sidereon_core::astro::propagator::api::PropagationContext;
 use sidereon_core::astro::propagator::decay::{
     estimate_decay as core_estimate_decay,
-    estimate_decay_with_source as core_estimate_decay_with_source, DecayConfig, DecayEstimate,
+    estimate_decay_with_context as core_estimate_decay_with_context,
+    estimate_decay_with_source as core_estimate_decay_with_source,
+    estimate_decay_with_source_and_context as core_estimate_decay_with_source_and_context,
+    DecayConfig, DecayError, DecayEstimate,
 };
 use sidereon_core::astro::state::CartesianState;
 
-use crate::np_array;
+use crate::earth_orientation::PyPropagationContext;
+use crate::force_models::{
+    propagation_error, with_context, PyAccelerationPartials, PyForceParameter,
+};
+use crate::relative::PyCartesianState;
 use crate::space_weather::PySpaceWeatherTable;
+use crate::{binding_error, np_array, SolveError};
 
 fn acceleration<'py>(
     py: Python<'py>,
@@ -96,7 +104,7 @@ impl From<SpaceWeather> for PySpaceWeather {
 #[pyclass(module = "sidereon._sidereon", name = "DragParameters")]
 #[derive(Clone, Copy)]
 pub struct PyDragParameters {
-    inner: DragParameters,
+    pub(crate) inner: DragParameters,
 }
 
 impl PyDragParameters {
@@ -111,6 +119,86 @@ impl PyDragParameters {
 
 #[pymethods]
 impl PyDragParameters {
+    /// Return estimable parameters in model order.
+    fn parameters(&self) -> Vec<PyForceParameter> {
+        self.inner
+            .to_force()
+            .parameters()
+            .into_iter()
+            .map(PyForceParameter)
+            .collect()
+    }
+
+    /// Return the number of estimable parameters.
+    fn parameter_count(&self) -> usize {
+        self.inner.to_force().parameter_count()
+    }
+
+    /// Evaluate acceleration in kilometres per square second.
+    #[pyo3(signature = (state, context=None))]
+    fn acceleration(
+        &self,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<[f64; 3]> {
+        with_context(context, |ctx| {
+            self.inner.to_force().acceleration(state.inner(), ctx)
+        })
+        .map(Into::into)
+        .map_err(propagation_error)
+    }
+
+    /// Evaluate acceleration with replacement parameter values.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn acceleration_with_parameters(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<[f64; 3]> {
+        with_context(context, |ctx| {
+            self.inner
+                .to_force()
+                .acceleration_with_parameters(&parameters, state.inner(), ctx)
+        })
+        .map(Into::into)
+        .map_err(propagation_error)
+    }
+
+    /// Evaluate position and velocity derivatives at the supplied parameter values.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn acceleration_partials(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<PyAccelerationPartials> {
+        with_context(context, |ctx| {
+            self.inner
+                .to_force()
+                .acceleration_partials(&parameters, state.inner(), ctx)
+        })
+        .map(PyAccelerationPartials)
+        .map_err(propagation_error)
+    }
+
+    /// Evaluate one acceleration derivative per parameter in model order.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn parameter_partials(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<Vec<[f64; 3]>> {
+        with_context(context, |ctx| {
+            self.inner
+                .to_force()
+                .parameter_partials(&parameters, state.inner(), ctx)
+        })
+        .map(|partials| partials.into_iter().map(Into::into).collect())
+        .map_err(propagation_error)
+    }
+
     #[staticmethod]
     #[pyo3(signature = (cd, area_m2, mass_kg, space_weather=None, cutoff_altitude_km=DragForce::DEFAULT_REENTRY_ALTITUDE_KM))]
     fn from_area_mass(
@@ -197,7 +285,7 @@ impl PyDragParameters {
 #[pyclass(module = "sidereon._sidereon", name = "DragForce")]
 #[derive(Clone, Copy)]
 pub struct PyDragForce {
-    inner: DragForce,
+    pub(crate) inner: DragForce,
 }
 
 impl PyDragForce {
@@ -208,6 +296,80 @@ impl PyDragForce {
 
 #[pymethods]
 impl PyDragForce {
+    /// Return estimable parameters in model order.
+    fn parameters(&self) -> Vec<PyForceParameter> {
+        self.inner
+            .parameters()
+            .into_iter()
+            .map(PyForceParameter)
+            .collect()
+    }
+
+    /// Return the number of estimable parameters.
+    fn parameter_count(&self) -> usize {
+        self.inner.parameter_count()
+    }
+
+    /// Evaluate acceleration in kilometres per square second.
+    #[pyo3(signature = (state, context=None))]
+    fn acceleration(
+        &self,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<[f64; 3]> {
+        with_context(context, |ctx| self.inner.acceleration(state.inner(), ctx))
+            .map(Into::into)
+            .map_err(propagation_error)
+    }
+
+    /// Evaluate acceleration with replacement parameter values.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn acceleration_with_parameters(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<[f64; 3]> {
+        with_context(context, |ctx| {
+            self.inner
+                .acceleration_with_parameters(&parameters, state.inner(), ctx)
+        })
+        .map(Into::into)
+        .map_err(propagation_error)
+    }
+
+    /// Evaluate position and velocity derivatives at the supplied parameter values.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn acceleration_partials(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<PyAccelerationPartials> {
+        with_context(context, |ctx| {
+            self.inner
+                .acceleration_partials(&parameters, state.inner(), ctx)
+        })
+        .map(PyAccelerationPartials)
+        .map_err(propagation_error)
+    }
+
+    /// Evaluate one acceleration derivative per parameter in model order.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn parameter_partials(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<Vec<[f64; 3]>> {
+        with_context(context, |ctx| {
+            self.inner
+                .parameter_partials(&parameters, state.inner(), ctx)
+        })
+        .map(|partials| partials.into_iter().map(Into::into).collect())
+        .map_err(propagation_error)
+    }
+
     #[staticmethod]
     #[pyo3(signature = (cd, area_m2, mass_kg, space_weather=None, cutoff_altitude_km=DragForce::DEFAULT_REENTRY_ALTITUDE_KM))]
     fn from_area_mass(
@@ -282,11 +444,73 @@ impl PyDragForce {
 
 #[pyclass(module = "sidereon._sidereon", name = "SourcedDragForce")]
 pub struct PySourcedDragForce {
-    inner: SourcedDragForce,
+    pub(crate) inner: SourcedDragForce,
 }
 
 #[pymethods]
 impl PySourcedDragForce {
+    /// Return estimable parameters in model order.
+    fn parameters(&self) -> Vec<PyForceParameter> {
+        self.inner
+            .parameters()
+            .into_iter()
+            .map(PyForceParameter)
+            .collect()
+    }
+
+    /// Return the number of estimable parameters.
+    fn parameter_count(&self) -> usize {
+        self.inner.parameter_count()
+    }
+
+    /// Evaluate acceleration with replacement parameter values.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn acceleration_with_parameters(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<[f64; 3]> {
+        with_context(context, |ctx| {
+            self.inner
+                .acceleration_with_parameters(&parameters, state.inner(), ctx)
+        })
+        .map(Into::into)
+        .map_err(propagation_error)
+    }
+
+    /// Evaluate position and velocity derivatives at the supplied parameter values.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn acceleration_partials(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<PyAccelerationPartials> {
+        with_context(context, |ctx| {
+            self.inner
+                .acceleration_partials(&parameters, state.inner(), ctx)
+        })
+        .map(PyAccelerationPartials)
+        .map_err(propagation_error)
+    }
+
+    /// Evaluate one acceleration derivative per parameter in model order.
+    #[pyo3(signature = (parameters, state, context=None))]
+    fn parameter_partials(
+        &self,
+        parameters: Vec<f64>,
+        state: &PyCartesianState,
+        context: Option<&PyPropagationContext>,
+    ) -> PyResult<Vec<[f64; 3]>> {
+        with_context(context, |ctx| {
+            self.inner
+                .parameter_partials(&parameters, state.inner(), ctx)
+        })
+        .map(|partials| partials.into_iter().map(Into::into).collect())
+        .map_err(propagation_error)
+    }
+
     #[new]
     fn new(drag: &PyDragParameters, space_weather_table: &PySpaceWeatherTable) -> Self {
         Self {
@@ -315,7 +539,10 @@ impl PySourcedDragForce {
         let accel = self
             .inner
             .acceleration(&state, &PropagationContext::default())
-            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+            .map_err(|err| {
+                let exception = PyValueError::new_err(err.to_string());
+                crate::force_models::propagation_error_detail(err, exception)
+            })?;
         Ok(np_array(py, &[accel.x, accel.y, accel.z]))
     }
 
@@ -441,22 +668,172 @@ fn estimate_decay(
     space_weather_table: Option<&PySpaceWeatherTable>,
 ) -> PyResult<PyDecayEstimate> {
     let initial = CartesianState::new(epoch_tdb_seconds, position_km, velocity_km_s);
-    let config = DecayConfig::new(drag.inner())
-        .with_reentry_altitude_km(reentry_altitude_km)
-        .with_scan_step_s(scan_step_s)
-        .with_crossing_tolerance_s(crossing_tolerance_s)
-        .with_max_duration_s(max_duration_s)
-        .with_max_scan_samples(max_scan_samples);
+    let config = decay_config(
+        drag,
+        reentry_altitude_km,
+        scan_step_s,
+        crossing_tolerance_s,
+        max_duration_s,
+        max_scan_samples,
+    );
     if let Some(table) = space_weather_table {
         let source = table.source();
         py.allow_threads(move || core_estimate_decay_with_source(initial, &config, &source))
             .map(|inner| PyDecayEstimate { inner })
-            .map_err(|err| PyValueError::new_err(err.to_string()))
+            .map_err(decay_value_error)
     } else {
         py.allow_threads(move || core_estimate_decay(initial, &config))
             .map(|inner| PyDecayEstimate { inner })
-            .map_err(|err| PyValueError::new_err(err.to_string()))
+            .map_err(decay_value_error)
     }
+}
+
+fn decay_config(
+    drag: &PyDragParameters,
+    reentry_altitude_km: f64,
+    scan_step_s: f64,
+    crossing_tolerance_s: f64,
+    max_duration_s: f64,
+    max_scan_samples: u32,
+) -> DecayConfig {
+    DecayConfig::new(drag.inner())
+        .with_reentry_altitude_km(reentry_altitude_km)
+        .with_scan_step_s(scan_step_s)
+        .with_crossing_tolerance_s(crossing_tolerance_s)
+        .with_max_duration_s(max_duration_s)
+        .with_max_scan_samples(max_scan_samples)
+}
+
+fn decay_error(error: DecayError) -> PyErr {
+    let exception = SolveError::new_err(error.to_string());
+    decay_error_detail(error, exception)
+}
+
+fn decay_value_error(error: DecayError) -> PyErr {
+    let exception = PyValueError::new_err(error.to_string());
+    decay_error_detail(error, exception)
+}
+
+fn decay_error_detail(error: DecayError, exception: PyErr) -> PyErr {
+    match error {
+        DecayError::Propagation(source) => binding_error(exception, "propagation", |detail| {
+            detail.set_item(
+                "source",
+                propagation_error(source)
+                    .value(detail.py())
+                    .getattr("detail")?,
+            )
+        }),
+        DecayError::InvalidConfig(field) => binding_error(exception, "invalid_config", |detail| {
+            detail.set_item("field", field)
+        }),
+        DecayError::NoDecayWithinHorizon { horizon_s } => {
+            binding_error(exception, "no_decay_within_horizon", |detail| {
+                detail.set_item("horizon_s", horizon_s)
+            })
+        }
+        DecayError::ScanBudgetExhausted { samples, scanned_s } => {
+            binding_error(exception, "scan_budget_exhausted", |detail| {
+                detail.set_item("samples", samples)?;
+                detail.set_item("scanned_s", scanned_s)
+            })
+        }
+    }
+}
+
+/// Estimate reentry time using an explicit propagation context.
+#[pyfunction]
+#[pyo3(signature = (
+    epoch_tdb_seconds,
+    position_km,
+    velocity_km_s,
+    drag,
+
+    context,
+    *,
+    reentry_altitude_km=DecayConfig::DEFAULT_REENTRY_ALTITUDE_KM,
+    scan_step_s=DecayConfig::DEFAULT_SCAN_STEP_S,
+    crossing_tolerance_s=DecayConfig::DEFAULT_CROSSING_TOLERANCE_S,
+    max_duration_s=DecayConfig::DEFAULT_MAX_DURATION_S,
+    max_scan_samples=DecayConfig::DEFAULT_MAX_SCAN_SAMPLES,
+))]
+#[allow(clippy::too_many_arguments)]
+fn estimate_decay_with_context(
+    py: Python<'_>,
+    epoch_tdb_seconds: f64,
+    position_km: [f64; 3],
+    velocity_km_s: [f64; 3],
+    drag: &PyDragParameters,
+    context: &PyPropagationContext,
+    reentry_altitude_km: f64,
+    scan_step_s: f64,
+    crossing_tolerance_s: f64,
+    max_duration_s: f64,
+    max_scan_samples: u32,
+) -> PyResult<PyDecayEstimate> {
+    let initial = CartesianState::new(epoch_tdb_seconds, position_km, velocity_km_s);
+    let config = decay_config(
+        drag,
+        reentry_altitude_km,
+        scan_step_s,
+        crossing_tolerance_s,
+        max_duration_s,
+        max_scan_samples,
+    );
+
+    let context = &context.inner;
+    py.allow_threads(move || core_estimate_decay_with_context(initial, &config, context))
+        .map(|inner| PyDecayEstimate { inner })
+        .map_err(decay_error)
+}
+
+/// Estimate reentry time using an explicit propagation context and per-epoch space weather.
+#[pyfunction]
+#[pyo3(signature = (
+    epoch_tdb_seconds,
+    position_km,
+    velocity_km_s,
+    drag,
+    source,
+    context,
+    *,
+    reentry_altitude_km=DecayConfig::DEFAULT_REENTRY_ALTITUDE_KM,
+    scan_step_s=DecayConfig::DEFAULT_SCAN_STEP_S,
+    crossing_tolerance_s=DecayConfig::DEFAULT_CROSSING_TOLERANCE_S,
+    max_duration_s=DecayConfig::DEFAULT_MAX_DURATION_S,
+    max_scan_samples=DecayConfig::DEFAULT_MAX_SCAN_SAMPLES,
+))]
+#[allow(clippy::too_many_arguments)]
+fn estimate_decay_with_source_and_context(
+    py: Python<'_>,
+    epoch_tdb_seconds: f64,
+    position_km: [f64; 3],
+    velocity_km_s: [f64; 3],
+    drag: &PyDragParameters,
+    source: &PySpaceWeatherTable,
+    context: &PyPropagationContext,
+    reentry_altitude_km: f64,
+    scan_step_s: f64,
+    crossing_tolerance_s: f64,
+    max_duration_s: f64,
+    max_scan_samples: u32,
+) -> PyResult<PyDecayEstimate> {
+    let initial = CartesianState::new(epoch_tdb_seconds, position_km, velocity_km_s);
+    let config = decay_config(
+        drag,
+        reentry_altitude_km,
+        scan_step_s,
+        crossing_tolerance_s,
+        max_duration_s,
+        max_scan_samples,
+    );
+    let weather = source.source();
+    let context = &context.inner;
+    py.allow_threads(move || {
+        core_estimate_decay_with_source_and_context(initial, &config, &weather, context)
+    })
+    .map(|inner| PyDecayEstimate { inner })
+    .map_err(decay_error)
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -469,5 +846,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(force_j2_acceleration, m)?)?;
     m.add_function(wrap_pyfunction!(force_drag_acceleration, m)?)?;
     m.add_function(wrap_pyfunction!(estimate_decay, m)?)?;
+    m.add_function(wrap_pyfunction!(estimate_decay_with_context, m)?)?;
+    m.add_function(wrap_pyfunction!(estimate_decay_with_source_and_context, m)?)?;
+
     Ok(())
 }

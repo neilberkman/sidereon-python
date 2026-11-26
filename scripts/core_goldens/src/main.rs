@@ -16,6 +16,7 @@
 mod core_source_identity;
 mod diagnostics;
 mod field;
+mod orbital_dynamics;
 mod parity_v3;
 mod rtk_wtzr;
 mod sp3_merge;
@@ -836,7 +837,7 @@ fn core_revision(core: &Path) -> String {
     core_source_identity::revision_from_lock_or_checkout(
         include_str!("../Cargo.lock"),
         core,
-        include_str!("../Cargo.toml"),
+        Path::new(env!("CARGO_MANIFEST_DIR")),
     )
     .unwrap_or_else(|error| panic!("resolve engine source revision: {error}"))
 }
@@ -860,6 +861,7 @@ fn main() {
     let doc = json!({
         "source": "scripts/core_goldens",
         "core_revision": core_revision(&core),
+        "orbital_dynamics": orbital_dynamics::section(&core, &fixtures),
         "spp_trace_default": trace_default(&sp3, &trace),
         "spp_consistent": spp_consistent,
         "spp_robust_faults": spp_robust_faults,

@@ -1,48 +1,28 @@
-"""Standalone force-model acceleration through the binding.
-
-Two-body and J2 acceleration are pure wrappers over `sidereon_core::astro::forces`.
-The bar is bit-exact against the core's own force-wrapper unit test
-(`crates/sidereon-core/src/astro/forces/{two_body,j2}.rs`): the same input state
-must reproduce the same IEEE-754 acceleration to the bit.
-"""
-
-import struct
+"""Standalone two-body and J2 acceleration against core-generated values."""
 
 import numpy as np
 import pytest
 import sidereon
+from _helpers import core_goldens, hex_to_f64
 
-
-def _bits(u64):
-    return struct.unpack("<d", struct.pack("<Q", u64))[0]
-
-
-# Input state shared by both core unit tests: position (km), velocity (km/s).
 POSITION_KM = [7000.0, -1210.0, 1300.0]
 VELOCITY_KM_S = [0.0, 0.0, 0.0]
 
-# Frozen acceleration bits from the core force-wrapper unit tests (km/s^2).
-TWO_BODY_BITS = (
-    13_798_562_943_973_640_097,
-    4_563_548_234_789_153_053,
-    13_787_359_517_156_423_902,
-)
-J2_BITS = (
-    13_754_131_348_549_160_135,
-    4_519_025_615_523_880_849,
-    13_750_824_904_549_515_386,
-)
+
+def _expected_acceleration(name):
+    expected = core_goldens()["orbital_dynamics"]["radiation"]["standalone_gravity"]
+    return np.array([hex_to_f64(value) for value in expected[name]])
 
 
 def test_two_body_acceleration_is_bit_exact():
     got = sidereon.force_twobody_acceleration(POSITION_KM, VELOCITY_KM_S)
-    expected = np.array([_bits(b) for b in TWO_BODY_BITS])
+    expected = _expected_acceleration("two_body")
     assert np.array_equal(got, expected), f"got {got!r} want {expected!r}"
 
 
 def test_j2_acceleration_is_bit_exact():
     got = sidereon.force_j2_acceleration(POSITION_KM, VELOCITY_KM_S)
-    expected = np.array([_bits(b) for b in J2_BITS])
+    expected = _expected_acceleration("j2")
     assert np.array_equal(got, expected), f"got {got!r} want {expected!r}"
 
 

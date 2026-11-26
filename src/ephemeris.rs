@@ -209,7 +209,7 @@ pub(crate) fn source_clock_relativity_at_epoch_query<Source: EphemerisSource + ?
     })
 }
 
-fn ephemeris_source_query_error(error: sidereon_core::Error) -> PyErr {
+pub(crate) fn ephemeris_source_query_error(error: sidereon_core::Error) -> PyErr {
     let python_error = match &error {
         sidereon_core::Error::Ut1OutsideCoverage(reason) => {
             crate::ut1_outside_coverage_err("ephemeris source query", *reason)
